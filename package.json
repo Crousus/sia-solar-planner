@@ -11,14 +11,17 @@
     "test:run": "vitest run"
   },
   "dependencies": {
+    "fast-json-patch": "^3.1.1",
     "html2canvas": "^1.4.1",
     "jspdf": "^2.5.1",
     "konva": "^9.3.16",
     "leaflet": "^1.9.4",
+    "pocketbase": "^0.26.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-konva": "^18.2.10",
     "react-leaflet": "^4.2.1",
+    "react-router-dom": "^7.14.2",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
@@ -26,6 +29,7 @@
     "@types/node": "^25.6.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
     "jsdom": "^24.1.3",
