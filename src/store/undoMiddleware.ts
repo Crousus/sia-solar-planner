@@ -361,6 +361,103 @@ export function applyRedo<
   } as Partial<S>;
 }
 
+/**
+ * Dev-mode-only referential-integrity sweep. Reports (via a caller-supplied
+ * emitter — defaults to console.error) any id in the slice that would be
+ * dangling: a panel's roofId/stringId, or a string's inverterId. Called
+ * after undo/redo restores so snapshot bugs surface immediately.
+ *
+ * Why this exists at all: applyUndo/applyRedo restore whole slices by
+ * reference, and buildSlice performs structural sharing rather than deep
+ * validation. If a reducer elsewhere in the store ever forgets to null out
+ * a cross-reference when deleting an entity (e.g. deleting a roof without
+ * also clearing panels' roofId, or deleting an inverter without clearing
+ * strings' inverterId), that broken reference gets faithfully snapshotted
+ * into history and then faithfully restored later — the bug becomes
+ * silent, because selectors typically tolerate missing lookups by
+ * returning undefined, and the UI just renders nothing for that panel.
+ * This sweep surfaces the bug the moment we restore a compromised slice,
+ * so regressions get caught in dev rather than manifesting as "panels
+ * mysteriously disappear after undo".
+ *
+ * Why the emitter indirection rather than calling console.error directly:
+ * it keeps this function pure (no side effects on the global console) so
+ * tests can assert on the exact set of messages produced without stubbing
+ * globals. The default is console.error so production / dev callers don't
+ * need to wire anything up — passing an emitter is an opt-in for testing
+ * or for plumbing the messages into a different logger later.
+ *
+ * Why this isn't called from the record path: record only snapshots the
+ * BEFORE state and trusts that whatever reducer is about to run is
+ * well-behaved. Verifying after every mutation would double the cost of
+ * every action for very little incremental coverage — bugs in the
+ * reducers' ref-cleanup logic would already be caught on the NEXT undo
+ * that touches them, which is when this sweep runs at the store-wrapper
+ * level in Task 12+.
+ *
+ * Deliberate non-checks:
+ *   - We don't verify that a panel's groupId corresponds to an existing
+ *     group, because groups are derived from panels (a group with one
+ *     panel IS that panel's groupId by construction). There's no separate
+ *     entity to dangle against.
+ *   - We don't verify stringId → string assignments symmetrically with
+ *     panel.stringId here; strings don't reference panels, panels
+ *     reference strings, and that direction is covered.
+ *   - We don't look inside roofs for nested ids. Roofs are self-contained
+ *     geometry; cross-entity refs all flow panel → {roof, string} and
+ *     string → inverter.
+ */
+export function assertReferentialIntegrity(
+  slice: UndoableSlice,
+  emit: (msg: string) => void = (m) => console.error(m),
+): void {
+  // Build id lookup sets up-front — same pattern as cleanUiRefs. We
+  // deliberately DON'T extract a shared helper for this construction:
+  // the duplication is three lines, and inlining keeps each function
+  // readable on its own without a jump-to-definition. If a fourth
+  // consumer ever needs the same sets we can revisit.
+  const roofIds = new Set((slice.roofs as { id: string }[]).map((r) => r.id));
+  const stringIds = new Set((slice.strings as { id: string }[]).map((s) => s.id));
+  const inverterIds = new Set(
+    (slice.inverters as { id: string }[]).map((i) => i.id),
+  );
+
+  // Panels: every panel MUST have a roofId (a panel without a roof is
+  // nonsensical — there's no place to render it), so we always check
+  // roofId membership. stringId, by contrast, is optional (an unassigned
+  // panel has stringId === null), so we only flag it when non-null AND
+  // unknown. The `!= null` check intentionally uses loose equality to
+  // catch both null and undefined — the type annotates `string | null`
+  // but a future refactor or a bug-produced undefined shouldn't trip a
+  // false positive here.
+  for (const p of slice.panels as {
+    id: string;
+    roofId: string;
+    stringId: string | null;
+  }[]) {
+    if (!roofIds.has(p.roofId)) {
+      emit(`[undoable] panel ${p.id} references unknown roofId ${p.roofId}`);
+    }
+    if (p.stringId != null && !stringIds.has(p.stringId)) {
+      emit(`[undoable] panel ${p.id} references unknown stringId ${p.stringId}`);
+    }
+  }
+
+  // Strings: inverterId is optional (a freshly-created string has no
+  // inverter until the user assigns one), so same null-guard pattern as
+  // panel.stringId above.
+  for (const s of slice.strings as {
+    id: string;
+    inverterId: string | null;
+  }[]) {
+    if (s.inverterId != null && !inverterIds.has(s.inverterId)) {
+      emit(
+        `[undoable] string ${s.id} references unknown inverterId ${s.inverterId}`,
+      );
+    }
+  }
+}
+
 // --- Type plumbing to widen set() to accept an action-name 3rd arg ---
 // Mirror of zustand/middleware/devtools.d.ts internal helpers. These are
 // local (not re-exported) because they're implementation detail of the

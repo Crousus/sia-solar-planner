@@ -7,6 +7,7 @@ import {
   setCoalesceKey,
   applyUndo,
   applyRedo,
+  assertReferentialIntegrity,
   type HistoryState,
   type UndoableSlice,
 } from './undoMiddleware';
@@ -402,6 +403,53 @@ describe('applyUndo / applyRedo', () => {
     expect(next!.project.name).toBe('redo-target');
     expect(next!.past.length).toBe(1);
     expect(next!.future.length).toBe(0);
+  });
+});
+
+describe('assertReferentialIntegrity', () => {
+  it('reports a panel with an unknown roofId', () => {
+    const errors: string[] = [];
+    const slice: UndoableSlice = {
+      name: 'p',
+      panelType: { id: 'pt' },
+      roofs: [{ id: 'r1' }] as any,
+      panels: [{ id: 'pa1', roofId: 'GONE', stringId: null }] as any,
+      strings: [],
+      inverters: [],
+    };
+    assertReferentialIntegrity(slice, (msg) => errors.push(msg));
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toMatch(/pa1/);
+    expect(errors[0]).toMatch(/GONE/);
+  });
+
+  it('reports a string with an unknown inverterId', () => {
+    const errors: string[] = [];
+    const slice: UndoableSlice = {
+      name: 'p',
+      panelType: { id: 'pt' },
+      roofs: [],
+      panels: [],
+      strings: [{ id: 's1', inverterId: 'GONE' }] as any,
+      inverters: [],
+    };
+    assertReferentialIntegrity(slice, (msg) => errors.push(msg));
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toMatch(/s1/);
+  });
+
+  it('passes on a consistent slice', () => {
+    const errors: string[] = [];
+    const slice: UndoableSlice = {
+      name: 'p',
+      panelType: { id: 'pt' },
+      roofs: [{ id: 'r1' }] as any,
+      panels: [{ id: 'pa1', roofId: 'r1', stringId: 's1' }] as any,
+      strings: [{ id: 's1', inverterId: 'i1' }] as any,
+      inverters: [{ id: 'i1' }] as any,
+    };
+    assertReferentialIntegrity(slice, (msg) => errors.push(msg));
+    expect(errors).toEqual([]);
   });
 });
 
