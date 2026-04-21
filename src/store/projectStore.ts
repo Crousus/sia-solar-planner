@@ -29,6 +29,17 @@ import type {
 import { STRING_COLORS } from '../types';
 import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
 import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
+import {
+  undoable,
+  ACTION_POLICY,
+  applyUndo,
+  applyRedo,
+  assertReferentialIntegrity,
+  setCoalesceKey,
+  buildSlice,
+  type HistoryState,
+  type UndoableSlice,
+} from './undoMiddleware';
 
 /**
  * Short random-ish id. Good enough for a personal tool — we don't need
@@ -109,8 +120,18 @@ interface UIState {
  * Full store interface. Each action is commented near its implementation
  * below where the logic lives.
  */
-interface ProjectStore extends UIState {
+interface ProjectStore extends UIState, HistoryState {
   project: Project;
+  // Undo/redo actions — wired in Task 11. The `canUndo` / `canRedo` mirrors
+  // are plain boolean fields (rather than derived getters) so React selectors
+  // can subscribe to them with zustand's shallow-equality path and only
+  // re-render when they actually flip. Keeping them in sync with the
+  // `past`/`future` stack lengths is the responsibility of the undo/redo
+  // actions (and, in later tasks, the record path of the middleware).
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   setProjectName: (name: string) => void;
   updatePanelType: (changes: Partial<PanelType>) => void;
   lockMap: (args: {
@@ -176,7 +197,14 @@ interface ProjectStore extends UIState {
 
 export const useProjectStore = create<ProjectStore>()(
   persist(
-    (set, get) => ({
+    // `undoable` wraps INSIDE `persist` on purpose: the persistence layer's
+    // `partialize` below narrows the saved state to `{ project }`, which
+    // means the history stacks (past/future) intentionally do NOT survive
+    // a page reload. That matches user intent — undo history beyond the
+    // current session would be surprising — and also keeps the captured
+    // satellite image (which can be multi-MB base64) from being duplicated
+    // into every history entry on disk.
+    undoable((set, get) => ({
       project: initialProject,
       toolMode: 'idle',
       selectedRoofId: null,
@@ -187,6 +215,28 @@ export const useProjectStore = create<ProjectStore>()(
       // Background is visible by default — hiding it is the less common
       // workflow (mainly for clean screenshots and cluttered layouts).
       showBackground: true,
+
+      // ── Undo/redo history state ─────────────────────────────────────────
+      // These fields are owned by the `undoable` middleware, but they live
+      // on the store's state (rather than in closure) so (a) React can
+      // subscribe to them for a live-updating "Undo" button enabled-state
+      // and (b) devtools / JSON inspection can see the stack depth. Typed
+      // as `UndoableSlice[]` explicitly because the empty-array literal
+      // would otherwise widen to `never[]` and break future pushes.
+      past: [] as UndoableSlice[],
+      future: [] as UndoableSlice[],
+      // `lastActionSig` — see undoMiddleware.ts for the full design; in
+      // short: signature of the most-recently-pushed history entry, used
+      // to decide whether the next record-path mutation coalesces into it.
+      // Starts null so the first ever edit always pushes a fresh step.
+      lastActionSig: null,
+      // Mirror booleans for the stack lengths. Maintained by hand in the
+      // undo/redo actions below (and in later tasks by the record path of
+      // the middleware). Kept as real state rather than a selector-derived
+      // boolean so components depending on "can I undo right now" don't
+      // need a custom equality function to avoid spurious re-renders.
+      canUndo: false,
+      canRedo: false,
 
       // ── Project-level ───────────────────────────────────────────────────
       setProjectName: (name) => set((s) => ({ project: { ...s.project, name } })),
@@ -877,12 +927,100 @@ export const useProjectStore = create<ProjectStore>()(
           selectedInverterId: null,
           activePanelGroupId: null,
         }),
-    }),
+
+      // ── Undo / Redo ─────────────────────────────────────────────────────
+      // Thin wrappers around the pure `applyUndo` / `applyRedo` helpers in
+      // undoMiddleware.ts. All the real logic (stack manipulation, slice
+      // restore, UI-ref cleaning, signature reset) lives in those pure
+      // functions so the store action is trivially correct by inspection.
+      //
+      // Why we maintain `canUndo` / `canRedo` mirrors INSIDE each action
+      // rather than recomputing them in a middleware hook: zustand's
+      // partial-merge semantics mean any field we don't set stays at its
+      // previous value. After an undo that empties `past`, if we didn't
+      // explicitly flip `canUndo` to false here, the stale `true` would
+      // persist until the next mutation — giving the UI a visually-armed
+      // "Undo" button that does nothing when clicked. Setting these
+      // mirrors alongside the stack update keeps them in lockstep.
+      //
+      // Action name 'undo'/'redo' is registered as 'bypass' in
+      // ACTION_POLICY: the middleware must NOT re-snapshot these set()
+      // calls, because that would push a history entry ABOUT the undo
+      // itself, producing infinite undo loops.
+      //
+      // The referential-integrity assertion is gated on `import.meta.env.DEV`:
+      //   - Vite statically replaces this token with a literal boolean at
+      //     build time, so in production the whole branch (including the
+      //     call and its string-building) is dead-code eliminated. A
+      //     useful sanity check during development costs zero bytes in
+      //     shipped code.
+      //   - Vitest sets DEV=true by default, so tests still run the
+      //     integrity sweep and will flag any snapshot-restore bug before
+      //     it reaches users.
+      //   - A prior task established this pattern (in the middleware's
+      //     own dev-warn); using it here keeps the dev-gate spelling
+      //     consistent across the module. The plan's reference to
+      //     `process.env.NODE_ENV` would NOT work in the browser bundle
+      //     because Vite doesn't inject a `process` global — only
+      //     rewrites specific `process.env.NODE_ENV` references, which
+      //     is fragile compared to the first-class DEV flag.
+      undo: () => {
+        const state = get();
+        const next = applyUndo(state);
+        // `applyUndo` returns null when there is nothing to undo (empty
+        // `past` stack). Early-return so we don't fire a listener
+        // notification for a non-event — React consumers wouldn't re-
+        // render for identical state, but the set() call itself plus
+        // any middleware-level bookkeeping is pure waste.
+        if (!next) return;
+        // Maintain canUndo/canRedo mirrors alongside the restore. See the
+        // comment block above for why these are tracked as real state.
+        set(
+          {
+            ...next,
+            canUndo: (next.past as UndoableSlice[]).length > 0,
+            canRedo: (next.future as UndoableSlice[]).length > 0,
+          },
+          false,
+          'undo',
+        );
+        if (import.meta.env.DEV) {
+          // Verify after restore: if a reducer anywhere in the store ever
+          // forgot to null out a cross-reference when deleting an entity,
+          // that dangling id would have been snapshotted into history and
+          // now restored. This sweep surfaces the bug the moment it
+          // resurfaces, so regressions get caught in dev rather than
+          // manifesting later as "panels mysteriously disappear" or
+          // selectors returning undefined for still-referenced ids.
+          assertReferentialIntegrity(buildSlice(get().project));
+        }
+      },
+      redo: () => {
+        const state = get();
+        const next = applyRedo(state);
+        if (!next) return;
+        set(
+          {
+            ...next,
+            canUndo: (next.past as UndoableSlice[]).length > 0,
+            canRedo: (next.future as UndoableSlice[]).length > 0,
+          },
+          false,
+          'redo',
+        );
+        if (import.meta.env.DEV) {
+          assertReferentialIntegrity(buildSlice(get().project));
+        }
+      },
+    })),
     {
       // localStorage key. Kept short and namespaced so it doesn't clash.
       name: 'solar-planner-project',
       // `partialize` strips out ephemeral fields before writing to storage,
-      // so refresh doesn't persist (eg) an accidental tool mode.
+      // so refresh doesn't persist (eg) an accidental tool mode. Note that
+      // history (past/future/lastActionSig) is also excluded by virtue of
+      // not being listed here — see the comment at the `undoable(...)`
+      // wrapper above.
       partialize: (s) => ({ project: s.project }),
     }
   )
