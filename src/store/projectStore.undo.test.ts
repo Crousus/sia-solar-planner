@@ -131,3 +131,38 @@ describe('loadProject/resetProject history behavior', () => {
     expect(useProjectStore.getState().canRedo).toBe(true);
   });
 });
+
+describe('canUndo/canRedo reactivity', () => {
+  beforeEach(() => {
+    useProjectStore.getState().resetProject();
+  });
+
+  it('canUndo flips to true after a record-path mutation', () => {
+    expect(useProjectStore.getState().canUndo).toBe(false);
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    expect(useProjectStore.getState().canUndo).toBe(true);
+  });
+
+  it('canRedo becomes true after undo and false again after redo', () => {
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    useProjectStore.getState().undo();
+    expect(useProjectStore.getState().canRedo).toBe(true);
+    useProjectStore.getState().redo();
+    expect(useProjectStore.getState().canRedo).toBe(false);
+  });
+
+  it('a new mutation after undo clears canRedo', () => {
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    useProjectStore.getState().undo();
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 },
+    ]);
+    expect(useProjectStore.getState().canRedo).toBe(false);
+  });
+});

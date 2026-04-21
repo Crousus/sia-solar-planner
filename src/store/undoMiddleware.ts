@@ -842,6 +842,25 @@ const undoableImpl = (
             future: [] as UndoableSlice[],
             lastActionSig: { action: name!, key, at: now },
             _pendingCoalesce: null,
+            // Mirror `past.length > 0` onto the flat `canUndo` boolean that
+            // toolbar buttons subscribe to. Expressed as a derivation rather
+            // than the constant `true` for two reasons: (a) self-documenting
+            // — the field always tracks past depth, and future edge cases
+            // (e.g. a depth-cap that could hypothetically leave an empty
+            // past after a shift) stay correct by construction; (b) a reader
+            // grepping for where the mirror is computed finds the single
+            // truth-source `newPast.length > 0` at both this push site and
+            // in undo/redo/reset. After a push, newPast always has ≥1 entry,
+            // so this is effectively always true here — but writing the
+            // derivation is the robust choice.
+            canUndo: newPast.length > 0,
+            // Any new mutation invalidates the redo stack (you can't "redo"
+            // something when a branching edit has replaced the future), which
+            // is why `future` above is cleared to []. Mirror that on canRedo
+            // so subscribers see the two flip together in the same set() —
+            // selectors watching only canRedo would otherwise render a stale
+            // "redo armed" button for one frame until the next mutation.
+            canRedo: false,
           },
           false,
           '__history__',
