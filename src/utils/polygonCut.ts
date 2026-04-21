@@ -261,3 +261,119 @@ function isStrictlyInside(p: Point, polygon: Point[]): boolean {
   }
   return inside;
 }
+
+/**
+ * Shared-edge descriptor — two polygons share an edge if there exist
+ * consecutive vertex pairs (A[i], A[i+1]) and (B[j], B[j+1]) where the
+ * endpoints match within tolPx, in EITHER direction.
+ *
+ * `reversed` = true is the usual case: adjacent polygons traverse
+ * their shared edge in opposite winding, because both polygons are
+ * wound the same way (e.g. both clockwise) around their own interiors.
+ * reversed = false would indicate identical orientation — rare but
+ * possible if the user drew both polygons in opposite winding orders.
+ *
+ * We return the first match found; if polygons share multiple edges
+ * (which shouldn't happen with the simple shapes this tool produces,
+ * but isn't mathematically forbidden), the caller only merges one.
+ */
+export type SharedEdge = {
+  aEdgeIndex: number;
+  bEdgeIndex: number;
+  reversed: boolean;
+};
+
+export function findSharedEdge(
+  polyA: Point[],
+  polyB: Point[],
+  tolPx: number = 2,
+): SharedEdge | null {
+  const near = (p: Point, q: Point) =>
+    Math.hypot(p.x - q.x, p.y - q.y) <= tolPx;
+  for (let i = 0; i < polyA.length; i++) {
+    const a0 = polyA[i];
+    const a1 = polyA[(i + 1) % polyA.length];
+    for (let j = 0; j < polyB.length; j++) {
+      const b0 = polyB[j];
+      const b1 = polyB[(j + 1) % polyB.length];
+      // Two polygons adjacent on a shared edge normally traverse it in
+      // opposite directions — try reversed first, then same-direction
+      // as a fallback for weirdly-wound inputs.
+      if (near(a0, b1) && near(a1, b0)) {
+        return { aEdgeIndex: i, bEdgeIndex: j, reversed: true };
+      }
+      if (near(a0, b0) && near(a1, b1)) {
+        return { aEdgeIndex: i, bEdgeIndex: j, reversed: false };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Stitch two polygons into one by removing their shared edge.
+ *
+ * Concept: walk A starting from the END vertex of the shared edge
+ * all the way around (skipping the shared edge itself) back to the
+ * START vertex. Then jump to B at the matching point and do the same,
+ * finishing by returning to where we started on A.
+ *
+ * Concretely, given shared edge A[i]→A[i+1] matched to B's edge:
+ *   result = [A[i+1], A[i+2], ..., A[i], then B's boundary from
+ *             the matching start vertex around back to the matching
+ *             end vertex]
+ *
+ * The `reversed` flag flips which direction we walk B.
+ *
+ * Post-processing: we do NOT dedupe adjacent near-duplicate vertices —
+ * if two polygons were drawn with almost-but-not-quite coincident
+ * shared-edge endpoints, the merged polygon will have a 2-vertex
+ * "zigzag" at each end. Per spec YAGNI, we accept that; visually it's
+ * imperceptible at tolPx=2, and cleanup can be added later if needed.
+ */
+export function mergePolygons(
+  polyA: Point[],
+  polyB: Point[],
+  shared: SharedEdge,
+): Point[] {
+  const { aEdgeIndex: i, bEdgeIndex: j, reversed } = shared;
+  const nA = polyA.length;
+  const nB = polyB.length;
+
+  // Walk A from (i+1) to (i) around the ring, INCLUDING both endpoints.
+  // These are the vertices that survive from A (everything except the
+  // shared-edge pair that gets replaced by the B detour).
+  const fromA: Point[] = [];
+  for (let k = 0; k < nA; k++) {
+    const idx = (i + 1 + k) % nA;
+    fromA.push(polyA[idx]);
+  }
+  // fromA now starts at A[i+1] and ends at A[i].
+
+  // Walk B to get the interior path between B's matching vertices.
+  // If reversed (normal case): A[i]→A[i+1] equals B[j+1]→B[j]. So the
+  // B "detour" that replaces the shared edge runs from B[j+2] forward
+  // around to B[j-1], EXCLUDING B[j] and B[j+1] (those are already
+  // represented by A[i+1] and A[i] in fromA).
+  // If not reversed: A[i]→A[i+1] equals B[j]→B[j+1]; detour runs from
+  // B[j-1] backward around to B[j+2] excluding both.
+  const fromB: Point[] = [];
+  if (reversed) {
+    // Start one past B[j+1], end one before B[j], going forward.
+    // Indices j+2, j+3, ..., j+nB-1 (mod nB) — exactly nB-2 vertices,
+    // every B vertex EXCEPT B[j] and B[j+1].
+    for (let k = 1; k < nB - 1; k++) {
+      fromB.push(polyB[(j + 1 + k) % nB]);
+    }
+  } else {
+    // Walk B backward from B[j-1] around to B[j+2].
+    for (let k = 1; k < nB - 1; k++) {
+      fromB.push(polyB[(j - k + nB) % nB]);
+    }
+  }
+
+  // Composition: A's arc then B's detour. fromA already ends at A[i];
+  // fromB begins with B's next vertex after the shared edge's end on
+  // A's side; they stitch naturally.
+  return [...fromA, ...fromB];
+}
