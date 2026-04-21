@@ -237,6 +237,12 @@ export const useProjectStore = create<ProjectStore>()(
       // need a custom equality function to avoid spurious re-renders.
       canUndo: false,
       canRedo: false,
+      // `_pendingCoalesce` is intentionally NOT initialized here. The field
+      // is optional on HistoryState and transient (the middleware sets it
+      // at the top of each record-path mutation, reads it at the bottom,
+      // and nulls it). Starting as `undefined` vs `null` is equivalent for
+      // the middleware's `== null` check — omitting it avoids giving the
+      // impression that the initial value has any meaning.
 
       // ── Project-level ───────────────────────────────────────────────────
       setProjectName: (name) => set((s) => ({ project: { ...s.project, name } })),
@@ -975,11 +981,18 @@ export const useProjectStore = create<ProjectStore>()(
         if (!next) return;
         // Maintain canUndo/canRedo mirrors alongside the restore. See the
         // comment block above for why these are tracked as real state.
+        //
+        // `next.past!` / `next.future!` — the return type of `applyUndo` is
+        // `Partial<S>` which marks both fields optional, but the implementation
+        // always includes them in the returned partial. A non-null assertion
+        // here is cheaper-to-read than casting to `UndoableSlice[]` and conveys
+        // the same intent: "this field is guaranteed present, trust the
+        // function's contract."
         set(
           {
             ...next,
-            canUndo: (next.past as UndoableSlice[]).length > 0,
-            canRedo: (next.future as UndoableSlice[]).length > 0,
+            canUndo: next.past!.length > 0,
+            canRedo: next.future!.length > 0,
           },
           false,
           'undo',
@@ -998,17 +1011,23 @@ export const useProjectStore = create<ProjectStore>()(
       redo: () => {
         const state = get();
         const next = applyRedo(state);
+        // Symmetric with `undo`: `applyRedo` returns null when the `future`
+        // stack is empty (nothing was undone yet, or we already ran out of
+        // redo steps). Early-return so we don't fire a no-op notification.
         if (!next) return;
         set(
           {
             ...next,
-            canUndo: (next.past as UndoableSlice[]).length > 0,
-            canRedo: (next.future as UndoableSlice[]).length > 0,
+            // See the parallel comment in `undo` for why `!.` is safe here.
+            canUndo: next.past!.length > 0,
+            canRedo: next.future!.length > 0,
           },
           false,
           'redo',
         );
         if (import.meta.env.DEV) {
+          // Same rationale as the post-undo sweep: catch dangling refs the
+          // moment they re-enter live state from the history stack.
           assertReferentialIntegrity(buildSlice(get().project));
         }
       },
