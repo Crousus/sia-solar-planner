@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { createStore } from 'zustand/vanilla';
-import { undoable, type HistoryState } from './undoMiddleware';
-import { buildSlice } from './undoMiddleware';
+import {
+  undoable,
+  buildSlice,
+  cleanUiRefs,
+  type HistoryState,
+  type UndoableSlice,
+} from './undoMiddleware';
 
 // A minimal test store shape used throughout these tests. Shape chosen
 // to mirror projectStore's essentials (a "project"-like object plus UI
@@ -74,5 +79,55 @@ describe('buildSlice', () => {
     const project = { name: 'p', panelType: { id: 'pt' }, roofs, panels: [], strings: [], inverters: [], mapState: {} };
     const slice = buildSlice(project as any);
     expect(slice.roofs).toBe(roofs);
+  });
+});
+
+describe('cleanUiRefs', () => {
+  const slice = {
+    name: 'p',
+    panelType: { id: 'pt' },
+    roofs: [{ id: 'r1' }],
+    panels: [{ id: 'pa1', groupId: 'g1' }],
+    strings: [{ id: 's1' }],
+    inverters: [{ id: 'i1' }],
+  } as unknown as UndoableSlice;
+
+  it('preserves references that exist in the slice', () => {
+    const ui = {
+      selectedRoofId: 'r1',
+      activeStringId: 's1',
+      selectedInverterId: 'i1',
+      activePanelGroupId: 'g1',
+      splitCandidateRoofId: 'r1',
+    };
+    expect(cleanUiRefs(ui, slice)).toEqual(ui);
+  });
+
+  it('nulls dangling references', () => {
+    const ui = {
+      selectedRoofId: 'GONE',
+      activeStringId: 'GONE',
+      selectedInverterId: 'GONE',
+      activePanelGroupId: 'GONE',
+      splitCandidateRoofId: 'GONE',
+    };
+    expect(cleanUiRefs(ui, slice)).toEqual({
+      selectedRoofId: null,
+      activeStringId: null,
+      selectedInverterId: null,
+      activePanelGroupId: null,
+      splitCandidateRoofId: null,
+    });
+  });
+
+  it('keeps null inputs as null', () => {
+    const ui = {
+      selectedRoofId: null,
+      activeStringId: null,
+      selectedInverterId: null,
+      activePanelGroupId: null,
+      splitCandidateRoofId: null,
+    };
+    expect(cleanUiRefs(ui, slice)).toEqual(ui);
   });
 });

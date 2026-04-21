@@ -151,6 +151,56 @@ export function buildSlice(project: {
   };
 }
 
+/**
+ * After an undo or redo restores a slice, any UI reference that names an
+ * id no longer present in the slice is replaced with null. Same defensive
+ * sweep that inline-lives in deleteRoof/deleteString/deleteInverter today
+ * — centralising it here means a future undo that pops to a "before this
+ * roof existed" snapshot can't leave `selectedRoofId` pointing at a ghost
+ * that no selector/renderer will find.
+ *
+ * Why the truthy-check (`ui.selectedRoofId && ...`) in addition to the
+ * Set membership test: if the id is already null, we short-circuit and
+ * return null without ever calling `.has(null)`. `Set.has(null)` is
+ * technically fine (returns false) but the short-circuit keeps intent
+ * clearer and matches the behavior described in the "keeps null inputs
+ * as null" test.
+ *
+ * The `splitCandidateRoofId` sweep is deliberately grouped with roofs
+ * (not a separate id space) because it names a roof mid-interaction;
+ * if that roof is gone after an undo, the in-progress cut is moot.
+ */
+export interface UiRefs {
+  selectedRoofId: string | null;
+  activeStringId: string | null;
+  selectedInverterId: string | null;
+  activePanelGroupId: string | null;
+  splitCandidateRoofId: string | null;
+}
+
+export function cleanUiRefs(ui: UiRefs, slice: UndoableSlice): UiRefs {
+  // Build lookup sets once per call — O(n) to construct but then O(1)
+  // per membership test, which matters if UiRefs ever grows or if this
+  // ends up called on every undo in a large project.
+  const roofIds = new Set((slice.roofs as { id: string }[]).map((r) => r.id));
+  const stringIds = new Set((slice.strings as { id: string }[]).map((s) => s.id));
+  const inverterIds = new Set((slice.inverters as { id: string }[]).map((i) => i.id));
+  // Panel groups are not first-class entities — a "group" is just the set
+  // of panels that share a groupId. So we derive the valid-group id space
+  // from the panels array itself; a group with zero panels effectively
+  // doesn't exist and its id should be treated as dangling.
+  const groupIds = new Set(
+    (slice.panels as { groupId: string }[]).map((p) => p.groupId),
+  );
+  return {
+    selectedRoofId:       ui.selectedRoofId && roofIds.has(ui.selectedRoofId)           ? ui.selectedRoofId       : null,
+    activeStringId:       ui.activeStringId && stringIds.has(ui.activeStringId)         ? ui.activeStringId       : null,
+    selectedInverterId:   ui.selectedInverterId && inverterIds.has(ui.selectedInverterId) ? ui.selectedInverterId : null,
+    activePanelGroupId:   ui.activePanelGroupId && groupIds.has(ui.activePanelGroupId)  ? ui.activePanelGroupId   : null,
+    splitCandidateRoofId: ui.splitCandidateRoofId && roofIds.has(ui.splitCandidateRoofId) ? ui.splitCandidateRoofId : null,
+  };
+}
+
 // --- Type plumbing to widen set() to accept an action-name 3rd arg ---
 // Mirror of zustand/middleware/devtools.d.ts internal helpers. These are
 // local (not re-exported) because they're implementation detail of the
