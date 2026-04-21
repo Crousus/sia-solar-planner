@@ -70,6 +70,14 @@ describe('projectStore undo/redo integration', () => {
 });
 
 describe('loadProject/resetProject history behavior', () => {
+  // Zustand's module-level state leaks across `it` blocks in the same worker.
+  // Without this beforeEach, the first test below would start with history
+  // contaminated by the previous describe block — and `addRoof` ... `past > 0`
+  // would pass for the wrong reason. Reset gives every test a clean slate.
+  beforeEach(() => {
+    useProjectStore.getState().resetProject();
+  });
+
   it('resetProject clears past and future', () => {
     useProjectStore.getState().addRoof([
       { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
@@ -78,6 +86,11 @@ describe('loadProject/resetProject history behavior', () => {
     useProjectStore.getState().resetProject();
     expect(useProjectStore.getState().past).toEqual([]);
     expect(useProjectStore.getState().future).toEqual([]);
+    // Mirror booleans must flip in lockstep with the stacks; otherwise the
+    // toolbar Undo/Redo buttons would remain armed after a reset and firing
+    // them would no-op (or worse, pop a cleared entry if mirrors drifted).
+    expect(useProjectStore.getState().canUndo).toBe(false);
+    expect(useProjectStore.getState().canRedo).toBe(false);
   });
 
   it('loadProject(project) leaves history empty when no history argument given', () => {
@@ -88,6 +101,8 @@ describe('loadProject/resetProject history behavior', () => {
     useProjectStore.getState().loadProject(initial);
     expect(useProjectStore.getState().past).toEqual([]);
     expect(useProjectStore.getState().future).toEqual([]);
+    expect(useProjectStore.getState().canUndo).toBe(false);
+    expect(useProjectStore.getState().canRedo).toBe(false);
   });
 
   it('loadProject(project, {past, future}) restores both stacks', () => {
@@ -109,5 +124,10 @@ describe('loadProject/resetProject history behavior', () => {
     useProjectStore.getState().loadProject(initial, { past: [fakeSlice], future: [fakeSlice] });
     expect(useProjectStore.getState().past.length).toBe(1);
     expect(useProjectStore.getState().future.length).toBe(1);
+    // Restoring non-empty history must also arm the mirrors — this is what
+    // lets the UI open a JSON import with its Undo/Redo buttons already
+    // in the right state for the restored stack depths.
+    expect(useProjectStore.getState().canUndo).toBe(true);
+    expect(useProjectStore.getState().canRedo).toBe(true);
   });
 });

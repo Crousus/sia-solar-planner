@@ -730,6 +730,16 @@ export const useProjectStore = create<ProjectStore>()(
       // cy changes → string wiring order depends on cy (see
       // renumberStrings), so we renumber every string that had a
       // member in this group.
+      //
+      // NOT coalesced (no `setCoalesceKey` call). A `moveGroup` call
+      // represents a SETTLED drag — KonvaOverlay sums pointer deltas in
+      // component-local state during the pointermove stream and fires
+      // exactly one `moveGroup(dx_total, dy_total)` on pointerup. So we
+      // already get one history entry per gesture without needing the
+      // middleware's 500ms coalescing. Adding a key here would wrongly
+      // collapse TWO deliberate, separated drags of the same group into
+      // one undo step if they happened within 500ms — worse behavior
+      // than the current one-entry-per-settled-drag.
       moveGroup: (groupId, dx, dy) =>
         set(
           (s) => {
@@ -1082,8 +1092,16 @@ export const useProjectStore = create<ProjectStore>()(
             past: history?.past ?? [],
             future: history?.future ?? [],
             lastActionSig: null,
-            canUndo: (history?.past?.length ?? 0) > 0,
-            canRedo: (history?.future?.length ?? 0) > 0,
+            // Spelling note: `history?.past.length` (single `?.`), not
+            // `history?.past?.length`. The type says `past` is non-optional
+            // inside `history`, so once `history` is defined `past` is an
+            // array and `.length` is safe. The `?? 0` handles the outer
+            // `history === undefined` case. This derivation reads differently
+            // from `undo`/`redo`'s `next.past!.length > 0` because those
+            // operate on a `Partial<S>` return from `applyUndo`/`applyRedo`,
+            // whereas here we're reading the caller-supplied history object.
+            canUndo: (history?.past.length ?? 0) > 0,
+            canRedo: (history?.future.length ?? 0) > 0,
           },
           false,
           'loadProject',
