@@ -426,9 +426,25 @@ export default function RoofLayer({
                   if (stage) stage.container().style.cursor = '';
                 }}
                 onClick={(e) => {
-                  // Swallow so Stage.onClick doesn't try to append a new
-                  // drawing vertex at the handle's position.
-                  e.cancelBubble = true;
+                  // When a polyline is in progress we must NOT swallow
+                  // this click. The cut workflow ends exactly by clicking
+                  // a boundary point of the candidate roof — and corners
+                  // ARE boundary points. If we cancelBubble here, the
+                  // Stage's draw-roof handler never sees the click, the
+                  // cut never commits, and the polyline quietly dies on
+                  // the next unrelated click. Passing the click through
+                  // lets Stage route it to "commit cut" (case 2) or the
+                  // close-path check (case 3), whichever applies.
+                  //
+                  // When NO polyline is in progress the legacy reason
+                  // still holds: Stage would otherwise start a brand-new
+                  // drawing vertex at the handle's exact position, which
+                  // the user almost never wants — they're fiddling with
+                  // the existing vertex, not starting a new shape on top
+                  // of it. In that case we swallow.
+                  if (drawingPoints.length === 0) {
+                    e.cancelBubble = true;
+                  }
                 }}
                 onContextMenu={(e) => {
                   // Right-click removes this vertex, as long as the

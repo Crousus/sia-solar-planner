@@ -209,9 +209,12 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
             candidateRoof &&
             pointOnPolygonBoundary(last, candidateRoof.polygon, 8)
           ) {
-            state.splitRoof(state.splitCandidateRoofId, drawingPoints);
-            setDrawingPoints([]);
-            state.setToolMode('idle');
+            // Only exit draw-roof if the split commits. A rejected cut
+            // keeps the polyline so the user can adjust it.
+            if (state.splitRoof(state.splitCandidateRoofId, drawingPoints)) {
+              setDrawingPoints([]);
+              state.setToolMode('idle');
+            }
           }
         }
       }
@@ -362,12 +365,17 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
         drawingPoints.length >= 1
       ) {
         const cutLine = [...drawingPoints, snapped];
-        splitRoof(splitCandidateRoofId, cutLine);
-        // splitRoof clears splitCandidateRoofId in the store. We just
-        // need to clear local drawing state and exit draw-roof.
-        setDrawingPoints([]);
-        setToolMode('idle');
-        return;
+        // splitRoof returns false if the cut is invalid (e.g. interior
+        // vertex landed outside the polygon). On failure, we fall
+        // through to the default vertex-append so the user's polyline
+        // survives and they can continue editing. On success, splitRoof
+        // clears splitCandidateRoofId in the store and we tear down
+        // local drawing state + exit draw-roof.
+        if (splitRoof(splitCandidateRoofId, cutLine)) {
+          setDrawingPoints([]);
+          setToolMode('idle');
+          return;
+        }
       }
 
       // Case 3: existing close-path behavior — click near the first
@@ -403,10 +411,14 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
       const last = drawingPoints[drawingPoints.length - 1];
       const candidateRoof = roofs.find((r) => r.id === splitCandidateRoofId);
       if (candidateRoof && pointOnPolygonBoundary(last, candidateRoof.polygon, 8)) {
-        splitRoof(splitCandidateRoofId, drawingPoints);
-        setDrawingPoints([]);
-        setToolMode('idle');
-        return;
+        // Only tear down state if the split actually succeeded. A
+        // rejected cut (interior outside the polygon) must leave the
+        // user's polyline intact so they can fix it.
+        if (splitRoof(splitCandidateRoofId, drawingPoints)) {
+          setDrawingPoints([]);
+          setToolMode('idle');
+          return;
+        }
       }
     }
 

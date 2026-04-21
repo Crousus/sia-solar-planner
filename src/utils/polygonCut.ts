@@ -41,21 +41,23 @@ export function pointOnPolygonBoundary(
 ): { edgeIndex: number; t: number } | null {
   if (polygon.length < 3) return null;
 
-  // Prefer a vertex hit first — deterministic (t=0 at the start of the
-  // owning edge). This matters because snapping often puts the point
-  // exactly on a corner, and without this preference we could return
-  // t≈1 on edge i-1 one call and t≈0 on edge i the next, depending on
-  // floating-point noise.
-  for (let i = 0; i < polygon.length; i++) {
-    const v = polygon[i];
-    if (Math.hypot(v.x - p.x, v.y - p.y) <= tolPx) {
-      return { edgeIndex: i, t: 0 };
-    }
-  }
-
-  // Fall back to nearest-edge projection. We track the best (smallest
-  // distance) hit so the returned index is stable when the point is
-  // ambiguously close to two edges at a convex vertex within tol.
+  // Edge-projection hit-test. We return whatever parametric `t` the
+  // nearest edge projection gives — even if it's close to 0 or 1.
+  // Earlier versions had a vertex-preference loop that snapped the
+  // returned `t` to 0 whenever the click was within tolPx of any
+  // vertex, which caused `splitPolygon` to later yank cut endpoints
+  // to the nearest corner of the polygon even when the user had
+  // deliberately clicked mid-edge ~8 px from a corner. That was a
+  // visible bug: the resulting split line would originate at the
+  // corner instead of where the user clicked.
+  //
+  // Determinism under exact-vertex clicks is preserved by the
+  // best-distance tracking below: if the click lies exactly on a
+  // vertex, both adjacent edges project with d=0, and the `d <=
+  // bestDist` comparison (strict less-equal, lower index wins on a
+  // tie — but `<=` updates, so actually the LAST tied edge wins)
+  // gives a consistent choice. Either choice is fine for the split
+  // algorithm — both halves share that vertex regardless.
   let bestIdx = -1;
   let bestT = 0;
   let bestDist = tolPx;
