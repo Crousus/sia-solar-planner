@@ -27,7 +27,8 @@ import type {
   Point,
 } from '../types';
 import { STRING_COLORS } from '../types';
-import { panelDisplaySize, roofPrimaryAngle, rotatePoint } from '../utils/geometry';
+import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon } from '../utils/geometry';
+import { splitPolygon } from '../utils/polygonCut';
 
 /**
  * Short random-ish id. Good enough for a personal tool — we don't need
@@ -125,6 +126,12 @@ interface ProjectStore extends UIState {
   addRoof: (polygon: Point[]) => string;
   updateRoof: (id: string, changes: Partial<Roof>) => void;
   deleteRoof: (id: string) => void;
+  /** Split a roof along a polyline cut. No-op if the cut is invalid.
+   *  Panels all stay assigned to the original roofId; the half with
+   *  MORE panel centers inside it becomes the survivor (keeps id,
+   *  name, tilt, orientation). The other half becomes a new empty
+   *  roof. See ADR / design doc for rationale. */
+  splitRoof: (roofId: string, cutLine: Point[]) => void;
   addPanel: (
     roofId: string,
     cx: number,
@@ -275,6 +282,74 @@ export const useProjectStore = create<ProjectStore>()(
               panels: renumbered,
             },
             selectedRoofId: s.selectedRoofId === id ? null : s.selectedRoofId,
+          };
+        }),
+
+      // ── Split a roof into two by a polyline cut ────────────────────
+      // All panels stay on the original roofId (grouped). The half with
+      // MORE panel centers inside it becomes the original (keeps id,
+      // name, tilt, orientation). The other half is a brand-new empty
+      // roof. If `splitPolygon` rejects the cut (same-edge endpoints,
+      // interior vertex outside the polygon, degenerate result), this
+      // action is a no-op — callers in KonvaOverlay treat that the
+      // same as "polyline not committable yet".
+      //
+      // Edge-case: panels that geometrically fall inside the NEW half
+      // still keep `roofId = original`. They'll visually overlap the
+      // new roof's polygon. This is intentional per the design doc
+      // (Q3b); the user can move them manually if desired.
+      splitRoof: (roofId, cutLine) =>
+        set((s) => {
+          const roof = s.project.roofs.find((r) => r.id === roofId);
+          if (!roof) return s;
+          const result = splitPolygon(roof.polygon, cutLine);
+          if (!result) return s;
+          const [polyA, polyB] = result;
+
+          // Count panels in each half. Panels belong to this roofId
+          // (we filter first), and for each we test which half its
+          // center (cx, cy) falls into. Centers exactly on the cut
+          // line are rare and resolved by isInsidePolygon's
+          // unspecified-boundary behavior — good enough here.
+          const roofPanels = s.project.panels.filter((p) => p.roofId === roofId);
+          let countA = 0;
+          let countB = 0;
+          for (const p of roofPanels) {
+            if (isInsidePolygon({ x: p.cx, y: p.cy }, polyA)) countA++;
+            else if (isInsidePolygon({ x: p.cx, y: p.cy }, polyB)) countB++;
+          }
+
+          // Survivor selection: majority panel count wins. Ties broken
+          // by greater area so the "dominant" half visually keeps the
+          // id. If both have 0 panels AND equal area (essentially
+          // impossible in practice), A wins by default.
+          const areaA = polygonArea(polyA);
+          const areaB = polygonArea(polyB);
+          const aWins =
+            countA > countB ||
+            (countA === countB && areaA >= areaB);
+          const survivorPoly = aWins ? polyA : polyB;
+          const newPoly = aWins ? polyB : polyA;
+
+          // New roof inherits tilt + orientation, gets a fresh id and
+          // an auto-numbered name using the same pattern as `addRoof`.
+          const newId = uid();
+          const newRoof: Roof = {
+            id: newId,
+            name: `Roof ${s.project.roofs.length + 1}`,
+            polygon: newPoly,
+            tiltDeg: roof.tiltDeg,
+            panelOrientation: roof.panelOrientation,
+          };
+
+          const updatedRoofs = s.project.roofs.map((r) =>
+            r.id === roofId ? { ...r, polygon: survivorPoly } : r,
+          );
+          // Clear the cut-candidate marker on commit — the draw flow
+          // that created it is done with.
+          return {
+            project: { ...s.project, roofs: [...updatedRoofs, newRoof] },
+            splitCandidateRoofId: null,
           };
         }),
 
