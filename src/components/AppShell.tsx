@@ -26,19 +26,19 @@ import {
   BrowserRouter,
   Routes,
   Route,
-  Navigate,
-  useLocation,
 } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { UserRecord } from '../backend/types';
 import LoginPage from './LoginPage';
-// The page components below are created in Tasks 8 & 9 — imports are
-// left commented until then so each task's commit builds cleanly.
-// import TeamPicker from './TeamPicker';
-// import NewTeamPage from './NewTeamPage';
-// import TeamView from './TeamView';
-// import TeamMembers from './TeamMembers';
-// import ProjectEditor from './ProjectEditor';
+import AuthGuard from './AuthGuard';
+import TeamPicker from './TeamPicker';
+import NewTeamPage from './NewTeamPage';
+import TeamView from './TeamView';
+import TeamMembers from './TeamMembers';
+// ProjectEditor lands in Task 9 — /p/:projectId is intentionally absent
+// from <Routes> until then, so attempts to navigate there will fall
+// through to the router's no-match (404) behavior rather than render
+// an undefined component.
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -69,37 +69,12 @@ export default function AppShell() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        {/*
-          Tasks 8 & 9 add:
-            <Route path="/" element={<AuthGuard><TeamPicker/></AuthGuard>} />
-            <Route path="/teams/new" ... />
-            <Route path="/teams/:teamId" ... />
-            <Route path="/teams/:teamId/members" ... />
-            <Route path="/p/:projectId" ... />
-        */}
-        <Route path="*" element={<PlaceholderRoot />} />
+        <Route path="/" element={<AuthGuard><TeamPicker /></AuthGuard>} />
+        <Route path="/teams/new" element={<AuthGuard><NewTeamPage /></AuthGuard>} />
+        <Route path="/teams/:teamId" element={<AuthGuard><TeamView /></AuthGuard>} />
+        <Route path="/teams/:teamId/members" element={<AuthGuard><TeamMembers /></AuthGuard>} />
+        {/* /p/:projectId lands in Task 9 */}
       </Routes>
     </BrowserRouter>
-  );
-}
-
-// Placeholder for the root route until TeamPicker lands in Task 8.
-// Makes the build pass and gives a visible "logged in, go build UI" hint.
-// Also exercises the auth-redirect flow end-to-end so we can manually
-// verify Login → bounce-back works before TeamPicker exists.
-function PlaceholderRoot() {
-  const user = useAuthUser();
-  const location = useLocation();
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
-  return (
-    <div className="p-6">
-      <p>Signed in as {user.email}. Team picker coming in Task 8.</p>
-      <button
-        className="mt-3 underline"
-        onClick={() => pb.authStore.clear()}
-      >
-        Sign out
-      </button>
-    </div>
   );
 }
