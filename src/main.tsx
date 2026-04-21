@@ -1,6 +1,11 @@
 // ────────────────────────────────────────────────────────────────────────────
 // App entry point.
 //
+// We now render an <AppShell/> with a BrowserRouter rather than a bare
+// <App/>. App.tsx is still the editor body but is rendered via the
+// router at /p/:projectId (see AppShell + ProjectEditor) — wiring lands
+// in Tasks 8 & 9.
+//
 // StrictMode is on — helps surface double-effect bugs early. It does NOT
 // break Konva or Leaflet in our usage (components are idempotent on mount).
 //
@@ -11,12 +16,12 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
+import AppShell from './components/AppShell';
 import 'leaflet/dist/leaflet.css';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <AppShell />
   </React.StrictMode>
 );
