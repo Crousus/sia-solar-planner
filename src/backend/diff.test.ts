@@ -75,6 +75,12 @@ describe('diff round-trip', () => {
     expect(JSON.stringify(a)).toEqual(snapshot);
   });
 
+  it('throws on a malformed op', () => {
+    expect(() =>
+      applyProjectPatch(fixture(), [{ op: 'replace', path: '/nonexistent/deep', value: 1 }]),
+    ).toThrow();
+  });
+
   it('handles large captured image field without blowing up', () => {
     const a = fixture();
     const b = fixture();

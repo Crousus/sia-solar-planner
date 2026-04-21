@@ -13,32 +13,24 @@
 //   diffProjects(a, b) -> Operation[]        // a → b transform
 //   applyProjectPatch(doc, ops) -> Project   // doc with ops applied
 //
-// Both deep-clone their inputs before acting (fast-json-patch mutates by
-// default when given arrays). The safety cost is a structuredClone per
-// call; negligible for our sizes (< 100 KB typical project).
+// applyProjectPatch clones its input before acting (fast-json-patch can
+// mutate documents in place depending on flags). diffProjects does not
+// clone — see the comment inside for the rationale.
 // ────────────────────────────────────────────────────────────────────────
 
-import jsonpatch from 'fast-json-patch';
-import type { Operation } from 'fast-json-patch';
+import { compare, applyPatch as fastApplyPatch, type Operation } from 'fast-json-patch';
 import type { Project } from '../types';
-
-// fast-json-patch ships as a CJS module with a default export bag of
-// functions (`compare`, `applyPatch`, …). Under our ESM/bundler setup
-// the named imports resolve to `undefined` at runtime even though the
-// type declarations advertise them — so we destructure off the default
-// export. The shape is identical, just one indirection. If we ever
-// switch to a fully ESM-native patch library (e.g. `rfc6902`), this
-// destructuring goes away in the same edit.
-const { compare, applyPatch: fastApplyPatch } = jsonpatch;
 
 export type Op = Operation;
 
 /** Produce a patch that transforms `a` into `b`. */
 export function diffProjects(a: Project, b: Project): Op[] {
-  // compare() does NOT mutate its inputs, so cloning is unnecessary here.
-  // We rely on that contract rather than paying for a clone we don't need:
-  // diffs run on every store change in the sync client and adding a
-  // structuredClone per call would noticeably tax that hot path.
+  // Note: the plan proposed cloning here defensively to insulate against
+  // future lib changes. We skip it — diff is called on every store change
+  // in the sync client, and a structuredClone per call is measurable on
+  // larger projects. compare() has a stable documented no-mutation
+  // contract; if we ever swap libraries and that contract weakens, we
+  // add the clone then.
   return compare(a as unknown as object, b as unknown as object);
 }
 
@@ -63,5 +55,5 @@ export function applyProjectPatch(doc: Project, ops: Op[]): Project {
     /* validate */ true,
     /* mutate */ false,
   );
-  return result.newDocument as Project;
+  return result.newDocument;
 }
