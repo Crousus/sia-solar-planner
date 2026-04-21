@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useProjectStore } from './projectStore';
+import type { UndoableSlice } from './undoMiddleware';
 
 describe('projectStore undo/redo integration', () => {
   beforeEach(() => {
@@ -65,5 +66,48 @@ describe('projectStore undo/redo integration', () => {
     const pastAfter = useProjectStore.getState().past.length;
     // Two calls within the 500ms window with the same stringId collapse into one step.
     expect(pastAfter - pastBefore).toBe(1);
+  });
+});
+
+describe('loadProject/resetProject history behavior', () => {
+  it('resetProject clears past and future', () => {
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    expect(useProjectStore.getState().past.length).toBeGreaterThan(0);
+    useProjectStore.getState().resetProject();
+    expect(useProjectStore.getState().past).toEqual([]);
+    expect(useProjectStore.getState().future).toEqual([]);
+  });
+
+  it('loadProject(project) leaves history empty when no history argument given', () => {
+    const initial = useProjectStore.getState().project;
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    useProjectStore.getState().loadProject(initial);
+    expect(useProjectStore.getState().past).toEqual([]);
+    expect(useProjectStore.getState().future).toEqual([]);
+  });
+
+  it('loadProject(project, {past, future}) restores both stacks', () => {
+    const initial = useProjectStore.getState().project;
+    // The strict `PanelType` interface doesn't structurally satisfy the
+    // slice's looser `{ id: string } & Record<string, unknown>` constraint
+    // (interfaces lack the implicit string index signature that type aliases
+    // gain), so we cast through `unknown` to `UndoableSlice` — the runtime
+    // shape matches exactly and the middleware treats slices as opaque
+    // blobs anyway. This is a test-only concession, not a real-code code-smell.
+    const fakeSlice = {
+      name: 'old',
+      panelType: initial.panelType,
+      roofs: [],
+      panels: [],
+      strings: [],
+      inverters: [],
+    } as unknown as UndoableSlice;
+    useProjectStore.getState().loadProject(initial, { past: [fakeSlice], future: [fakeSlice] });
+    expect(useProjectStore.getState().past.length).toBe(1);
+    expect(useProjectStore.getState().future.length).toBe(1);
   });
 });

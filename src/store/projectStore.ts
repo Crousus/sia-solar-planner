@@ -191,7 +191,7 @@ interface ProjectStore extends UIState, HistoryState {
   setSplitCandidateRoof: (id: string | null) => void;
   setMapProvider: (provider: 'esri' | 'bayern' | 'bayern_alkis') => void;
   toggleBackground: () => void;
-  loadProject: (p: Project) => void;
+  loadProject: (p: Project, history?: { past: UndoableSlice[]; future: UndoableSlice[] }) => void;
   resetProject: () => void;
 }
 
@@ -1056,7 +1056,21 @@ export const useProjectStore = create<ProjectStore>()(
       // ── Persistence entry points ────────────────────────────────────────
       // loadProject: replace everything. Resets ephemeral UI state because
       // the loaded project's ids may not match current selection/activeString.
-      loadProject: (p) =>
+      //
+      // `history` is OPTIONAL because the JSON import format is versioned:
+      // legacy (v1) exports — written before Task 11 added undo/redo —
+      // carry no history, so callers omit the argument and we start fresh
+      // with empty stacks. Newer (v2) exports, produced by the upcoming
+      // Task 17 serialization work, will round-trip the past/future
+      // slices so loading a project preserves the user's undo history
+      // across a save-and-reopen cycle. Either way we ALSO explicitly
+      // reset `lastActionSig` and recompute the `canUndo`/`canRedo`
+      // mirrors here: zustand's partial-merge semantics mean any field
+      // we don't mention would keep its pre-load value, which for a
+      // fresh project would leave an armed "Undo" button pointing at
+      // stale history — exactly the clear-history-policy bug that Task
+      // 13 fixes for `resetProject` below.
+      loadProject: (p, history) => {
         set(
           {
             project: p,
@@ -1065,10 +1079,28 @@ export const useProjectStore = create<ProjectStore>()(
             activeStringId: null,
             selectedInverterId: null,
             activePanelGroupId: null,
+            past: history?.past ?? [],
+            future: history?.future ?? [],
+            lastActionSig: null,
+            canUndo: (history?.past?.length ?? 0) > 0,
+            canRedo: (history?.future?.length ?? 0) > 0,
           },
           false,
           'loadProject',
-        ),
+        );
+      },
+      // resetProject is semantically a "clear-history" action: the entire
+      // project goes back to its initial blank state, so any history
+      // entries referring to the prior project become nonsense (their
+      // slices quote roofs/panels/strings/inverters that no longer
+      // exist). We MUST include `past: []` / `future: []` (and the
+      // matching `lastActionSig` / canUndo / canRedo resets) in the
+      // set() payload explicitly — the `undoable` middleware's
+      // clear-history policy is a pass-through that does NOT inject
+      // these fields itself; without them zustand's partial-merge would
+      // keep the old stacks alive and beforeEach-style test isolation
+      // (plus the "New Project" button in the UI) would leak history
+      // from the previous session into the fresh one.
       resetProject: () =>
         set(
           {
@@ -1078,6 +1110,11 @@ export const useProjectStore = create<ProjectStore>()(
             activeStringId: null,
             selectedInverterId: null,
             activePanelGroupId: null,
+            past: [],
+            future: [],
+            lastActionSig: null,
+            canUndo: false,
+            canRedo: false,
           },
           false,
           'resetProject',
