@@ -22,9 +22,9 @@
 import { useState } from 'react';
 import { Group, Line, Circle, Text, Path } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
-import { polygonCentroid, simplifyCollinear } from '../utils/geometry';
+import { polygonCentroid } from '../utils/geometry';
 import { GUIDE_STYLE, type SnapGuide } from '../utils/drawingSnap';
-import { findSharedEdge } from '../utils/polygonCut';
+import { computeEdgeRemoval, findMergeCandidate } from '../utils/roofEditing';
 import type { Point, Roof } from '../types';
 
 interface Props {
@@ -302,26 +302,22 @@ export default function RoofLayer({
                       // Delete-mode edge click.
                       //
                       // Semantics by edge type:
-                      //   1. Shared edge (this edge is geometrically
-                      //      coincident with another roof's edge) →
-                      //      MERGE the two roofs. Inverse of the split
-                      //      operation; mirrors the existing right-click-
-                      //      in-draw-roof-mode merge flow, reused here so
+                      //   1. Shared edge (geometrically coincident with
+                      //      another roof's edge) → MERGE the two roofs.
+                      //      Inverse of the split operation; mirrors the
+                      //      right-click merge flow in draw-roof mode so
                       //      delete mode has a single "click this thing
                       //      to remove it" affordance regardless of
                       //      whether the edge is internal or boundary.
                       //
                       //   2. Boundary edge (unique to this roof) →
-                      //      REMOVE the edge by collapsing its two
-                      //      endpoints into their midpoint. Net: -1
-                      //      vertex, -1 edge. The "pinch" gives a
-                      //      symmetric, predictable result (the user's
-                      //      edge literally vanishes to a point at its
-                      //      middle). If the resulting polygon would
-                      //      have <3 vertices, fall back to deleting
-                      //      the whole roof — per user spec: "the roof
-                      //      can be deleted if this results in an
-                      //      invalid roof".
+                      //      REMOVE via trim-to-intersection (see
+                      //      computeEdgeRemoval in utils/roofEditing.ts).
+                      //      Net: -1 vertex, -1 edge. If the result
+                      //      would be degenerate (<3 vertices), fall
+                      //      back to deleting the whole roof — per user
+                      //      spec: "the roof can be deleted if this
+                      //      results in an invalid roof".
                       //
                       // cancelBubble so the click doesn't also trigger
                       // the roof-fill onClick (sibling Line with
@@ -331,13 +327,9 @@ export default function RoofLayer({
                       // ─────────────────────────────────────────────────
                       e.cancelBubble = true;
 
-                      // Try merge first. findSharedEdge walks the full
-                      // edge ring of each candidate, so we don't need to
-                      // filter by which edge index — any match wins.
-                      const other = roofs.find((candidate) => {
-                        if (candidate.id === roof.id) return false;
-                        return findSharedEdge(roof.polygon, candidate.polygon) !== null;
-                      });
+                      // Try merge first — any shared edge with any other
+                      // roof wins, not just the clicked one.
+                      const other = findMergeCandidate(roof, roofs);
                       if (other) {
                         // Panel-preservation confirm, matching the
                         // right-click merge path. Silent for empty
@@ -357,128 +349,17 @@ export default function RoofLayer({
                         return;
                       }
 
-                      // Boundary edge: collapse endpoints to midpoint.
-                      const n = roof.polygon.length;
-                      if (n - 1 < 3) {
-                        // Degenerate result → delete the whole roof.
-                        // Uses the same confirm text as the roof-fill
-                        // delete path so users see a consistent
-                        // destructive prompt.
+                      // Boundary edge: trim-to-intersection removal.
+                      const result = computeEdgeRemoval(roof.polygon, i);
+                      if (result.kind === 'degenerate') {
+                        // Matching confirm text with the roof-fill delete
+                        // path so users see a consistent destructive prompt.
                         if (confirm(`Delete ${roof.name} and all its panels?`)) {
                           deleteRoof(roof.id);
                         }
                         return;
                       }
-                      // ── Replacement vertex: TRIM-TO-INTERSECTION ──
-                      // Rather than collapsing the two endpoints to
-                      // their midpoint (which shortens the adjacent
-                      // edges and leaves a dent), extend the two
-                      // neighbor edges as infinite lines and use their
-                      // intersection as the single replacement vertex.
-                      // This preserves the DIRECTION of each adjacent
-                      // edge — the user's mental model is "this side
-                      // and that side, extended until they meet" — and
-                      // the adjacent edges' lengths recalculate
-                      // naturally from the new corner position. For a
-                      // typical notched rectangle this restores the
-                      // sharp corner the user probably wanted when
-                      // they drew the notch by accident.
-                      //
-                      // Line equations:
-                      //   prev edge direction d1 = p1 - prev
-                      //   next edge direction d2 = nextV - p2
-                      // Parametric intersection of
-                      //   prev + t·d1 = p2 + s·d2
-                      // Cross product of d1,d2 is the determinant; t
-                      // solves via the standard 2D line-line formula.
-                      //
-                      // Fallbacks (both use midpoint — simple and
-                      // always safe):
-                      //   (a) Near-parallel neighbors (sin(angle) <
-                      //       ~1°): intersection is at infinity or
-                      //       wildly far, midpoint is the sane
-                      //       approximation.
-                      //   (b) Intersection is absurdly distant from
-                      //       the deleted edge (>8× edge length):
-                      //       neighbors converge but very gradually,
-                      //       which projects a spike far outside the
-                      //       polygon and usually flips it inside-
-                      //       out. Midpoint keeps the shape sane.
-                      const prev = roof.polygon[(i - 1 + n) % n];
-                      const nextV = roof.polygon[(i + 2) % n];
-                      const d1x = p1.x - prev.x;
-                      const d1y = p1.y - prev.y;
-                      const d2x = nextV.x - p2.x;
-                      const d2y = nextV.y - p2.y;
-                      const cross = d1x * d2y - d1y * d2x;
-                      const d1Len = Math.hypot(d1x, d1y);
-                      const d2Len = Math.hypot(d2x, d2y);
-                      const sinAngle =
-                        d1Len > 0 && d2Len > 0
-                          ? Math.abs(cross) / (d1Len * d2Len)
-                          : 0;
-                      const edgeLen = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-
-                      let replacement: Point;
-                      if (sinAngle < 0.02) {
-                        // (a) Near-parallel → midpoint fallback.
-                        replacement = {
-                          x: (p1.x + p2.x) / 2,
-                          y: (p1.y + p2.y) / 2,
-                        };
-                      } else {
-                        const t =
-                          ((p2.x - prev.x) * d2y - (p2.y - prev.y) * d2x) /
-                          cross;
-                        const cx = prev.x + t * d1x;
-                        const cy = prev.y + t * d1y;
-                        // (b) Sanity: intersection shouldn't be
-                        // absurdly far from the edge we're removing.
-                        const midX = (p1.x + p2.x) / 2;
-                        const midY = (p1.y + p2.y) / 2;
-                        const distToMid = Math.hypot(cx - midX, cy - midY);
-                        if (distToMid > edgeLen * 8) {
-                          replacement = { x: midX, y: midY };
-                        } else {
-                          replacement = { x: cx, y: cy };
-                        }
-                      }
-
-                      // Build the new ring: at index i push the
-                      // replacement, skip index (i+1) % n, keep
-                      // everything else. Works for the wrap case
-                      // (i === n-1) because we skip index 0 and emit
-                      // replacement at the tail — the ring is
-                      // rotationally symmetric so starting index
-                      // doesn't matter.
-                      const out: Point[] = [];
-                      for (let k = 0; k < n; k++) {
-                        if (k === i) out.push(replacement);
-                        else if (k === (i + 1) % n) continue;
-                        else out.push(roof.polygon[k]);
-                      }
-                      // Collinearity cleanup:
-                      // The midpoint we just inserted often lands on
-                      // (or near) the straight line through the
-                      // adjacent vertices — most obviously when the
-                      // deleted edge was a short jog in an otherwise-
-                      // straight boundary. Without cleanup, what the
-                      // user perceives as "one long edge" stays split
-                      // into multiple edges, showing multiple length
-                      // labels (30.7m + 18.1m instead of 48.8m) and
-                      // giving ghostly extra hit regions. simplifyCollinear
-                      // walks the ring once and drops any vertex within
-                      // a tight perpendicular tolerance of the line
-                      // through its neighbors, restoring the clean
-                      // single-edge topology.
-                      //
-                      // Safety: simplifyCollinear never shrinks below
-                      // 3 vertices, so we can't accidentally degenerate
-                      // the polygon via cleanup. If cleanup returns
-                      // exactly the same ring, updateRoof is a no-op
-                      // diff and nothing downstream reacts — cheap.
-                      const cleaned = simplifyCollinear(out);
-                      updateRoof(roof.id, { polygon: cleaned });
+                      updateRoof(roof.id, { polygon: result.polygon });
                     } : undefined}
                     onContextMenu={editHandlesVisible ? (e) => {
                       // Right-click on an edge in draw-roof mode attempts
@@ -496,13 +377,9 @@ export default function RoofLayer({
                       e.cancelBubble = true;
 
                       // Look for any OTHER roof that shares any edge
-                      // with this one. findSharedEdge walks ALL of each
-                      // polygon's edges, so we just call it per
-                      // candidate roof and accept the first match.
-                      const other = roofs.find((candidate) => {
-                        if (candidate.id === roof.id) return false;
-                        return findSharedEdge(roof.polygon, candidate.polygon) !== null;
-                      });
+                      // with this one (findMergeCandidate walks all
+                      // polygon edges for each candidate).
+                      const other = findMergeCandidate(roof, roofs);
                       if (!other) return;
 
                       // Confirm if either roof has panels (destructive-
