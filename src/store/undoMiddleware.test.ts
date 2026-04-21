@@ -5,6 +5,8 @@ import {
   buildSlice,
   cleanUiRefs,
   setCoalesceKey,
+  applyUndo,
+  applyRedo,
   type HistoryState,
   type UndoableSlice,
 } from './undoMiddleware';
@@ -333,6 +335,73 @@ describe('coalescing', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('applyUndo / applyRedo', () => {
+  const baseSlice = (name: string): UndoableSlice => ({
+    name,
+    panelType: { id: 'pt' },
+    roofs: [],
+    panels: [],
+    strings: [],
+    inverters: [],
+  });
+
+  it('applyUndo pops past → pushes current onto future → returns restored slice', () => {
+    const state = {
+      past: [baseSlice('v1'), baseSlice('v2')],
+      future: [] as UndoableSlice[],
+      lastActionSig: { action: 'x', key: null, at: 0 },
+      project: {
+        name: 'current',
+        panelType: { id: 'pt' },
+        roofs: [],
+        panels: [],
+        strings: [],
+        inverters: [],
+        mapState: { locked: true },
+      },
+      selectedRoofId: null,
+      activeStringId: null,
+      selectedInverterId: null,
+      activePanelGroupId: null,
+      splitCandidateRoofId: null,
+    };
+    const next = applyUndo(state as any);
+    expect(next).not.toBeNull();
+    expect(next!.project.name).toBe('v2');
+    expect(next!.project.mapState).toEqual({ locked: true }); // mapState preserved
+    expect(next!.past.length).toBe(1);
+    expect(next!.future.length).toBe(1);
+    expect(next!.future[0].name).toBe('current');
+    expect(next!.lastActionSig).toBeNull();
+  });
+
+  it('applyUndo returns null when past is empty', () => {
+    const state = {
+      past: [] as UndoableSlice[],
+      future: [] as UndoableSlice[],
+      lastActionSig: null,
+      project: { name: 'x', panelType: { id: 'pt' }, roofs: [], panels: [], strings: [], inverters: [], mapState: {} },
+      selectedRoofId: null, activeStringId: null, selectedInverterId: null, activePanelGroupId: null, splitCandidateRoofId: null,
+    };
+    expect(applyUndo(state as any)).toBeNull();
+  });
+
+  it('applyRedo pops future → pushes current onto past → returns restored slice', () => {
+    const state = {
+      past: [] as UndoableSlice[],
+      future: [baseSlice('redo-target')],
+      lastActionSig: null,
+      project: { name: 'current', panelType: { id: 'pt' }, roofs: [], panels: [], strings: [], inverters: [], mapState: {} },
+      selectedRoofId: null, activeStringId: null, selectedInverterId: null, activePanelGroupId: null, splitCandidateRoofId: null,
+    };
+    const next = applyRedo(state as any);
+    expect(next).not.toBeNull();
+    expect(next!.project.name).toBe('redo-target');
+    expect(next!.past.length).toBe(1);
+    expect(next!.future.length).toBe(0);
   });
 });
 

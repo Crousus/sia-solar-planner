@@ -227,6 +227,140 @@ export function cleanUiRefs(ui: UiRefs, slice: UndoableSlice): UiRefs {
   };
 }
 
+/**
+ * Pure "apply undo" function. Computes the next (partial) state given the
+ * current state; returns null when there is no undo to perform.
+ *
+ * Why split this out as a pure function rather than inlining inside the store
+ * action: the store action will be a thin wrapper — `const next = applyUndo(get());
+ * if (next) set(next, false, 'undo');` — and that wrapper is trivially correct
+ * by inspection. All the real logic (stack manipulation, slice restoration,
+ * UI-ref cleaning, signature reset) lives here, where we can exercise it in
+ * isolation without spinning up a zustand store or worrying about the
+ * middleware's coalescing/policy branches. Pure in → pure out → cheap tests.
+ *
+ * Returns `Partial<S>` because the caller (the store's `undo` action) will
+ * pass it into `set(next, false, 'undo')`. Zustand's partial-merge semantics
+ * apply the returned fields on top of current state; anything we omit (UI
+ * fields we're not touching, middleware-internal fields like `_pendingCoalesce`)
+ * stays as-is.
+ *
+ * Classified as 'bypass' in ACTION_POLICY — the middleware therefore does NOT
+ * re-snapshot this set(), which is exactly what we want: undo directly
+ * manipulates past/future, it must not push an entry about itself.
+ */
+export function applyUndo<
+  S extends HistoryState & {
+    project: any;
+  } & UiRefs,
+>(state: S): Partial<S> | null {
+  // Nothing to undo — signal "no-op" to the caller via null so it can skip
+  // the set() entirely (no listener notification for a non-event).
+  if (state.past.length === 0) return null;
+
+  // Pop the tail of `past` — that's the most recent "state we can return to".
+  // Slice-copy rather than mutating in place so the pre-undo array reference
+  // is still intact for any consumer that captured it (React selectors, etc.).
+  const prev = state.past[state.past.length - 1];
+  const newPast = state.past.slice(0, -1);
+
+  // Capture the CURRENT project into a slice so redo can restore it. This is
+  // symmetric with the record path: pushing onto `future` is the mirror image
+  // of pushing the "before" snapshot onto `past` during a normal mutation.
+  const currentSlice = buildSlice(state.project);
+
+  // Clean any UI refs that would dangle against the restored slice. Same
+  // defensive sweep used elsewhere — a selectedRoofId pointing to a roof
+  // that doesn't exist in the pre-undo slice must be nulled, otherwise the
+  // UI would render "selection" highlights against an id no selector can
+  // resolve.
+  const cleaned = cleanUiRefs(
+    {
+      selectedRoofId: state.selectedRoofId,
+      activeStringId: state.activeStringId,
+      selectedInverterId: state.selectedInverterId,
+      activePanelGroupId: state.activePanelGroupId,
+      splitCandidateRoofId: state.splitCandidateRoofId,
+    },
+    prev,
+  );
+
+  return {
+    past: newPast,
+    // Pushing onto `future` (not prepending) keeps "newest-at-tail" ordering
+    // consistent with `past`; applyRedo pops from the tail, which is the
+    // mirror of how we pop past here.
+    future: [...state.future, currentSlice],
+    // Reset lastActionSig so the first mutation AFTER an undo always starts
+    // a fresh history step — users expect "type, undo, type" to produce
+    // three independent history positions. If we left `lastActionSig`
+    // pointing at whatever the pre-undo signature was, a post-undo edit
+    // of the same action+key within 500ms would silently coalesce into the
+    // restored snapshot, making the two edits indistinguishable on a later
+    // undo. Nulling here forces the next record-path call through the
+    // "no previous sig → push" branch.
+    lastActionSig: null,
+    // Critical subtlety: spread `state.project` first, then overlay `prev`.
+    // `prev` is an UndoableSlice — by construction it has NO `mapState` key
+    // (see buildSlice's spec §3.4 exclusion). So the spread order means:
+    //   1. `...state.project` brings in EVERY current field, including
+    //      `mapState` (captured image, lock flag, …).
+    //   2. `...prev` overwrites only the undoable fields (name, panelType,
+    //      roofs, panels, strings, inverters).
+    //   → `mapState` survives untouched.
+    // This is load-bearing for the spec: undoing a panel edit must NOT
+    // resurrect a previous captured-image or flip the map lock.
+    project: { ...state.project, ...prev },
+    ...cleaned,
+  } as Partial<S>;
+}
+
+/**
+ * Pure "apply redo" — symmetric to applyUndo. Pops `future`, pushes the
+ * current slice onto `past`, restores the project, cleans dangling UI refs,
+ * resets `lastActionSig` for the same reason as applyUndo.
+ *
+ * Returns null when there's nothing to redo (e.g., the user never undid, or
+ * a new mutation since the last undo cleared `future`).
+ */
+export function applyRedo<
+  S extends HistoryState & {
+    project: any;
+  } & UiRefs,
+>(state: S): Partial<S> | null {
+  if (state.future.length === 0) return null;
+
+  const next = state.future[state.future.length - 1];
+  const newFuture = state.future.slice(0, -1);
+  // Snapshot the CURRENT project onto past — mirror of how applyUndo pushes
+  // the current slice onto future. After redo, a subsequent undo will pop
+  // this snapshot back, restoring the pre-redo state.
+  const currentSlice = buildSlice(state.project);
+
+  const cleaned = cleanUiRefs(
+    {
+      selectedRoofId: state.selectedRoofId,
+      activeStringId: state.activeStringId,
+      selectedInverterId: state.selectedInverterId,
+      activePanelGroupId: state.activePanelGroupId,
+      splitCandidateRoofId: state.splitCandidateRoofId,
+    },
+    next,
+  );
+
+  return {
+    past: [...state.past, currentSlice],
+    future: newFuture,
+    // Same rationale as applyUndo: a post-redo edit must begin a fresh
+    // coalesce window, not silently merge into the restored snapshot.
+    lastActionSig: null,
+    // Same spread-order subtlety as applyUndo: `state.project` first
+    // (keeps mapState), then `next` overlays the undoable slice fields.
+    project: { ...state.project, ...next },
+    ...cleaned,
+  } as Partial<S>;
+}
+
 // --- Type plumbing to widen set() to accept an action-name 3rd arg ---
 // Mirror of zustand/middleware/devtools.d.ts internal helpers. These are
 // local (not re-exported) because they're implementation detail of the
