@@ -24,6 +24,7 @@ import { Group, Line, Circle, Text, Path } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { polygonCentroid } from '../utils/geometry';
 import { GUIDE_STYLE, type SnapGuide } from '../utils/drawingSnap';
+import { findSharedEdge } from '../utils/polygonCut';
 import type { Point, Roof } from '../types';
 
 interface Props {
@@ -55,6 +56,7 @@ export default function RoofLayer({
   const toolMode = useProjectStore((s) => s.toolMode);
   const deleteRoof = useProjectStore((s) => s.deleteRoof);
   const updateRoof = useProjectStore((s) => s.updateRoof);
+  const mergeRoofs = useProjectStore((s) => s.mergeRoofs);
 
   const drawing = toolMode === 'draw-roof' && drawingPoints.length > 0;
 
@@ -246,6 +248,49 @@ export default function RoofLayer({
                     stroke="transparent"
                     strokeWidth={hitRadius * 2}
                     draggable={editHandlesVisible}
+                    onContextMenu={editHandlesVisible ? (e) => {
+                      // Right-click on an edge in draw-roof mode attempts
+                      // a merge. If the clicked edge happens to be
+                      // geometrically shared with another roof's edge
+                      // (within tolerance), we fire mergeRoofs. If not,
+                      // no-op — a future enhancement could surface a
+                      // toast, but per YAGNI we stay silent.
+                      //
+                      // preventDefault stops the browser's context menu;
+                      // cancelBubble stops Stage's onContextMenu from
+                      // also firing (it already no-ops, but belt-and-
+                      // suspenders against future changes).
+                      e.evt.preventDefault();
+                      e.cancelBubble = true;
+
+                      // Look for any OTHER roof that shares any edge
+                      // with this one. findSharedEdge walks ALL of each
+                      // polygon's edges, so we just call it per
+                      // candidate roof and accept the first match.
+                      const other = roofs.find((candidate) => {
+                        if (candidate.id === roof.id) return false;
+                        return findSharedEdge(roof.polygon, candidate.polygon) !== null;
+                      });
+                      if (!other) return;
+
+                      // Confirm if either roof has panels (destructive-
+                      // adjacent — panels will get reassigned and the
+                      // smaller roof will vanish). Silent for empty
+                      // roofs where the user clearly just wants the
+                      // geometry change.
+                      const state = useProjectStore.getState();
+                      const hasPanels = state.project.panels.some(
+                        (p) => p.roofId === roof.id || p.roofId === other.id,
+                      );
+                      if (hasPanels) {
+                        const ok = window.confirm(
+                          `Merge "${roof.name}" and "${other.name}"? Panels will be reassigned to the larger roof.`,
+                        );
+                        if (!ok) return;
+                      }
+
+                      mergeRoofs(roof.id, other.id);
+                    } : undefined}
                     onDragStart={editHandlesVisible ? (e) => {
                       e.cancelBubble = true;
                       const stage = e.target.getStage();
