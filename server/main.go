@@ -31,17 +31,44 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	_ "github.com/pocketbase/pocketbase/migrations"
+	"github.com/pocketbase/pocketbase/plugins/jsvm"
+	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 )
 
 func main() {
 	app := pocketbase.New()
 
-	// `automigrate: true` on the default migrate runner auto-applies any
-	// JS file in ./pb_migrations on boot. We want this in prod too — the
-	// server is single-node and migrations are authored by us, not
-	// user-submitted. The `--automigrate` flag is also accepted as a CLI
-	// override, but baking it into code prevents an operator from starting
-	// the server without it and producing a schema-less SQLite.
+	// Wire up the jsvm plugin so PocketBase picks up our JS migrations in
+	// ./pb_migrations (and JS hooks in ./pb_hooks, should we ever add any).
+	//
+	// Why this is needed:
+	//   The stock `./pocketbase` binary (examples/base/main.go in the
+	//   PocketBase repo) registers this automatically, so most users never
+	//   see this step. Custom builds — which we need for our /api/sp/patch
+	//   route and Go-side hooks — do NOT get it for free; without this
+	//   call, our JS migrations simply never execute and the SQLite file
+	//   ends up with only the built-in collections (users, _superusers,
+	//   …). The blank `_ "…/migrations"` import only registers Go-code
+	//   migrations, NOT the JS files.
+	//
+	// Defaults we rely on:
+	//   - MigrationsDir resolves to <data>/../pb_migrations → ./pb_migrations
+	//   - HooksDir resolves to <data>/../pb_hooks → ./pb_hooks
+	//   Both live next to the binary in our deploy layout, so defaults fit.
+	jsvm.MustRegister(app, jsvm.Config{})
+
+	// Register the migrate command with JS templates + automigrate so that
+	// `./pocketbase serve` applies any pending JS migration on boot. The
+	// stock binary also does this in examples/base/main.go. We want this
+	// in prod too — the server is single-node and migrations are authored
+	// by us, not user-submitted. Baking Automigrate:true into code
+	// prevents an operator from starting the server without it and
+	// producing a schema-less SQLite.
+	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
+		TemplateLang: migratecmd.TemplateLangJS,
+		Automigrate:  true,
+	})
+
 	app.OnServe().BindFunc(func(e *core.ServeEvent) error {
 		handlers.RegisterRoutes(app, e)
 		return e.Next()

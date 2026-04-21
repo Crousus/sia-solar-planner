@@ -30,20 +30,23 @@ migrate((app) => {
   users.viewRule = '@request.auth.id != ""';
   app.save(users);
 
-  // ── teams
+  // ── teams + team_members
+  //
+  // Circular rule references:
+  //   The `teams` list/view/update/delete rules cross-reference
+  //   `@collection.team_members`, and vice versa. PocketBase validates
+  //   rule expressions at save-time and will refuse to save a rule that
+  //   names a collection that doesn't exist yet. So we do a two-pass:
+  //     1. create both collections with EMPTY rules (access fully locked
+  //        down — only server code can touch them, which is safe during
+  //        migration).
+  //     2. set the real rules and re-save once both exist.
+
+  // ── teams (pass 1 — no rules yet)
   const teams = new Collection({
     type: 'base',
     name: 'teams',
-    // listRule: only teams the user is a member of.
-    // viewRule: same.
-    // createRule: any authenticated user (they become admin via hook).
-    // updateRule: only admins of this team.
-    // deleteRule: only admins of this team.
-    listRule: "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id",
-    viewRule: "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id",
-    createRule: "@request.auth.id != ''",
-    updateRule: "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
-    deleteRule: "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
+    // Rules filled in pass 2 below.
     fields: [
       { name: 'name', type: 'text', required: true, min: 1, max: 100 },
       { name: 'created_by', type: 'relation', required: true, collectionId: users.id, cascadeDelete: false, maxSelect: 1 },
@@ -51,23 +54,11 @@ migrate((app) => {
   });
   app.save(teams);
 
-  // ── team_members
+  // ── team_members (pass 1 — no rules yet)
   const teamMembers = new Collection({
     type: 'base',
     name: 'team_members',
-    // listRule: members of the same team can see each other.
-    //   `@request.auth.id != ""` gate first (cheap) then a self-join via
-    //   @collection.team_members (PocketBase supports this pattern).
-    // viewRule: same.
-    // createRule: admins only. Checked via the role of the CALLER'S row
-    //   in the same team. Note the distinct alias `tm` to avoid binding
-    //   to the row being created.
-    // updateRule / deleteRule: admins only.
-    listRule: "@request.auth.id != '' && team.id ?= @collection.team_members.team",
-    viewRule: "@request.auth.id != '' && team.id ?= @collection.team_members.team",
-    createRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
-    updateRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
-    deleteRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
+    // Rules filled in pass 2 below.
     fields: [
       { name: 'team', type: 'relation', required: true, collectionId: teams.id, cascadeDelete: true, maxSelect: 1 },
       { name: 'user', type: 'relation', required: true, collectionId: users.id, cascadeDelete: true, maxSelect: 1 },
@@ -78,6 +69,36 @@ migrate((app) => {
       'CREATE UNIQUE INDEX idx_team_members_team_user ON team_members (team, user)',
     ],
   });
+  app.save(teamMembers);
+
+  // ── pass 2: now that both collections exist, install the cross-
+  // referencing access rules.
+  //
+  // teams:
+  //   listRule: only teams the user is a member of.
+  //   viewRule: same.
+  //   createRule: any authenticated user (they become admin via hook).
+  //   updateRule: only admins of this team.
+  //   deleteRule: only admins of this team.
+  teams.listRule = "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id";
+  teams.viewRule = "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id";
+  teams.createRule = "@request.auth.id != ''";
+  teams.updateRule = "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'";
+  teams.deleteRule = "@request.auth.id != '' && @collection.team_members.team = id && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'";
+  app.save(teams);
+
+  // team_members:
+  //   listRule: members of the same team can see each other.
+  //     `@request.auth.id != ""` gate first (cheap) then a self-join via
+  //     @collection.team_members (PocketBase supports this pattern).
+  //   viewRule: same.
+  //   createRule / updateRule / deleteRule: admins only. Checked via the
+  //     role of the CALLER'S row in the same team.
+  teamMembers.listRule = "@request.auth.id != '' && team.id ?= @collection.team_members.team";
+  teamMembers.viewRule = "@request.auth.id != '' && team.id ?= @collection.team_members.team";
+  teamMembers.createRule = "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'";
+  teamMembers.updateRule = "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'";
+  teamMembers.deleteRule = "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'";
   app.save(teamMembers);
 }, (app) => {
   // Down migration: reverse order of deletion to avoid FK constraints.
