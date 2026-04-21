@@ -89,6 +89,19 @@ interface UIState {
   // not persisted to localStorage or JSON exports — because it's a view
   // preference, not part of the saved project.
   showBackground: boolean;
+  /**
+   * Ephemeral cut-target tracking. When the user is in `draw-roof` mode
+   * and has placed their first vertex on the boundary of an existing
+   * roof, we remember THAT roof's id here so subsequent clicks / Enter
+   * can decide whether to fire a split vs. an `addRoof` close-path.
+   *
+   * Kept in the store (rather than KonvaOverlay local state) because
+   * App.tsx's hint banner also needs to read it — and plumbing a prop
+   * through would mean changing KonvaOverlay's interface unnecessarily.
+   * Excluded from persistence via the existing `partialize` which
+   * only persists `project`.
+   */
+  splitCandidateRoofId: string | null;
 }
 
 /**
@@ -137,6 +150,7 @@ interface ProjectStore extends UIState {
   setActiveString: (id: string | null) => void;
   setSelectedInverter: (id: string | null) => void;
   setActivePanelGroup: (id: string | null) => void;
+  setSplitCandidateRoof: (id: string | null) => void;
   setMapProvider: (provider: 'esri' | 'bayern' | 'bayern_alkis') => void;
   toggleBackground: () => void;
   loadProject: (p: Project) => void;
@@ -152,6 +166,7 @@ export const useProjectStore = create<ProjectStore>()(
       activeStringId: null,
       selectedInverterId: null,
       activePanelGroupId: null,
+      splitCandidateRoofId: null,
       // Background is visible by default — hiding it is the less common
       // workflow (mainly for clean screenshots and cluttered layouts).
       showBackground: true,
@@ -633,6 +648,7 @@ export const useProjectStore = create<ProjectStore>()(
       setActiveString: (id) => set({ activeStringId: id }),
       setSelectedInverter: (id) => set({ selectedInverterId: id }),
       setActivePanelGroup: (id) => set({ activePanelGroupId: id }),
+      setSplitCandidateRoof: (id) => set({ splitCandidateRoofId: id }),
       setMapProvider: (provider) =>
         set((s) => ({
           project: {
