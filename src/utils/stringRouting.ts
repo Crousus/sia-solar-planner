@@ -26,7 +26,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import type { Panel, Point, Roof, PanelType } from '../types';
-import { panelDisplaySize } from './geometry';
+import { panelDisplaySize, projectOnSegment } from './geometry';
 
 // Projection-parameter window for treating a panel as "between" the
 // segment endpoints. Values near 0 or 1 would put the detour right on top
@@ -55,30 +55,6 @@ const NEAR_LINE_RATIO = 0.35;
 // draws over the skipped panel's body but misses its center dot, which
 // reads as "the wire passes over this panel but doesn't terminate here".
 const DETOUR_SHORT_RATIO = 0.42;
-
-/**
- * Project `p` onto segment `a→b`. Returns the parameter `t` (0 = a, 1 = b;
- * outside [0,1] means off the segment) and the perpendicular distance from
- * `p` to the infinite line through a and b.
- *
- * Degenerate case (a ≈ b): returns t=0, dist=|p-a|.
- */
-function projectOntoSegment(
-  p: Point,
-  a: Point,
-  b: Point,
-): { t: number; dist: number } {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  if (len2 < 1e-9) {
-    return { t: 0, dist: Math.hypot(p.x - a.x, p.y - a.y) };
-  }
-  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
-  const px = a.x + t * dx;
-  const py = a.y + t * dy;
-  return { t, dist: Math.hypot(p.x - px, p.y - py) };
-}
 
 /**
  * Signed 2× area of triangle p1-p2-p3 (a.k.a. the cross product of the
@@ -208,7 +184,7 @@ export function computeStringPath(
       // circle (see DETOUR_SHORT_RATIO). Scales with panel size.
       const detour = Math.min(w, h) * DETOUR_SHORT_RATIO;
       const center: Point = { x: p.cx, y: p.cy };
-      const { t, dist } = projectOntoSegment(center, from, to);
+      const { t, dist } = projectOnSegment(center, from, to);
       if (t <= T_MIN || t >= T_MAX) continue;
       if (dist > nearThreshold) continue;
       candidates.push({ center, t, detour });

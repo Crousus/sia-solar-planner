@@ -30,6 +30,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import type { Point, Roof } from '../types';
+import { projectOnSegment } from './geometry';
 
 /** What caused a particular guide to appear — drives its color. */
 export type SnapKind =
@@ -78,15 +79,22 @@ function angleDiffDeg(a: number, b: number): number {
   return (Math.abs(normalizeAngle(a - b)) * 180) / Math.PI;
 }
 
-/** Helper: project a point onto a line segment. */
-function projectToSegment(p: Point, a: Point, b: Point): Point {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const l2 = dx * dx + dy * dy;
-  if (l2 === 0) return a;
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2;
-  t = Math.max(0, Math.min(1, t));
-  return { x: a.x + t * dx, y: a.y + t * dy };
+/**
+ * Local helper: closest point ON the segment (not the infinite line) from `p`.
+ * Clamps the projection parameter into [0,1] — if the perpendicular foot
+ * lies outside the segment, returns the nearest endpoint.
+ *
+ * Edge snap wants this clamped version: a cursor dragged past the end of an
+ * edge should snap to that endpoint, not continue as though the line
+ * extended infinitely. The shared `projectOnSegment` in geometry.ts
+ * intentionally does NOT clamp (stringRouting needs the unclamped t for
+ * its T-window test), so we clamp here.
+ */
+function nearestOnSegment(p: Point, a: Point, b: Point): Point {
+  const { t, point } = projectOnSegment(p, a, b);
+  if (t <= 0) return { ...a };
+  if (t >= 1) return { ...b };
+  return point;
 }
 
 /**
@@ -210,7 +218,7 @@ export function computeDrawingSnap(
   let edgeSnapRef: EdgeRef | null = null;
 
   for (const edge of edges) {
-    const proj = projectToSegment(cursor, edge.a, edge.b);
+    const proj = nearestOnSegment(cursor, edge.a, edge.b);
     // Don't snap to the segment we are currently starting from
     if (Math.hypot(proj.x - last.x, proj.y - last.y) < 1e-3) continue;
 

@@ -13,6 +13,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import type { Point } from '../types';
+import { isInsidePolygon } from './geometry';
 
 /**
  * Boundary hit-test.
@@ -138,12 +139,13 @@ export function splitPolygon(
   // rejection.
   if (hitA.edgeIndex === hitB.edgeIndex) return null;
 
-  // Interior points must be strictly inside. We import isInsidePolygon
-  // lazily via a local implementation to keep this module free of
-  // cross-imports from geometry.ts — polygonCut is meant to be a
-  // self-contained unit.
+  // Interior points must be strictly inside the polygon (ray-casting
+  // rule in isInsidePolygon — see geometry.ts for exact "on edge"
+  // semantics). Any interior cut vertex outside the polygon produces a
+  // non-simple split, which splitPolygon below can't meaningfully
+  // process, so we reject early.
   for (let i = 1; i < cutLine.length - 1; i++) {
-    if (!isStrictlyInside(cutLine[i], polygon)) return null;
+    if (!isInsidePolygon(cutLine[i], polygon)) return null;
   }
 
   // Snap the actual cut endpoints to the edges (projected along the
@@ -263,27 +265,6 @@ function pointAlongEdge(polygon: Point[], edgeIndex: number, t: number): Point {
   const a = polygon[edgeIndex];
   const b = polygon[(edgeIndex + 1) % polygon.length];
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-
-/**
- * Strict ray-casting point-in-polygon. Identical algorithm to
- * isInsidePolygon in geometry.ts but duplicated here to keep
- * polygonCut self-contained (per the "no cross-imports within utils"
- * convention noted in AGENTS.md — utils depend only on types).
- */
-function isStrictlyInside(p: Point, polygon: Point[]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i].x;
-    const yi = polygon[i].y;
-    const xj = polygon[j].x;
-    const yj = polygon[j].y;
-    const intersect =
-      yi > p.y !== yj > p.y &&
-      p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
 }
 
 /**

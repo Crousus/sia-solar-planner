@@ -44,21 +44,28 @@
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import type { Project, PvString } from '../types';
+import { hexToRgb } from './colors';
 
 /**
  * Top-level export. Returns a boolean so callers can show a failure toast.
  * Any thrown error is logged to console for debugging.
+ *
+ * Takes the Konva overlay element as a parameter so this module stays free
+ * of queries against the global document. Callers pass whatever they
+ * already have wired up — typically `containerRef.current` from App.tsx
+ * or a `document.querySelector('.konva-overlay')` in a handler. Keeping
+ * the DOM lookup on the caller side means pdfExport can be unit-tested
+ * against a fixture element without needing a real `.konva-overlay` to
+ * exist in the test DOM.
  */
-export async function exportPdf(project: Project): Promise<boolean> {
+export async function exportPdf(
+  project: Project,
+  stageEl: HTMLElement,
+): Promise<boolean> {
   try {
     // The overlay container holds every Konva <canvas> (background image,
     // roofs, panels, strings, labels — all layers). html2canvas walks
     // the DOM and paints it all into a single output canvas in one go.
-    const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
-    if (!stageEl) {
-      console.error('Konva overlay not found — is the map locked?');
-      return false;
-    }
 
     const W = stageEl.clientWidth;
     const H = stageEl.clientHeight;
@@ -543,15 +550,6 @@ export async function exportPdf(project: Project): Promise<boolean> {
     console.error('PDF export failed', err);
     return false;
   }
-}
-
-/** Parse #RRGGBB → {r, g, b} for jsPDF's setFillColor. */
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return { r, g, b };
 }
 
 /** YYYYMMDD for the filename suffix — avoids collisions on same-day exports

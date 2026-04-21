@@ -194,6 +194,49 @@ export function isPointInRect(p: Point, r: Rect): boolean {
 }
 
 /**
+ * Project point `p` onto the INFINITE line through segment `a→b`.
+ *
+ * Returns:
+ *   - `t`: the parameter along a→b. t=0 is `a`, t=1 is `b`, t<0 or t>1 means
+ *     the foot of the perpendicular lies outside the segment extent.
+ *   - `dist`: perpendicular distance from `p` to the line.
+ *   - `point`: the foot of the perpendicular (unclamped — on the line, not
+ *     necessarily on the segment).
+ *
+ * Callers that need the nearest point ON the segment (e.g. drawing snap)
+ * should clamp `t` into [0,1] and compute `a + t·(b−a)` locally — kept out
+ * of this helper so the one primitive serves both use cases:
+ *   - drawingSnap.projectEdge clamps to the segment (visual "snap to edge").
+ *   - stringRouting uses the unclamped t to decide if an off-string panel
+ *     sits *within* the wire-routing segment's T-window (0.1..0.9) for
+ *     detour eligibility — clamping would defeat that check.
+ *
+ * Degenerate case (|a−b| ≈ 0): returns t=0, point=a, dist=|p−a|. This
+ * keeps callers from having to special-case zero-length segments, which
+ * can arise in pathological imported data (two consecutive identical panel
+ * centers) and in drawingSnap's edge collection pass.
+ */
+export function projectOnSegment(
+  p: Point,
+  a: Point,
+  b: Point,
+): { t: number; dist: number; point: Point } {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  // Threshold is 1e-9 rather than 0 to absorb floating-point noise on
+  // numerically-near-coincident endpoints — matters for polygon cuts
+  // where a user clicks "on top of" the previous vertex.
+  if (len2 < 1e-9) {
+    return { t: 0, dist: Math.hypot(p.x - a.x, p.y - a.y), point: { ...a } };
+  }
+  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  const px = a.x + t * dx;
+  const py = a.y + t * dy;
+  return { t, dist: Math.hypot(p.x - px, p.y - py), point: { x: px, y: py } };
+}
+
+/**
  * Angle (radians, atan2 convention) of the polygon's longest edge.
  *
  * Rationale: solar panels are physically installed in rows aligned with the

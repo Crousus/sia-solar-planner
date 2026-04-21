@@ -251,7 +251,16 @@ export default function Toolbar({ mapRef }: Props) {
   };
 
   const handleExport = async () => {
-    const ok = await exportPdf(project);
+    // The overlay element is looked up here — pdfExport no longer reaches
+    // into the DOM itself. Same class selector as before; failing fast
+    // with a user-facing error is fine because Export is only wired to
+    // the toolbar button, which is hidden when the map isn't locked.
+    const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
+    if (!stageEl) {
+      alert('Export failed — the map canvas is not mounted.');
+      return;
+    }
+    const ok = await exportPdf(project, stageEl);
     if (!ok) alert('Export failed — see console for details.');
   };
 
