@@ -28,7 +28,7 @@ import type {
 } from '../types';
 import { STRING_COLORS } from '../types';
 import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon } from '../utils/geometry';
-import { splitPolygon } from '../utils/polygonCut';
+import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
 
 /**
  * Short random-ish id. Good enough for a personal tool — we don't need
@@ -132,6 +132,11 @@ interface ProjectStore extends UIState {
    *  name, tilt, orientation). The other half becomes a new empty
    *  roof. See ADR / design doc for rationale. */
   splitRoof: (roofId: string, cutLine: Point[]) => void;
+  /** Merge two adjacent roofs. No-op if they don't share an edge.
+   *  The larger-area roof survives (keeps id/name/tilt/orientation);
+   *  the smaller is absorbed — its panels are reassigned to the
+   *  survivor's id and affected strings are renumbered. */
+  mergeRoofs: (roofAId: string, roofBId: string) => void;
   addPanel: (
     roofId: string,
     cx: number,
@@ -350,6 +355,95 @@ export const useProjectStore = create<ProjectStore>()(
           return {
             project: { ...s.project, roofs: [...updatedRoofs, newRoof] },
             splitCandidateRoofId: null,
+          };
+        }),
+
+      // ── Merge two adjacent roofs ────────────────────────────────────
+      // Triggered by right-click on a shared edge (see RoofLayer.tsx).
+      // Survivor = larger-area roof (keeps id, name, tilt, orientation);
+      // absorbed roof's polygon is stitched into the survivor and the
+      // absorbed roof is deleted. Panels with absorbed.roofId get
+      // reassigned to survivor.id — their positions stay exactly where
+      // they were. Strings can span roofs, but their index-in-string
+      // snake ordering is relative to panel positions on the (possibly
+      // differently-shaped) merged roof, so we renumber every string
+      // that had members on either side.
+      //
+      // If the two roofs don't share an edge (caller passed the wrong
+      // pair, or the user right-clicked an edge that happens to only
+      // belong to one roof), this is a no-op.
+      mergeRoofs: (roofAId, roofBId) =>
+        set((s) => {
+          if (roofAId === roofBId) return s;
+          const roofA = s.project.roofs.find((r) => r.id === roofAId);
+          const roofB = s.project.roofs.find((r) => r.id === roofBId);
+          if (!roofA || !roofB) return s;
+
+          const shared = findSharedEdge(roofA.polygon, roofB.polygon);
+          if (!shared) return s;
+
+          // Larger-area roof survives. Ties broken by id sort (stable).
+          const areaA = polygonArea(roofA.polygon);
+          const areaB = polygonArea(roofB.polygon);
+          const aSurvives =
+            areaA > areaB || (areaA === areaB && roofAId < roofBId);
+          const survivor = aSurvives ? roofA : roofB;
+          const absorbed = aSurvives ? roofB : roofA;
+
+          // When survivor is B, we need to swap `shared`'s A/B roles
+          // so mergePolygons is called with (survivor, absorbed, ...).
+          // findSharedEdge returns indices relative to its input order,
+          // so we invert the mapping here.
+          const sharedForSurvivor = aSurvives
+            ? shared
+            : {
+                aEdgeIndex: shared.bEdgeIndex,
+                bEdgeIndex: shared.aEdgeIndex,
+                reversed: shared.reversed,
+              };
+
+          const mergedPolygon = mergePolygons(
+            survivor.polygon,
+            absorbed.polygon,
+            sharedForSurvivor,
+          );
+
+          // Reassign absorbed's panels to survivor. Track which
+          // stringIds were touched so we can renumber them after the
+          // reassignment is in place.
+          const affectedStringIds = new Set<string>();
+          const updatedPanels = s.project.panels.map((p) => {
+            if (p.roofId === absorbed.id) {
+              if (p.stringId) affectedStringIds.add(p.stringId);
+              return { ...p, roofId: survivor.id };
+            }
+            // Panels already on the survivor are also part of strings
+            // that may need renumbering if the survivor itself had
+            // strings spanning the shared edge. Collect those ids too.
+            if (p.roofId === survivor.id && p.stringId) {
+              affectedStringIds.add(p.stringId);
+            }
+            return p;
+          });
+
+          const renumbered = renumberStrings(updatedPanels, affectedStringIds);
+
+          return {
+            project: {
+              ...s.project,
+              roofs: s.project.roofs
+                .filter((r) => r.id !== absorbed.id)
+                .map((r) =>
+                  r.id === survivor.id ? { ...r, polygon: mergedPolygon } : r,
+                ),
+              panels: renumbered,
+            },
+            // If the absorbed roof was selected, move selection to
+            // survivor so the sidebar doesn't jump to "nothing selected".
+            selectedRoofId:
+              s.selectedRoofId === absorbed.id
+                ? survivor.id
+                : s.selectedRoofId,
           };
         }),
 
