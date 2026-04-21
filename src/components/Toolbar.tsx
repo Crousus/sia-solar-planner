@@ -161,6 +161,26 @@ export default function Toolbar({ mapRef }: Props) {
   const addString = useProjectStore((s) => s.addString);
   const showBackground = useProjectStore((s) => s.showBackground);
   const toggleBackground = useProjectStore((s) => s.toggleBackground);
+  // Undo / redo wiring. `canUndo` / `canRedo` are real state fields (not
+  // derived selectors) so these subscriptions re-render the buttons exactly
+  // when the toolbar needs to flip between enabled and disabled — no custom
+  // equality functions needed. See projectStore.ts for why they're stored
+  // as booleans rather than computed from past/future lengths in selectors.
+  const canUndo = useProjectStore((s) => s.canUndo);
+  const canRedo = useProjectStore((s) => s.canRedo);
+  const undo = useProjectStore((s) => s.undo);
+  const redo = useProjectStore((s) => s.redo);
+
+  // Platform-appropriate chord label for the Undo/Redo button titles.
+  // `navigator.platform` is read once at module load; the result doesn't
+  // change at runtime, so we don't bother memoizing — a single regex test
+  // is cheaper than the useMemo bookkeeping and re-reading `navigator` on
+  // every render is negligible. The `typeof navigator !== 'undefined'`
+  // guard is defensive in case this module ever runs in a non-browser
+  // environment (e.g. SSR), even though currently it never does.
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform);
+  const undoLabel = isMac ? '⌘Z' : 'Ctrl+Z';
+  const redoLabel = isMac ? '⇧⌘Z' : 'Ctrl+Shift+Z';
 
   // isLocking gates the Lock button during the async html2canvas capture
   // (~100-300ms). Without this, the button looks unresponsive and can be
@@ -472,6 +492,30 @@ export default function Toolbar({ mapRef }: Props) {
             />
           </svg>
           <span>Export</span>
+        </button>
+
+        {/*
+          Undo / Redo — sit here, between Export and Save, because they're
+          project-level rather than drawing-level actions. Disabled state
+          follows canUndo/canRedo mirrors; click handlers fire the store
+          actions directly, which also maintain the mirrors on completion
+          (see projectStore.undo / projectStore.redo).
+        */}
+        <button
+          className="btn btn-tool"
+          onClick={undo}
+          disabled={!canUndo}
+          title={`Undo (${undoLabel})`}
+        >
+          ↶ Undo
+        </button>
+        <button
+          className="btn btn-tool"
+          onClick={redo}
+          disabled={!canRedo}
+          title={`Redo (${redoLabel})`}
+        >
+          ↷ Redo
         </button>
 
         <button className="btn btn-tool" onClick={handleSave} title="Save project JSON">
