@@ -145,9 +145,22 @@ export default function RoofLayer({
                 if (stage) stage.container().style.cursor = '';
               }}
               onClick={(e) => {
-                // cancelBubble stops the event from reaching the Stage's
-                // click handler — which would otherwise (in draw-roof mode)
-                // try to add a new vertex on top of this roof.
+                // If a cut polyline is in progress, let the click bubble
+                // up to Stage so the cut can commit (case 2) or append an
+                // intermediate vertex (default). Otherwise Konva hit-tests
+                // this Line first because the roof fill covers the whole
+                // polygon interior (and the stroke, when drawing is active
+                // and the edge hit-overlays are hidden). Swallowing the
+                // click here would make "click the opposite edge to
+                // complete the cut" fail silently — the click would just
+                // reselect the roof the user is trying to split.
+                //
+                // When no polyline is in progress, the historical "click a
+                // roof fill to select it" behavior wins. In delete mode we
+                // still eat the click here (confirm prompt, destructive).
+                if (drawingPoints.length > 0) {
+                  return;
+                }
                 e.cancelBubble = true;
                 if (toolMode === 'delete') {
                   if (confirm(`Delete ${roof.name} and all its panels?`)) deleteRoof(roof.id);

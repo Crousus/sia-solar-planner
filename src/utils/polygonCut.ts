@@ -153,51 +153,73 @@ export function splitPolygon(
   const snapStart = pointAlongEdge(polygon, hitA.edgeIndex, hitA.t);
   const snapEnd = pointAlongEdge(polygon, hitB.edgeIndex, hitB.t);
 
-  // Insert the later index first so earlier insertions don't shift it.
-  // Build a list of (edgeIndex, t, snappedPoint, tag) and process in
-  // descending-edgeIndex order.
+  // Insert both cut endpoints into a working copy of `polygon`. Each
+  // insertion turns an existing edge into two edges meeting at the new
+  // vertex. Afterwards we need to know WHICH index in the modified
+  // array each cut endpoint ended up at, because arcA / arcB walk the
+  // ring from those indices.
+  //
+  // Historical bug note: an earlier version sorted insertions in
+  // descending `edgeIndex` order under the assumption that splicing at
+  // a later position wouldn't shift earlier-tagged indices. That's
+  // backwards — splicing at a LOWER position shifts every index AT OR
+  // ABOVE the splice point up by one. So if we first tagged snapStart
+  // at position 3 on edge 2, then spliced snapEnd in at position 1 on
+  // edge 0, snapStart ended up at position 4 while the stored tag was
+  // still 3 (pointing at a completely different polygon vertex). The
+  // result: `splitPolygon` returned geometrically-wrong-but-still-
+  // valid-looking polygons, and the split silently produced garbage.
+  //
+  // The fix we now use sidesteps the index bookkeeping entirely by
+  // tagging endpoints by REFERENCE IDENTITY. For the generic case we
+  // insert the exact `snapStart` / `snapEnd` object into `modified`,
+  // then resolve indices via `indexOf` after all splices are done. For
+  // the t=0 / t=1 boundary cases we tag the existing polygon vertex
+  // (which is also in `modified` by reference, because `slice()`
+  // copies the array but not the point objects).
   type Insertion = { edgeIndex: number; t: number; point: Point; tag: 'A' | 'B' };
   const insertions: Insertion[] = [
     { edgeIndex: hitA.edgeIndex, t: hitA.t, point: snapStart, tag: 'A' },
     { edgeIndex: hitB.edgeIndex, t: hitB.t, point: snapEnd,   tag: 'B' },
   ];
-  // Sort descending by edgeIndex. Tie on t: higher t first (same reason —
-  // inserting at higher t on the same edge would shift the lower insertion).
-  // But we already rejected same-edge above, so the tie path is unreachable;
-  // we still sort defensively.
+  // Descending edgeIndex order keeps splice POSITIONS valid without
+  // recomputing offsets: inserting at a high position doesn't shift
+  // lower positions, so subsequent splices at edgeIndex+1 still refer
+  // to the right place. (Index TAGS are handled separately via
+  // indexOf — see below.)
   insertions.sort((x, y) =>
     y.edgeIndex !== x.edgeIndex ? y.edgeIndex - x.edgeIndex : y.t - x.t,
   );
 
   const modified = polygon.slice();
-  const taggedIndex: Record<'A' | 'B', number> = { A: -1, B: -1 };
+  // Record the POINT OBJECT each cut endpoint maps to. Two cases:
+  //   - Generic: the object IS the freshly-spliced ins.point.
+  //   - Boundary (t=0/t=1): the object is an existing polygon vertex.
+  // Either way we resolve to an index with indexOf at the end.
+  const taggedPoint: Record<'A' | 'B', Point | null> = { A: null, B: null };
   for (const ins of insertions) {
-    // t=0 would be identical to the start vertex → skip insertion and
-    // reuse that vertex as the tagged index. Same for t=1 → the end
-    // vertex of the edge (which is index (edgeIndex+1) % polygon.length,
-    // BUT we still need to account for prior insertions shifting it).
     if (ins.t < 1e-6) {
-      // Maps to the start vertex of the edge in the CURRENT modified
-      // array. Prior insertions at higher edgeIndex don't affect
-      // positions at lower edgeIndex, so this is just `ins.edgeIndex`.
-      taggedIndex[ins.tag] = ins.edgeIndex;
+      // Cut endpoint coincides with the START vertex of this edge.
+      // No splice needed — the existing vertex already represents it.
+      taggedPoint[ins.tag] = polygon[ins.edgeIndex];
       continue;
     }
     if (ins.t > 1 - 1e-6) {
-      // End vertex = edgeIndex+1 mod length — we treat it as "a vertex
-      // already exists here; point the cut at it". Again, no splice
-      // needed. Use modulo on the CURRENT length so it's valid if we
-      // already inserted at a later edge.
-      taggedIndex[ins.tag] = (ins.edgeIndex + 1) % modified.length;
+      // Cut endpoint coincides with the END vertex of this edge.
+      taggedPoint[ins.tag] = polygon[(ins.edgeIndex + 1) % polygon.length];
       continue;
     }
-    // Generic case: splice a new vertex between edgeIndex and edgeIndex+1.
+    // Generic mid-edge: splice the new point in and tag by identity.
     modified.splice(ins.edgeIndex + 1, 0, ins.point);
-    taggedIndex[ins.tag] = ins.edgeIndex + 1;
+    taggedPoint[ins.tag] = ins.point;
   }
 
-  const idxA = taggedIndex.A;
-  const idxB = taggedIndex.B;
+  // Resolve tagged point objects to their CURRENT indices in `modified`.
+  // indexOf uses === comparison, which matches the point objects we
+  // stored in taggedPoint even though other Points in `modified` may
+  // have the same x/y.
+  const idxA = taggedPoint.A ? modified.indexOf(taggedPoint.A) : -1;
+  const idxB = taggedPoint.B ? modified.indexOf(taggedPoint.B) : -1;
   if (idxA === -1 || idxB === -1 || idxA === idxB) return null;
 
   // Walk forward from idxA to idxB around the ring to get arcA.
