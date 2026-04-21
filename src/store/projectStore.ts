@@ -29,6 +29,7 @@ import type {
 import { STRING_COLORS } from '../types';
 import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
 import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
+import { migrateProject } from '../utils/projectSerializer';
 import {
   undoable,
   ACTION_POLICY,
@@ -309,21 +310,34 @@ export const useProjectStore = create<ProjectStore>()(
       // starts panning Leaflet again, and carrying a ~1-3 MB base64 blob
       // forward for no reason bloats localStorage (which is capped ~5 MB).
       // Re-locking will re-capture.
+      //
+      // Because MapState is now a discriminated union (MapStateUnlocked |
+      // MapStateLocked), we construct the unlocked variant explicitly
+      // instead of spreading the prior state — a spread of the locked
+      // variant would carry capturedImage/Width/Height into the result
+      // and TypeScript would (correctly) reject the union transition.
+      // Pulling out the shared fields by name makes the conversion
+      // compile-time safe and documents exactly which fields survive
+      // a lock→unlock transition.
       unlockMap: () =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              mapState: {
-                ...s.project.mapState,
-                locked: false,
-                capturedImage: undefined,
-                capturedWidth: undefined,
-                capturedHeight: undefined,
+          (s) => {
+            const { centerLat, centerLng, zoom, metersPerPixel, mapProvider } = s.project.mapState;
+            return {
+              project: {
+                ...s.project,
+                mapState: {
+                  locked: false,
+                  centerLat,
+                  centerLng,
+                  zoom,
+                  metersPerPixel,
+                  mapProvider,
+                },
               },
-            },
-            toolMode: 'idle',
-          }),
+              toolMode: 'idle',
+            };
+          },
           false,
           'unlockMap',
         ),
@@ -680,7 +694,9 @@ export const useProjectStore = create<ProjectStore>()(
             };
           }
 
-          const oldOrientation = anchor.orientation ?? roof.panelOrientation;
+          // anchor.orientation is always set — addPanel writes it at creation
+          // and migrateProject backfills any legacy panel on rehydrate/import.
+          const oldOrientation = anchor.orientation;
           if (oldOrientation === orientation) return s; // no-op
 
           const oldSize = panelDisplaySize(s.project.panelType, oldOrientation, roof.tiltDeg, mpp);
@@ -1142,9 +1158,18 @@ export const useProjectStore = create<ProjectStore>()(
       // stale history — exactly the clear-history-policy bug that Task
       // 13 fixes for `resetProject` below.
       loadProject: (p, history) => {
+        // Defense in depth: deserializeProject in utils/projectSerializer.ts
+        // already migrates incoming JSON before calling this action, but
+        // other call sites (tests, internal loadProject users) may hand us
+        // a raw Project. Running migrateProject here keeps the field-required
+        // invariant on Panel.orientation true regardless of who called us.
+        // Migration is a no-op (returns the same reference) when every
+        // panel already has an orientation, so there's no cost for the
+        // common path.
+        const migrated = migrateProject(p);
         set(
           {
-            project: p,
+            project: migrated,
             toolMode: 'idle',
             selectedRoofId: null,
             activeStringId: null,
@@ -1306,6 +1331,19 @@ export const useProjectStore = create<ProjectStore>()(
       // not being listed here — see the comment at the `undoable(...)`
       // wrapper above.
       partialize: (s) => ({ project: s.project }),
+      // Run the Panel.orientation migration when rehydrating from
+      // localStorage. Users whose last session predates the migration
+      // have panels without an `orientation` field on disk; without
+      // this step they'd rehydrate into a project that violates the
+      // (now required) Panel.orientation type and downstream code would
+      // silently render with `undefined`. migrateProject is idempotent:
+      // it returns the same object when every panel already has an
+      // orientation, so the steady-state cost is one Map construction.
+      onRehydrateStorage: () => (state) => {
+        if (state?.project) {
+          state.project = migrateProject(state.project);
+        }
+      },
     }
   )
 );

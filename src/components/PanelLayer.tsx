@@ -110,7 +110,9 @@ export default function PanelLayer({ cursor, stageActive, renderPass = 'base' }:
         origin = { x: firstPanel.cx, y: firstPanel.cy };
         snap = true;
         // Inherit the active group's orientation for the ghost + snap math.
-        ghostOrientation = firstPanel.orientation ?? selectedRoof.panelOrientation;
+        // Panel.orientation is required (migrateProject backfills legacy saves
+        // at the persistence boundary), so no roof-default fallback here.
+        ghostOrientation = firstPanel.orientation;
       }
     }
 
@@ -173,9 +175,10 @@ export default function PanelLayer({ cursor, stageActive, renderPass = 'base' }:
       if (!roof) continue;
       // All panels in a group share orientation by construction —
       // updateGroupOrientation rewrites them all in one pass. Reading
-      // from the first panel (falling back to the roof default for
-      // legacy data) is therefore safe.
-      const orientation = groupPanels[0].orientation ?? roof.panelOrientation;
+      // from the first panel is therefore safe. Panel.orientation is
+      // required (migrateProject backfills at rehydrate/import), so
+      // no roof-default fallback.
+      const orientation = groupPanels[0].orientation;
       const d = getPanelGroupDimensions(groupPanels, roof, project.panelType, orientation, mpp);
       dims.push(...d);
     }
@@ -213,9 +216,10 @@ export default function PanelLayer({ cursor, stageActive, renderPass = 'base' }:
   const renderPanel = (panel: Panel) => {
     const roof = roofById.get(panel.roofId);
     if (!roof) return null; // defensive: orphaned panel (shouldn't happen post-delete-cascade)
-    // Per-panel orientation — legacy panels loaded from old saves
-    // won't have one stored, so fall back to the roof's default.
-    const orientation = panel.orientation ?? roof.panelOrientation;
+    // Per-panel orientation. Always present: addPanel writes it at
+    // creation time and migrateProject backfills legacy panels at the
+    // persistence boundary (Zustand rehydrate + JSON import).
+    const orientation = panel.orientation;
     const { w, h } = panelDisplaySize(project.panelType, orientation, roof.tiltDeg, project.mapState.metersPerPixel);
     const angleDeg = (roofPrimaryAngle(roof.polygon) * 180) / Math.PI;
     const stringInfo = panel.stringId ? stringById.get(panel.stringId) : null;

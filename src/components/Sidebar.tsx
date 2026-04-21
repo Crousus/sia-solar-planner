@@ -64,8 +64,11 @@ export default function Sidebar() {
     ? project.panels.filter((p) => p.groupId === activePanelGroupId && p.roofId === selectedRoof.id)
     : [];
   const orientationTargetsGroup = activeGroupPanelsOnRoof.length > 0;
+  // Panel.orientation is required on live panels (migrateProject backfills
+  // legacy saves at the persistence boundary), so no roof-default fallback
+  // needed for the group-targeting case.
   const currentOrientation = orientationTargetsGroup
-    ? (activeGroupPanelsOnRoof[0].orientation ?? selectedRoof!.panelOrientation)
+    ? activeGroupPanelsOnRoof[0].orientation
     : (selectedRoof?.panelOrientation ?? 'portrait');
 
   // Hero stats. Derived, not stored — recomputed on every render is trivial.
@@ -118,7 +121,7 @@ export default function Sidebar() {
       const roof = project.roofs.find((r) => r.id === p.roofId);
       if (!roof) continue;
       const siblings = siblingsByRoof.get(p.roofId) ?? [];
-      const orientation = p.orientation ?? roof.panelOrientation;
+      const orientation = p.orientation;
       if (!panelFitsOnRoof(p, roof, hypothetical, orientation, mpp, siblings)) {
         invalidIds.push(p.id);
       }

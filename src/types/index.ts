@@ -68,11 +68,18 @@ export interface Panel {
    * Per-panel orientation. All panels in the same group share the same
    * value — orientation is logically a group-level attribute, but we
    * store it on the panel so the data model stays flat (no PanelGroup
-   * entity to keep in sync). Missing/undefined on legacy panels loaded
-   * from older saves; callers fall back to `roof.panelOrientation` in
-   * that case. See panelDisplaySize() and updateGroupOrientation().
+   * entity to keep in sync). See panelDisplaySize() and
+   * updateGroupOrientation().
+   *
+   * Always present on live panels: `addPanel` writes it at creation,
+   * and the `migrateProject` helper (utils/projectSerializer.ts) back-
+   * fills it from `roof.panelOrientation` on both Zustand rehydration
+   * and JSON import of pre-migration saves. Before the migration existed,
+   * this field was optional and five consumer sites carried
+   * `p.orientation ?? roof.panelOrientation` fallback; making the field
+   * required centralizes the fallback at the persistence boundary.
    */
-  orientation?: 'portrait' | 'landscape';
+  orientation: 'portrait' | 'landscape';
 }
 
 /**
@@ -96,7 +103,21 @@ export interface Inverter {
 }
 
 /**
- * Map viewport snapshot. The app has two map states:
+ * Map viewport snapshot.
+ *
+ * Modelled as a discriminated union on `locked`. The three captured-image
+ * fields only exist in the locked variant — previously they were optional
+ * on a single flat struct, which let consumers ask for `capturedImage`
+ * while `locked === false` (always returning undefined). Splitting into
+ * variants forces call sites to narrow via `mapState.locked` before
+ * reading the captured fields, making the invariant "if locked then
+ * captured image is present" a compile-time guarantee rather than a
+ * convention enforced only by `lockMap`/`unlockMap`.
+ *
+ * Shared fields (centerLat/Lng/zoom/metersPerPixel/mapProvider) exist in
+ * both variants and survive a lock/unlock round-trip; we reuse them as
+ * the defaults on re-lock so the user's last map position sticks.
+ *
  *  - `locked: false` → user is panning/zooming to find their building via
  *    Leaflet. No drawing is possible; the Konva overlay is a passthrough.
  *  - `locked: true`  → Leaflet is torn down from the view. At lock time we
@@ -117,21 +138,27 @@ export interface Inverter {
  * the image's native size (after Konva zoom the image is scaled, but
  * world pixels stay anchored to these dims).
  */
-export interface MapState {
-  locked: boolean;
+interface MapStateShared {
   centerLat: number;
   centerLng: number;
   zoom: number;
   metersPerPixel: number;
-  /** base64 PNG dataURL of the satellite view captured at lock time. */
-  capturedImage?: string;
-  /** Width of the captured image in canvas pixels (world-frame width). */
-  capturedWidth?: number;
-  /** Height of the captured image in canvas pixels (world-frame height). */
-  capturedHeight?: number;
   /** The currently selected map tile provider. */
   mapProvider?: 'esri' | 'bayern' | 'bayern_alkis';
 }
+export interface MapStateUnlocked extends MapStateShared {
+  locked: false;
+}
+export interface MapStateLocked extends MapStateShared {
+  locked: true;
+  /** base64 PNG dataURL of the satellite view captured at lock time. */
+  capturedImage: string;
+  /** Width of the captured image in canvas pixels (world-frame width). */
+  capturedWidth: number;
+  /** Height of the captured image in canvas pixels (world-frame height). */
+  capturedHeight: number;
+}
+export type MapState = MapStateUnlocked | MapStateLocked;
 
 /**
  * Full project — the root persistent object. Serialized to localStorage by

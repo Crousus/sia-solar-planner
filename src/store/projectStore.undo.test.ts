@@ -45,7 +45,12 @@ describe('projectStore undo/redo integration', () => {
     useProjectStore.getState().undo(); // undoes addRoof; lockMap bypass unaffected
     const { project } = useProjectStore.getState();
     expect(project.roofs.length).toBe(0);
+    // MapState is a discriminated union on `locked`; narrowing via the
+    // assert lets us reach capturedImage without a cast and also acts as
+    // a stronger test — it would fail loudly if a future regression ever
+    // left the map unlocked after an undo of lockMap-bypass.
     expect(project.mapState.locked).toBe(true);
+    if (!project.mapState.locked) throw new Error('expected locked mapState');
     expect(project.mapState.capturedImage).toBe('BASE64');
   });
 

@@ -198,9 +198,10 @@ export function computeStringPath(
     for (const p of otherPanels) {
       const roof = roofsById.get(p.roofId);
       if (!roof) continue;
-      // Orientation is per-panel (group-level); legacy panels without a
-      // stored orientation inherit the roof's default.
-      const orientation = p.orientation ?? roof.panelOrientation;
+      // Orientation is per-panel (group-level). Always populated:
+      // migrateProject backfills legacy saves at the persistence
+      // boundary, so no roof-default fallback needed here.
+      const orientation = p.orientation;
       const { w, h } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
       const nearThreshold = Math.min(w, h) * NEAR_LINE_RATIO;
       // Detour magnitude: just enough to clear the central index-number

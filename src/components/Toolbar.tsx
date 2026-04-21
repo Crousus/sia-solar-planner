@@ -27,9 +27,14 @@
 import { useProjectStore } from '../store/projectStore';
 import { metersPerPixel } from '../utils/calibration';
 import { exportPdf } from '../utils/pdfExport';
+import {
+  serializeProject,
+  deserializeProject,
+  ProjectDeserializationError,
+} from '../utils/projectSerializer';
 import html2canvas from 'html2canvas';
 import { useState } from 'react';
-import type { ToolMode, Project } from '../types';
+import type { ToolMode } from '../types';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -253,21 +258,18 @@ export default function Toolbar({ mapRef }: Props) {
   /**
    * Save JSON: serialize the full persisted project and trigger a download.
    * Filename sanitized to filesystem-safe chars.
+   *
+   * The envelope shape (v2 `{ version, project, history }`) lives in
+   * utils/projectSerializer.ts — this handler is just the DOM-glue that
+   * pipes the result into a file download. Same for handleLoad below.
    */
   const handleSave = () => {
-    // v2 payload shape: `{version, project, history}`. The wrapper lets us
-    // round-trip the undo/redo stacks alongside the project, so reopening
-    // a saved file restores the exact working state the user had — Undo
-    // from a freshly-loaded file walks back through the same edits they
-    // made before saving. `version: 2` is a discriminator for the loader
-    // to distinguish this shape from legacy (v1) raw-`Project` payloads
-    // made before undo/redo existed; see handleLoad for the dispatch.
     const state = useProjectStore.getState();
-    const payload = {
-      version: 2 as const,
+    const payload = serializeProject({
       project: state.project,
-      history: { past: state.past, future: state.future },
-    };
+      past: state.past,
+      future: state.future,
+    });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -279,8 +281,12 @@ export default function Toolbar({ mapRef }: Props) {
 
   /**
    * Load JSON: open a file picker, parse, hand off to store.loadProject.
-   * No schema validation beyond JSON.parse — if the file was made by this
-   * app the shape matches; otherwise the user sees their error.
+   *
+   * Version dispatch and data migration are handled by deserializeProject;
+   * a ProjectDeserializationError means the file wasn't a recognizable
+   * v1 or v2 shape (wrong file picked, corrupted export) — surface that
+   * cleanly rather than the opaque cast error the previous inline logic
+   * produced.
    */
   const handleLoad = () => {
     const input = document.createElement('input');
@@ -292,21 +298,14 @@ export default function Toolbar({ mapRef }: Props) {
       try {
         const text = await file.text();
         const parsed = JSON.parse(text);
-        // Version-dispatch: v2 wraps the project inside `{version, project,
-        // history}`; v1 (pre-undo-redo) is a raw `Project` at the root.
-        // We check both `version === 2` AND that `parsed` is an object,
-        // because a v1 file happens to be a JSON object too and would
-        // match a bare `parsed.version === 2` test if some unrelated
-        // property named "version" ever got added to Project. Defensive
-        // but cheap. The `?? { past: [], future: [] }` protects against
-        // truncated v2 files missing the history key.
-        if (parsed && typeof parsed === 'object' && parsed.version === 2) {
-          loadProject(parsed.project as Project, parsed.history ?? { past: [], future: [] });
-        } else {
-          loadProject(parsed as Project);
-        }
+        const { project, history } = deserializeProject(parsed);
+        loadProject(project, history);
       } catch (err) {
-        alert('Failed to load project: ' + (err as Error).message);
+        if (err instanceof ProjectDeserializationError) {
+          alert('Could not read project file: ' + err.message);
+        } else {
+          alert('Failed to load project: ' + (err as Error).message);
+        }
       }
     };
     input.click();
