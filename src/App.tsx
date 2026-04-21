@@ -52,6 +52,36 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Undo / redo shortcuts. Intentionally checked BEFORE the `!locked`
+      // guard because edits to project name and panel type happen pre-lock
+      // and those mutations still go through the record path — the user
+      // expects ⌘Z to reach them too. The input/textarea guard above is
+      // the real "don't steal typing keys" check; `locked` only gates
+      // the single-letter mode keys below.
+      //
+      // Three chords supported:
+      //   ⌘Z / Ctrl+Z        → undo (standard)
+      //   ⇧⌘Z / Ctrl+Shift+Z → redo (Mac convention + modern Windows/Linux)
+      //   Ctrl+Y             → redo (legacy Windows convention; some users
+      //                        still reach for it reflexively — cheap to honor)
+      // `preventDefault()` on each branch so the browser's native Back /
+      // Find-next don't fire alongside our action.
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        useProjectStore.getState().undo();
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        useProjectStore.getState().redo();
+        return;
+      }
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        useProjectStore.getState().redo();
+        return;
+      }
       if (!locked) return;
       switch (e.key.toLowerCase()) {
         case 'r': setToolMode('draw-roof'); break;
