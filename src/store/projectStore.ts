@@ -37,6 +37,7 @@ import {
   assertReferentialIntegrity,
   setCoalesceKey,
   buildSlice,
+  cleanUiRefs,
   type HistoryState,
   type UndoableSlice,
 } from './undoMiddleware';
@@ -380,13 +381,34 @@ export const useProjectStore = create<ProjectStore>()(
               .filter(Boolean) as string[]
           );
           const renumbered = renumberStrings(remainingPanels, affectedStringIds);
+          const newRoofs = s.project.roofs.filter((r) => r.id !== id);
           return {
             project: {
               ...s.project,
-              roofs: s.project.roofs.filter((r) => r.id !== id),
+              roofs: newRoofs,
               panels: renumbered,
             },
-            selectedRoofId: s.selectedRoofId === id ? null : s.selectedRoofId,
+            // cleanUiRefs against a slice built from the POST-delete project:
+            // catches not only `selectedRoofId === id` (the obvious clear)
+            // but also `splitCandidateRoofId` if the user was mid-cut on the
+            // deleted roof, and `activePanelGroupId` if that group's panels
+            // all lived on this roof (their groupId disappears from the new
+            // panels array). Previously these fields leaked stale ids past
+            // the delete — the centralised sweep fixes it.
+            ...cleanUiRefs(
+              {
+                selectedRoofId: s.selectedRoofId,
+                activeStringId: s.activeStringId,
+                selectedInverterId: s.selectedInverterId,
+                activePanelGroupId: s.activePanelGroupId,
+                splitCandidateRoofId: s.splitCandidateRoofId,
+              },
+              buildSlice({
+                ...s.project,
+                roofs: newRoofs,
+                panels: renumbered,
+              }),
+            ),
           };
           },
           false,
@@ -859,16 +881,37 @@ export const useProjectStore = create<ProjectStore>()(
       // not lose the panels entirely.
       deleteString: (id) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              strings: s.project.strings.filter((str) => str.id !== id),
-              panels: s.project.panels.map((p) =>
-                p.stringId === id ? { ...p, stringId: null, indexInString: null } : p
+          (s) => {
+            const newStrings = s.project.strings.filter((str) => str.id !== id);
+            const newPanels = s.project.panels.map((p) =>
+              p.stringId === id ? { ...p, stringId: null, indexInString: null } : p
+            );
+            return {
+              project: {
+                ...s.project,
+                strings: newStrings,
+                panels: newPanels,
+              },
+              // See deleteRoof for the rationale. Here cleanUiRefs covers
+              // `activeStringId === id` (the explicit clear) plus any other
+              // UI ref that happened to dangle on the new slice — cheap
+              // insurance without duplicating the clear logic.
+              ...cleanUiRefs(
+                {
+                  selectedRoofId: s.selectedRoofId,
+                  activeStringId: s.activeStringId,
+                  selectedInverterId: s.selectedInverterId,
+                  activePanelGroupId: s.activePanelGroupId,
+                  splitCandidateRoofId: s.splitCandidateRoofId,
+                },
+                buildSlice({
+                  ...s.project,
+                  strings: newStrings,
+                  panels: newPanels,
+                }),
               ),
-            },
-            activeStringId: s.activeStringId === id ? null : s.activeStringId,
-          }),
+            };
+          },
           false,
           'deleteString',
         ),
@@ -1011,18 +1054,36 @@ export const useProjectStore = create<ProjectStore>()(
       // valid, just orphaned, and the user can re-assign.
       deleteInverter: (id) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              inverters: s.project.inverters.filter((i) => i.id !== id),
-              strings: s.project.strings.map((str) =>
-                str.inverterId === id ? { ...str, inverterId: null } : str
+          (s) => {
+            const newInverters = s.project.inverters.filter((i) => i.id !== id);
+            const newStrings = s.project.strings.map((str) =>
+              str.inverterId === id ? { ...str, inverterId: null } : str
+            );
+            return {
+              project: {
+                ...s.project,
+                inverters: newInverters,
+                strings: newStrings,
+              },
+              // See deleteRoof. The explicit `selectedInverterId === id`
+              // clear is now subsumed by cleanUiRefs' inverter-id sweep
+              // against the post-delete slice.
+              ...cleanUiRefs(
+                {
+                  selectedRoofId: s.selectedRoofId,
+                  activeStringId: s.activeStringId,
+                  selectedInverterId: s.selectedInverterId,
+                  activePanelGroupId: s.activePanelGroupId,
+                  splitCandidateRoofId: s.splitCandidateRoofId,
+                },
+                buildSlice({
+                  ...s.project,
+                  inverters: newInverters,
+                  strings: newStrings,
+                }),
               ),
-            },
-            // Clear the selection if the inverter being deleted was the one
-            // selected (prevents stale selection IDs in UIState).
-            selectedInverterId: s.selectedInverterId === id ? null : s.selectedInverterId,
-          }),
+            };
+          },
           false,
           'deleteInverter',
         ),
