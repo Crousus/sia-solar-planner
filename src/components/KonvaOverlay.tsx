@@ -31,6 +31,7 @@ import RoofLayer from './RoofLayer';
 import StringLayer from './StringLayer';
 import PanelLayer from './PanelLayer';
 import { computeDrawingSnap } from '../utils/drawingSnap';
+import { pointOnPolygonBoundary } from '../utils/polygonCut';
 import type { Point } from '../types';
 import type Konva from 'konva';
 
@@ -73,6 +74,9 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const setSelectedRoof = useProjectStore((s) => s.setSelectedRoof);
   const roofs = useProjectStore((s) => s.project.roofs);
+  const splitCandidateRoofId = useProjectStore((s) => s.splitCandidateRoofId);
+  const setSplitCandidateRoof = useProjectStore((s) => s.setSplitCandidateRoof);
+  const splitRoof = useProjectStore((s) => s.splitRoof);
   const mpp = useProjectStore((s) => s.project.mapState.metersPerPixel);
 
   // ── Konva-native pan/zoom state ──────────────────────────────────────
@@ -181,11 +185,38 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
       if (e.key === 'Escape') {
         setDrawingPoints([]);
         setIsPainting(false);
+        setSplitCandidateRoof(null);
         setToolMode('idle');
+      }
+      // Enter commits an in-progress polyline as a cut IF the last
+      // vertex lies on the candidate roof's boundary. Lets the user
+      // finish a polyline cut without needing a perfectly-snapped
+      // second edge click. We pull state via getState() because this
+      // handler registers once and closure-captured toolMode /
+      // splitCandidateRoofId would go stale.
+      if (e.key === 'Enter') {
+        const state = useProjectStore.getState();
+        if (
+          state.toolMode === 'draw-roof' &&
+          state.splitCandidateRoofId &&
+          drawingPoints.length >= 2
+        ) {
+          const candidateRoof = state.project.roofs.find(
+            (r) => r.id === state.splitCandidateRoofId,
+          );
+          const last = drawingPoints[drawingPoints.length - 1];
+          if (
+            candidateRoof &&
+            pointOnPolygonBoundary(last, candidateRoof.polygon, 8)
+          ) {
+            state.splitRoof(state.splitCandidateRoofId, drawingPoints);
+            setDrawingPoints([]);
+            state.setToolMode('idle');
+          }
+        }
       }
       if (e.key === 'Shift') setShiftHeld(true);
       if (e.key === ' ' || e.code === 'Space') {
-        // preventDefault stops the page from scrolling on space.
         e.preventDefault();
         setSpaceHeld(true);
       }
@@ -200,7 +231,7 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [setToolMode]);
+  }, [setToolMode, drawingPoints, setSplitCandidateRoof]);
 
   // Overlay only intercepts events when the map is locked. In idle mode,
   // this still allows clicking shapes (roofs/panels) for selection.
@@ -289,18 +320,71 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
     if (!pos) return;
 
     if (toolMode === 'draw-roof') {
+      // Snap the incoming click via the same snap system that drives
+      // the preview. This guarantees the committed vertex matches the
+      // visual preview exactly, including edge and vertex snaps against
+      // existing roof boundaries.
       const snap = computeDrawingSnap(pos, drawingPoints, roofs, { enabled: !shiftHeld });
       const snapped = snap.point ?? pos;
+
+      // ── Boundary-hit test ──────────────────────────────────────────
+      // We want to know: does this snapped point lie on the boundary
+      // of some existing roof? If yes, we remember that roof id as a
+      // "cut candidate" — subsequent clicks on the SAME roof's boundary
+      // will commit the cut instead of continuing a regular polygon.
+      // We use 8 px (matches the edge-snap tolerance in drawingSnap.ts)
+      // — if a point landed close enough to count as snapped, it
+      // should count as on-boundary.
+      const EDGE_TOL = 8;
+      let hitRoofId: string | null = null;
+      for (const r of roofs) {
+        if (pointOnPolygonBoundary(snapped, r.polygon, EDGE_TOL)) {
+          hitRoofId = r.id;
+          break;
+        }
+      }
+
+      // Case 1: first vertex of a fresh polyline AND it's on a roof.
+      // Tag that roof as the cut candidate and place the vertex normally.
+      if (drawingPoints.length === 0 && hitRoofId) {
+        setSplitCandidateRoof(hitRoofId);
+        setDrawingPoints([snapped]);
+        return;
+      }
+
+      // Case 2: we have a cut candidate AND the new vertex is on that
+      // same roof's boundary AND we already placed ≥1 vertex. Fire the
+      // split. The cut line is everything drawn so far + this snapped
+      // endpoint.
+      if (
+        splitCandidateRoofId &&
+        hitRoofId === splitCandidateRoofId &&
+        drawingPoints.length >= 1
+      ) {
+        const cutLine = [...drawingPoints, snapped];
+        splitRoof(splitCandidateRoofId, cutLine);
+        // splitRoof clears splitCandidateRoofId in the store. We just
+        // need to clear local drawing state and exit draw-roof.
+        setDrawingPoints([]);
+        setToolMode('idle');
+        return;
+      }
+
+      // Case 3: existing close-path behavior — click near the first
+      // vertex to close as a normal new roof.
       if (drawingPoints.length >= 3) {
         const first = drawingPoints[0];
         const dist = Math.hypot(first.x - snapped.x, first.y - snapped.y);
         if (dist < 12) {
           addRoof(drawingPoints);
           setDrawingPoints([]);
+          setSplitCandidateRoof(null);
           setToolMode('idle');
           return;
         }
       }
+
+      // Default: append a vertex, continue drawing.
       setDrawingPoints((prev) => [...prev, snapped]);
     } else if (toolMode === 'idle') {
       // Empty-background click deselects. Shapes use e.cancelBubble.
@@ -309,9 +393,28 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   };
 
   const handleDblClick = () => {
-    if (toolMode === 'draw-roof' && drawingPoints.length >= 3) {
+    if (toolMode !== 'draw-roof') return;
+
+    // If we have a cut candidate AND the last vertex lies on that
+    // roof's boundary → this double-click commits the cut (useful for
+    // multi-vertex polyline cuts where the user wants to stop drawing
+    // without clicking the opposite edge a second time).
+    if (splitCandidateRoofId && drawingPoints.length >= 2) {
+      const last = drawingPoints[drawingPoints.length - 1];
+      const candidateRoof = roofs.find((r) => r.id === splitCandidateRoofId);
+      if (candidateRoof && pointOnPolygonBoundary(last, candidateRoof.polygon, 8)) {
+        splitRoof(splitCandidateRoofId, drawingPoints);
+        setDrawingPoints([]);
+        setToolMode('idle');
+        return;
+      }
+    }
+
+    // Fallback to the existing "finish as a new roof" double-click.
+    if (drawingPoints.length >= 3) {
       addRoof(drawingPoints);
       setDrawingPoints([]);
+      setSplitCandidateRoof(null);
       setToolMode('idle');
     }
   };
