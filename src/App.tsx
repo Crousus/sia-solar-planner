@@ -37,6 +37,8 @@ export default function App() {
 
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const locked = useProjectStore((s) => s.project.mapState.locked);
+  const toolMode = useProjectStore((s) => s.toolMode);
+  const splitCandidateRoofId = useProjectStore((s) => s.splitCandidateRoofId);
 
   const handleMapReady = useCallback((m: L.Map) => {
     mapRef.current = m;
@@ -132,6 +134,41 @@ export default function App() {
                 Lock Map
               </span>
               <span style={{ color: 'var(--ink-300)' }}>to start drawing.</span>
+            </div>
+          )}
+          {locked && toolMode === 'draw-roof' && splitCandidateRoofId && (
+            /*
+              Split-mode hint. Same visual treatment as the pre-lock
+              hint but positioned the same way so the user sees
+              instructions in a consistent place. Only rendered while
+              the user is mid-cut — no clutter in normal drawing.
+            */
+            <div
+              className="surface absolute top-4 left-1/2 -translate-x-1/2 rounded-full px-4 py-2 z-[600] pointer-events-none flex items-center gap-2.5"
+              style={{ fontSize: 12.5 }}
+            >
+              <span className="relative flex items-center justify-center" style={{ width: 10, height: 10 }}>
+                <span
+                  className="absolute inset-0 rounded-full animate-pulse-sun"
+                  style={{ background: 'var(--sun-400)', filter: 'blur(4px)' }}
+                />
+                <span
+                  className="relative rounded-full"
+                  style={{ width: 6, height: 6, background: 'var(--sun-300)' }}
+                />
+              </span>
+              <span style={{ color: 'var(--ink-100)' }}>
+                Click another edge of this roof to
+              </span>
+              <span
+                className="font-display font-semibold"
+                style={{ color: 'var(--sun-300)', letterSpacing: '-0.01em' }}
+              >
+                split
+              </span>
+              <span style={{ color: 'var(--ink-300)' }}>
+                it, or press Enter to commit a polyline cut.
+              </span>
             </div>
           )}
         </main>
