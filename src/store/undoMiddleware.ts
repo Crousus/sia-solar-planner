@@ -30,10 +30,30 @@ export type UndoableSlice = {
 export interface HistoryState {
   past: UndoableSlice[];
   future: UndoableSlice[];
+  // `lastActionSig` — the signature of the most recently PUSHED history
+  // entry. The middleware uses this to decide whether the next record-path
+  // mutation should coalesce (same action + key, within 500ms). Reset to
+  // null after undo/redo so the first post-undo edit always starts a new
+  // history step.
   lastActionSig: {
     action: string;
     key: string | null;
     at: number;
+  } | null;
+  // `_pendingCoalesce` — the call-site's declared coalescing key for the
+  // NEXT set() call. Written by `setCoalesceKey` immediately before the
+  // record-path set(), read (and consumed) by the middleware during the
+  // record branch. Kept as a separate field from `lastActionSig` because
+  // they encode different things: `lastActionSig` is "what did we last
+  // push" (comparison target), `_pendingCoalesce` is "what key does THIS
+  // call claim" (key derivation). Conflating them broke coalescing for
+  // the first push of a run (the helper's write looked identical to a
+  // prior push of the same run, causing the very first set to suppress
+  // itself). Prefixed with underscore to signal internal/transient — it's
+  // cleared to null as soon as the middleware reads it.
+  _pendingCoalesce?: {
+    action: string;
+    key: string | null;
   } | null;
 }
 
@@ -257,8 +277,7 @@ declare module 'zustand' {
 export type NamedSet<T> = WithUndoable<StoreApi<T>>['setState'];
 
 /**
- * Record-path constants. Exposed for tests; the 500 ms coalescing window
- * is added in Task 7.
+ * Record-path constants. Exposed for tests.
  *
  * MAX_PAST caps the number of retained snapshots. Chosen as 100 to balance
  * "enough headroom that users practically never hit the ceiling mid-session"
@@ -268,6 +287,66 @@ export type NamedSet<T> = WithUndoable<StoreApi<T>>['setState'];
  * sub-trees have since been replaced by newer edits.
  */
 export const MAX_PAST = 100;
+
+/**
+ * Coalescing window in milliseconds. Two consecutive record-path mutations
+ * with the same action name AND the same per-instance key that arrive within
+ * this window collapse into a single history step — the SECOND (and third,
+ * fourth, …) mutation suppresses its history push, while still applying the
+ * project change. An undo therefore jumps back past the whole streak to the
+ * pre-streak state, matching user intent for rapid-fire edits like dragging
+ * a slider, typing into a name field, or repeatedly clicking +1.
+ *
+ * 500ms is slow enough to catch human-paced repeats (typical keypress cadence
+ * is 100–300ms, slider drags emit events at 60fps = 16ms) but fast enough
+ * that genuinely distinct logical actions separated by a visible pause stay
+ * as separate steps.
+ */
+export const COALESCE_MS = 500;
+
+/**
+ * Helper for store actions to set the coalescing key BEFORE calling set()
+ * with a record-path action name. The middleware reads `_pendingCoalesce`
+ * (which this helper sets) when deciding whether the next set() call
+ * coalesces with the previous one.
+ *
+ * Why a separate helper rather than deriving the key inside the middleware:
+ * the per-instance discriminator (e.g. a roofId for `updateRoof`) lives in
+ * the action's arguments, not in the set() partial. The middleware only sees
+ * the partial + the action name string; it has no access to the caller's
+ * arguments. Rather than thread a keyFrom function through every set() call
+ * (which would force every action signature to change), the call-site writes
+ * the key into `_pendingCoalesce` via this helper, and the middleware picks
+ * it back up on the immediately-following set().
+ *
+ * Why a SEPARATE field from `lastActionSig`: `lastActionSig` is the
+ * signature of the last PUSHED history entry (the comparison target for
+ * coalescing). `_pendingCoalesce` is the CURRENT call's declared key (the
+ * comparison source). If we conflated them, the helper's pre-set write
+ * would look identical to a push sig of the same action+key run, causing
+ * the very first mutation of a run to compare against itself and falsely
+ * coalesce — suppressing the initial history push entirely. Keeping them
+ * separate lets the middleware compare "this call's intent" against
+ * "last real push" correctly.
+ *
+ * The `__history__` action name routes through the bypass branch, so this
+ * write doesn't itself get recorded.
+ *
+ * Usage inside a store action:
+ *   setCoalesceKey(set, 'assignPanelsToString', stringId);
+ *   set((s) => ..., false, 'assignPanelsToString');
+ */
+export function setCoalesceKey<T extends HistoryState>(
+  set: (partial: Partial<T>, replace?: boolean, actionName?: string) => void,
+  action: string,
+  key: string | null,
+) {
+  set(
+    { _pendingCoalesce: { action, key } } as Partial<T>,
+    false,
+    '__history__',
+  );
+}
 
 /**
  * Detects a no-op mutation: every field in `next` is reference-equal to
@@ -392,6 +471,82 @@ const undoableImpl = (
         const after = buildSlice(get().project);
         if (slicesEqual(before, after)) return; // no-op: drop phantom step
 
+        // Time source: prefer performance.now because it's monotonic and
+        // unaffected by wall-clock adjustments. Feature-detect both the
+        // global and the method so vitest's vi.stubGlobal('performance', …)
+        // and non-DOM runtimes (some older Node paths) still work. The
+        // 500ms window dwarfs any precision concern with Date.now fallback.
+        const now =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : Date.now();
+
+        // Two distinct pieces of coalescing state are in play here:
+        //   - `lastActionSig`: the PUSH signature of the previous record-path
+        //     mutation (the one most-recently added to `past`). This is our
+        //     comparison target.
+        //   - `_pendingCoalesce`: the CURRENT call's claimed key, written by
+        //     `setCoalesceKey(set, name, key)` immediately before this
+        //     mutation's set() fired. Consumed (and cleared) here.
+        //
+        // Why separate fields: if the helper wrote into `lastActionSig`
+        // directly, the very first mutation of a run would see sig === the
+        // helper's write, action matches, key matches, window matches → it
+        // would suppress its OWN push as though coalescing with itself. By
+        // keeping the pending key separate from the push signature, the
+        // first mutation correctly sees `lastActionSig === null` (or an
+        // older, different sig) and pushes; subsequent mutations of the
+        // same run see `lastActionSig` set to the first push's sig, their
+        // own `_pendingCoalesce` carrying the same key, and coalesce.
+        const pending = get()._pendingCoalesce ?? null;
+        // If `_pendingCoalesce` was set for this same action, use its key;
+        // otherwise this action wasn't explicitly keyed, so the key is null
+        // (coalescing still works on action-name + time alone for keyless
+        // actions like `addRoof`). Guarding on `pending.action === name`
+        // protects against a stale pending write from a different action
+        // leaking into this call — shouldn't happen under correct usage
+        // (helper writes are always immediately followed by a matching
+        // set()), but defensive.
+        const key: string | null =
+          pending !== null && pending.action === name ? pending.key : null;
+
+        const sig = get().lastActionSig;
+        // Coalesce criteria:
+        //   - there's a previous PUSH signature (first-ever record has none)
+        //   - same action name (sig.action === name). This is the primary
+        //     discriminator — different actions never coalesce.
+        //   - same key (sig.key === key). For keyed actions (updateRoof
+        //     with per-roofId key) this prevents editing roof A then roof B
+        //     in quick succession from collapsing into one step; the
+        //     'does not coalesce across different keys' test locks this in.
+        //   - within the 500ms window (now - sig.at <= COALESCE_MS).
+        const shouldCoalesce =
+          sig !== null &&
+          sig.action === name &&
+          sig.key === key &&
+          now - sig.at <= COALESCE_MS;
+
+        if (shouldCoalesce) {
+          // Suppress push; slide the timestamp forward so a chain of rapid
+          // edits keeps extending the window. If we DIDN'T advance `at`,
+          // a long streak of mutations 400ms apart would eventually break
+          // coalescing once the original `at` aged past 500ms relative to
+          // the latest mutation, even though no individual gap exceeded
+          // the window. Sliding `at` makes the window "last edit + 500ms",
+          // which better matches user intent for continuous activity.
+          // Also clear `_pendingCoalesce` so a subsequent keyless record
+          // doesn't accidentally inherit this call's key.
+          (set as any)(
+            {
+              lastActionSig: { action: name!, key, at: now },
+              _pendingCoalesce: null,
+            },
+            false,
+            '__history__',
+          );
+          return;
+        }
+
         // Spread-create a fresh past array, then shift() its head if we
         // blew the cap. Mutating after-spread is safe because `newPast`
         // is our local copy; no React/zustand consumer has seen it yet.
@@ -399,11 +554,18 @@ const undoableImpl = (
         if (newPast.length > MAX_PAST) newPast.shift();
 
         // Replace=false (partial merge): we only want to overwrite the
-        // past/future fields; everything else (project, UI, etc.) must
-        // stay untouched. Action name '__history__' is classified as
-        // bypass so this call doesn't recurse into the record branch.
+        // past/future fields plus the freshly-recorded signature; everything
+        // else (project, UI, etc.) must stay untouched. Action name
+        // '__history__' is classified as bypass so this call doesn't
+        // recurse into the record branch. Clear `_pendingCoalesce` — it's
+        // been consumed for this set().
         (set as any)(
-          { past: newPast, future: [] },
+          {
+            past: newPast,
+            future: [] as UndoableSlice[],
+            lastActionSig: { action: name!, key, at: now },
+            _pendingCoalesce: null,
+          },
           false,
           '__history__',
         );

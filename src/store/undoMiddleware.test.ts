@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 import {
   undoable,
   buildSlice,
   cleanUiRefs,
+  setCoalesceKey,
   type HistoryState,
   type UndoableSlice,
 } from './undoMiddleware';
@@ -158,5 +159,95 @@ describe('record policy', () => {
     // reference-equal fields → no push.
     store.getState().setName('p');
     expect(store.getState().past.length).toBe(0);
+  });
+});
+
+describe('coalescing', () => {
+  it('collapses same action+key within 500ms into one step', () => {
+    const nowRef = { t: 1000 };
+    vi.stubGlobal('performance', { now: () => nowRef.t });
+    try {
+      const store = createStore<TestState & { setRoofName: (id: string, n: string) => void }>()(
+        undoable((set) => ({
+          past: [],
+          future: [],
+          lastActionSig: null,
+          project: { name: 'p', roofs: [{ id: 'r1', name: 'a' }] as any, panels: [], strings: [], inverters: [], panelType: { id: 'pt1' } },
+          selectedRoofId: null,
+          setName: (n) => set((s) => ({ project: { ...s.project, name: n } }), false, 'setProjectName'),
+          setRoofName: (id, n) => {
+            setCoalesceKey(set as any, 'updateRoof', id);
+            set(
+              (s: any) => ({
+                project: {
+                  ...s.project,
+                  roofs: s.project.roofs.map((r: any) => (r.id === id ? { ...r, name: n } : r)),
+                },
+              }),
+              false,
+              'updateRoof',
+            );
+          },
+        }))
+      );
+      store.getState().setRoofName('r1', 'b');
+      nowRef.t += 100;
+      store.getState().setRoofName('r1', 'c');
+      nowRef.t += 100;
+      store.getState().setRoofName('r1', 'd');
+      expect(store.getState().past.length).toBe(1);
+      expect((store.getState().past[0].roofs[0] as any).name).toBe('a'); // original
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not coalesce when the window expires', () => {
+    const nowRef = { t: 2000 };
+    vi.stubGlobal('performance', { now: () => nowRef.t });
+    try {
+      const store = makeStore();
+      store.getState().setName('b');
+      nowRef.t += 600; // > 500ms
+      store.getState().setName('c');
+      expect(store.getState().past.length).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not coalesce across different keys', () => {
+    const nowRef = { t: 3000 };
+    vi.stubGlobal('performance', { now: () => nowRef.t });
+    try {
+      const store = createStore<TestState & { setRoofName: (id: string, n: string) => void }>()(
+        undoable((set) => ({
+          past: [],
+          future: [],
+          lastActionSig: null,
+          project: { name: 'p', roofs: [{ id: 'r1', name: 'a' }, { id: 'r2', name: 'x' }] as any, panels: [], strings: [], inverters: [], panelType: { id: 'pt1' } },
+          selectedRoofId: null,
+          setName: (n) => set((s) => ({ project: { ...s.project, name: n } }), false, 'setProjectName'),
+          setRoofName: (id, n) => {
+            setCoalesceKey(set as any, 'updateRoof', id);
+            set(
+              (s: any) => ({
+                project: {
+                  ...s.project,
+                  roofs: s.project.roofs.map((r: any) => (r.id === id ? { ...r, name: n } : r)),
+                },
+              }),
+              false,
+              'updateRoof',
+            );
+          },
+        }))
+      );
+      store.getState().setRoofName('r1', 'b');
+      store.getState().setRoofName('r2', 'y');
+      expect(store.getState().past.length).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
