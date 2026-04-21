@@ -166,3 +166,53 @@ describe('canUndo/canRedo reactivity', () => {
     expect(useProjectStore.getState().canRedo).toBe(false);
   });
 });
+
+describe('JSON round-trip with history', () => {
+  beforeEach(() => {
+    useProjectStore.getState().resetProject();
+  });
+
+  it('v2 payload round-trip preserves past and future', () => {
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    const beforePast = useProjectStore.getState().past.length;
+
+    // Export
+    const payload = {
+      version: 2,
+      project: useProjectStore.getState().project,
+      history: {
+        past: useProjectStore.getState().past,
+        future: useProjectStore.getState().future,
+      },
+    };
+    const json = JSON.stringify(payload);
+
+    // Reset and import
+    useProjectStore.getState().resetProject();
+    const parsed = JSON.parse(json);
+    useProjectStore.getState().loadProject(parsed.project, parsed.history);
+
+    expect(useProjectStore.getState().past.length).toBe(beforePast);
+    expect(useProjectStore.getState().project.roofs.length).toBe(1);
+  });
+
+  it('v1 raw-Project import loads with empty history', () => {
+    const v1Payload = useProjectStore.getState().project;
+    useProjectStore.getState().addRoof([
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+    ]);
+    const json = JSON.stringify(v1Payload);
+    useProjectStore.getState().resetProject();
+    const parsed = JSON.parse(json);
+    // Dispatch: if parsed.version === 2 → loadProject(parsed.project, parsed.history); else loadProject(parsed).
+    if ((parsed as any).version === 2) {
+      useProjectStore.getState().loadProject((parsed as any).project, (parsed as any).history);
+    } else {
+      useProjectStore.getState().loadProject(parsed as any);
+    }
+    expect(useProjectStore.getState().past).toEqual([]);
+    expect(useProjectStore.getState().future).toEqual([]);
+  });
+});

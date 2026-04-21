@@ -255,11 +255,24 @@ export default function Toolbar({ mapRef }: Props) {
    * Filename sanitized to filesystem-safe chars.
    */
   const handleSave = () => {
-    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    // v2 payload shape: `{version, project, history}`. The wrapper lets us
+    // round-trip the undo/redo stacks alongside the project, so reopening
+    // a saved file restores the exact working state the user had — Undo
+    // from a freshly-loaded file walks back through the same edits they
+    // made before saving. `version: 2` is a discriminator for the loader
+    // to distinguish this shape from legacy (v1) raw-`Project` payloads
+    // made before undo/redo existed; see handleLoad for the dispatch.
+    const state = useProjectStore.getState();
+    const payload = {
+      version: 2 as const,
+      project: state.project,
+      history: { past: state.past, future: state.future },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${project.name.replace(/[^a-z0-9-_]/gi, '_')}.json`;
+    a.download = `${state.project.name.replace(/[^a-z0-9-_]/gi, '_')}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -278,8 +291,20 @@ export default function Toolbar({ mapRef }: Props) {
       if (!file) return;
       try {
         const text = await file.text();
-        const parsed = JSON.parse(text) as Project;
-        loadProject(parsed);
+        const parsed = JSON.parse(text);
+        // Version-dispatch: v2 wraps the project inside `{version, project,
+        // history}`; v1 (pre-undo-redo) is a raw `Project` at the root.
+        // We check both `version === 2` AND that `parsed` is an object,
+        // because a v1 file happens to be a JSON object too and would
+        // match a bare `parsed.version === 2` test if some unrelated
+        // property named "version" ever got added to Project. Defensive
+        // but cheap. The `?? { past: [], future: [] }` protects against
+        // truncated v2 files missing the history key.
+        if (parsed && typeof parsed === 'object' && parsed.version === 2) {
+          loadProject(parsed.project as Project, parsed.history ?? { past: [], future: [] });
+        } else {
+          loadProject(parsed as Project);
+        }
       } catch (err) {
         alert('Failed to load project: ' + (err as Error).message);
       }
