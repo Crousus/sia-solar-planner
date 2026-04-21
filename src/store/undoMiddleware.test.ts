@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createStore } from 'zustand/vanilla';
 import { undoable, type HistoryState } from './undoMiddleware';
+import { buildSlice } from './undoMiddleware';
 
 // A minimal test store shape used throughout these tests. Shape chosen
 // to mirror projectStore's essentials (a "project"-like object plus UI
@@ -41,5 +42,37 @@ describe('ACTION_POLICY', () => {
     expect(mod.ACTION_POLICY.assignPanelsToString.kind).toBe('record');
     expect(mod.ACTION_POLICY.resetProject.kind).toBe('clear-history');
     expect(mod.ACTION_POLICY.loadProject.kind).toBe('load-history');
+  });
+});
+
+describe('buildSlice', () => {
+  it('extracts only the undoable fields from a project', () => {
+    const project = {
+      name: 'proj',
+      panelType: { id: 'pt', widthM: 1 },
+      roofs: [{ id: 'r1' }],
+      panels: [{ id: 'p1' }],
+      strings: [{ id: 's1' }],
+      inverters: [{ id: 'i1' }],
+      mapState: { locked: true, capturedImage: 'BIG_BASE64' },
+    };
+    const slice = buildSlice(project as any);
+    expect(slice).toEqual({
+      name: 'proj',
+      panelType: project.panelType,
+      roofs: project.roofs,
+      panels: project.panels,
+      strings: project.strings,
+      inverters: project.inverters,
+    });
+    // mapState is deliberately excluded to keep captured image out of history.
+    expect('mapState' in slice).toBe(false);
+  });
+
+  it('shares references (structural sharing)', () => {
+    const roofs = [{ id: 'r1' }];
+    const project = { name: 'p', panelType: { id: 'pt' }, roofs, panels: [], strings: [], inverters: [], mapState: {} };
+    const slice = buildSlice(project as any);
+    expect(slice.roofs).toBe(roofs);
   });
 });

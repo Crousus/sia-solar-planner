@@ -111,6 +111,46 @@ export const ACTION_POLICY: Record<string, Policy> = {
   redo:                    { kind: 'bypass' },
 };
 
+/**
+ * Build an UndoableSlice from a project-like object. Shallow copy by
+ * reference for every sub-field — structural sharing is what keeps
+ * memory usage bounded when we push a new slice on every edit. Because
+ * reducers in projectStore already produce fresh arrays/objects for the
+ * parts they mutate (spread-based updates), copying references here is
+ * safe: mutating past slices can't happen without first replacing the
+ * reference at the top of the tree, which is exactly what an undo
+ * restores.
+ *
+ * `mapState` is deliberately excluded (see spec §3.4): it contains the
+ * captured map image (base64, potentially multi-MB) and UI lock flags
+ * that we don't want to resurrect on undo — rewinding a panel edit
+ * shouldn't unlock the map or replace the background image.
+ *
+ * The parameter type is loose (`any` for sub-fields) on purpose: this
+ * helper is called from projectStore.ts where TypeScript has already
+ * narrowed the Project shape, so over-specifying here would force us
+ * to either duplicate the Project type or create a circular import.
+ * Task 14 will tighten UndoableSlice itself; the parameter stays
+ * permissive.
+ */
+export function buildSlice(project: {
+  name: string;
+  panelType: any;
+  roofs: any[];
+  panels: any[];
+  strings: any[];
+  inverters: any[];
+}): UndoableSlice {
+  return {
+    name: project.name,
+    panelType: project.panelType,
+    roofs: project.roofs,
+    panels: project.panels,
+    strings: project.strings,
+    inverters: project.inverters,
+  };
+}
+
 // --- Type plumbing to widen set() to accept an action-name 3rd arg ---
 // Mirror of zustand/middleware/devtools.d.ts internal helpers. These are
 // local (not re-exported) because they're implementation detail of the
