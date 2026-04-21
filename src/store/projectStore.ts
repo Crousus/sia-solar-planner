@@ -30,6 +30,13 @@ import { STRING_COLORS } from '../types';
 import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
 import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
 import { migrateProject } from '../utils/projectSerializer';
+// Backend-sync imports. `applyProjectPatch` is the RFC 6902 patcher that
+// syncClient will feed with inbound SSE ops. Deliberately a top-of-file
+// ESM import rather than the plan's `require('../backend/diff')` lazy
+// shim — this project is ESM/Vite, CommonJS require() isn't available
+// at runtime, and the bundle cost is negligible (fast-json-patch is
+// small and already pulled in by syncClient anyway).
+import { applyProjectPatch, type Op } from '../backend/diff';
 import {
   undoable,
   ACTION_POLICY,
@@ -200,6 +207,20 @@ interface ProjectStore extends UIState, HistoryState {
   toggleBackground: () => void;
   loadProject: (p: Project, history?: { past: UndoableSlice[]; future: UndoableSlice[] }) => void;
   resetProject: () => void;
+  /**
+   * Apply a remote patch (RFC 6902 ops) to the current project.
+   * Called by syncClient when an SSE patch arrives from the server.
+   *
+   * Registered as 'bypass' in ACTION_POLICY — does NOT push to the undo
+   * stack. Rationale: the spec's Q11 decision is local-only undo; a
+   * remote-originated change is authoritative and wouldn't make sense
+   * as something Alice can Ctrl-Z away.
+   *
+   * If the patch fails to apply (malformed ops, `test` op mismatch),
+   * this throws; syncClient's inbound handler catches and triggers a
+   * full resync.
+   */
+  applyRemotePatch: (ops: Op[]) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -1227,6 +1248,36 @@ export const useProjectStore = create<ProjectStore>()(
           },
           false,
           'resetProject',
+        ),
+
+      // ── Remote sync ─────────────────────────────────────────────────────
+      // Apply an RFC 6902 patch arriving from the server (SSE inbound).
+      // Thin wrapper around `applyProjectPatch` from backend/diff.ts —
+      // the real work is the library call; this action exists purely so
+      // the mutation flows through the store's middleware with a named
+      // policy ('applyRemotePatch' → bypass), keeping remote updates out
+      // of the undo stack while still driving React re-renders.
+      //
+      // Contract: if `applyProjectPatch` throws (malformed ops, failed
+      // `test` op), we let the throw propagate. syncClient's inbound
+      // handler catches it and triggers a full resync — which is the
+      // correct recovery because a failed patch means our local state
+      // has diverged from the server's assumed baseline, and replaying
+      // subsequent ops on top would compound the divergence.
+      //
+      // We only touch `project` here: UI state (selection, toolMode)
+      // stays as-is because the remote edit is happening to the
+      // underlying data, not to Alice's cursor. If a remote delete
+      // removes a roof Alice has selected, the next interaction will
+      // surface the dangling id — we deliberately don't pre-emptively
+      // null it out, since doing so would flicker the sidebar during
+      // every incoming patch and usually the remote change doesn't
+      // affect Alice's selection at all.
+      applyRemotePatch: (ops) =>
+        set(
+          (s) => ({ project: applyProjectPatch(s.project, ops) }),
+          false,
+          'applyRemotePatch',
         ),
 
       // ── Undo / Redo ─────────────────────────────────────────────────────

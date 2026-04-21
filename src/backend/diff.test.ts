@@ -17,6 +17,13 @@
 import { describe, it, expect } from 'vitest';
 import { diffProjects, applyProjectPatch } from './diff';
 import type { Project } from '../types';
+// Pulled in for the applyRemotePatch store-action test below. The store
+// is a singleton module-level instance (zustand's `create` returns one);
+// tests that mutate it can leak into later tests via shared state, but
+// this particular test only inspects `past.length` delta (before vs
+// after) rather than absolute counts, so it's robust to any history
+// other tests in the same file may have accrued.
+import { useProjectStore } from '../store/projectStore';
 
 // Build a minimal project fixture for tests. Kept tiny to keep diffs
 // readable when something fails — most tests mutate a shallow field
@@ -100,5 +107,33 @@ describe('diff round-trip', () => {
     const ops = diffProjects(a, b);
     const applied = applyProjectPatch(a, ops);
     expect(applied).toEqual(b);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Store-action integration test. Lives in this file (rather than a
+// store-specific one) because the action is the thinnest possible wrapper
+// over `applyProjectPatch` — testing it next to the diff primitives keeps
+// the whole "inbound-patch" story in one place.
+//
+// The critical assertion is the `past.length` delta: the whole reason
+// applyRemotePatch exists as a separate action name (rather than just
+// calling `set` from syncClient) is to route through the bypass branch
+// of ACTION_POLICY. If someone reclassifies it as 'record' in a later
+// refactor, this test fails — which is exactly the behavior we want.
+// ────────────────────────────────────────────────────────────────────────
+describe('applyRemotePatch store action', () => {
+  it('applies ops to the current project without touching history', () => {
+    const store = useProjectStore;
+    const before = store.getState();
+    const pastLen = before.past.length;
+
+    store.getState().applyRemotePatch([
+      { op: 'replace', path: '/name', value: 'From Server' },
+    ]);
+
+    const after = store.getState();
+    expect(after.project.name).toBe('From Server');
+    expect(after.past.length).toBe(pastLen); // history untouched
   });
 });

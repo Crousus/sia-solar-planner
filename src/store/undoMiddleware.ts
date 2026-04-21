@@ -129,6 +129,11 @@ export type ActionName =
   | 'loadProject'
   | 'undo'
   | 'redo'
+  // ── Backend-sync (remote-originated) ───────────────────────────────
+  // Inbound SSE patches from the server, applied by syncClient. Classified
+  // as 'bypass' below — see the ACTION_POLICY entry for the Q11 rationale
+  // that remote-originated changes must not enter the local undo stack.
+  | 'applyRemotePatch'
   // ── Middleware-internal ────────────────────────────────────────────
   | '__history__';
 
@@ -190,6 +195,18 @@ export const ACTION_POLICY: Record<ActionName, Policy> = {
   // directly); classified as 'bypass' so the middleware doesn't re-snapshot.
   undo:                    { kind: 'bypass' },
   redo:                    { kind: 'bypass' },
+
+  // Remote patches are applied verbatim to `project` from an SSE stream
+  // originated by another user. Per spec Q11 ("undo is local-only"), these
+  // must NOT enter the history stack: Alice undoing her own edit is one
+  // thing, but Ctrl-Z silently rolling back Bob's latest change would be
+  // both confusing ("who moved my panel?") AND incorrect as a sync model
+  // (the server would immediately push the state back, creating a fight).
+  // Bypass also prevents coalescing — we don't want a rapid burst of
+  // remote ops from one collaborator's drag gesture to accidentally
+  // suppress history entries for a local edit that happened to share
+  // an action-name string.
+  applyRemotePatch:        { kind: 'bypass' },
 
   // Internal marker for the middleware's own set() calls that update
   // past/future after a recorded mutation. Bypass prevents infinite
