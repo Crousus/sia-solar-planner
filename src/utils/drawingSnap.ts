@@ -3,6 +3,9 @@
 //
 // Three kinds of snap, combined into a single pass:
 //
+//   0. POINT & EDGE SNAP. If the cursor is near an existing vertex or edge,
+//      snap exactly to it.
+//
 //   1. ANGLE SNAP. The new edge's direction is snapped to a "good" angle:
 //        a. 45°-multiples relative to the previous edge (so corners come
 //           out at 45° / 90° / 135° etc. without eyeballing).
@@ -33,7 +36,9 @@ export type SnapKind =
   | 'angle-direction'   // the infinite ray showing the snapped direction
   | 'edge-parallel'     // reference edge for parallel snap
   | 'edge-perp'         // reference edge for perpendicular snap
-  | 'length-match';     // reference edge whose length we're matching
+  | 'length-match'      // reference edge whose length we're matching
+  | 'point-match'       // snapped exactly to a corner
+  | 'edge-match';       // reference edge we are snapping onto directly
 
 /** A single line the renderer should draw as a snap guide. */
 export type SnapGuide = {
@@ -58,6 +63,8 @@ export type SnapResult = {
 /** Tolerances — tuned for "magnet" feel, not sticky. */
 const ANGLE_TOL_DEG = 3;
 const LENGTH_TOL_PX = 8;
+const POINT_SNAP_TOL_PX = 10;
+const EDGE_SNAP_TOL_PX = 8;
 
 /** Normalize an angle to (-π, π]. */
 function normalizeAngle(a: number): number {
@@ -69,6 +76,17 @@ function normalizeAngle(a: number): number {
 /** Unsigned angular distance in degrees between two angles (rad). */
 function angleDiffDeg(a: number, b: number): number {
   return (Math.abs(normalizeAngle(a - b)) * 180) / Math.PI;
+}
+
+/** Helper: project a point onto a line segment. */
+function projectToSegment(p: Point, a: Point, b: Point): Point {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return a;
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return { x: a.x + t * dx, y: a.y + t * dy };
 }
 
 /**
@@ -157,7 +175,66 @@ export function computeDrawingSnap(
 
   const edges = collectEdges(drawingPoints, roofs);
 
-  // ── Gather angle candidates ──────────────────────────────────────────
+  // ── 1. Point Snap (Corners) ──────────────────────────────────────────
+  let bestPointDist = POINT_SNAP_TOL_PX;
+  let pointSnapPoint: Point | null = null;
+
+  for (const edge of edges) {
+    for (const pt of [edge.a, edge.b]) {
+      // Don't snap to the exact same point we just started from
+      if (Math.hypot(pt.x - last.x, pt.y - last.y) < 1e-3) continue;
+
+      const d = Math.hypot(cursor.x - pt.x, cursor.y - pt.y);
+      if (d < bestPointDist) {
+        bestPointDist = d;
+        pointSnapPoint = { x: pt.x, y: pt.y };
+      }
+    }
+  }
+
+  if (pointSnapPoint) {
+    const dx = pointSnapPoint.x - last.x;
+    const dy = pointSnapPoint.y - last.y;
+    return {
+      point: pointSnapPoint,
+      guides: [], // The visual feedback is the cursor jumping exactly to the corner
+      edgeLengthPx: Math.hypot(dx, dy),
+      lengthSnapped: false,
+      angleSnapped: false,
+    };
+  }
+
+  // ── 2. Edge Snap (Lines) ─────────────────────────────────────────────
+  let bestEdgeDist = EDGE_SNAP_TOL_PX;
+  let edgeSnapPoint: Point | null = null;
+  let edgeSnapRef: EdgeRef | null = null;
+
+  for (const edge of edges) {
+    const proj = projectToSegment(cursor, edge.a, edge.b);
+    // Don't snap to the segment we are currently starting from
+    if (Math.hypot(proj.x - last.x, proj.y - last.y) < 1e-3) continue;
+
+    const d = Math.hypot(cursor.x - proj.x, cursor.y - proj.y);
+    if (d < bestEdgeDist) {
+      bestEdgeDist = d;
+      edgeSnapPoint = proj;
+      edgeSnapRef = edge;
+    }
+  }
+
+  if (edgeSnapPoint && edgeSnapRef) {
+    const dx = edgeSnapPoint.x - last.x;
+    const dy = edgeSnapPoint.y - last.y;
+    return {
+      point: edgeSnapPoint,
+      guides: [{ kind: 'edge-match', from: edgeSnapRef.a, to: edgeSnapRef.b }],
+      edgeLengthPx: Math.hypot(dx, dy),
+      lengthSnapped: false,
+      angleSnapped: false, // Edge snaps don't get angle preview styling
+    };
+  }
+
+  // ── 3. Gather angle candidates ───────────────────────────────────────
   // Each candidate is an angle (radians) plus metadata describing WHY
   // it's a candidate — used later to build the right guide.
   type AngleCand = { angle: number; kind: SnapKind; refEdge?: EdgeRef };
@@ -270,4 +347,7 @@ export const GUIDE_STYLE: Record<SnapKind, { stroke: string; dash: number[]; str
   'edge-parallel':   { stroke: '#d946ef', dash: [8, 4],  strokeWidth: 2.5  }, // magenta
   'edge-perp':       { stroke: '#d946ef', dash: [2, 4],  strokeWidth: 2.5  }, // magenta (dotted)
   'length-match':    { stroke: '#22c55e', dash: [10, 3], strokeWidth: 3    }, // green
+  'point-match':     { stroke: '#f59e0b', dash: [],      strokeWidth: 2.5  }, // amber
+  'edge-match':      { stroke: '#f59e0b', dash: [],      strokeWidth: 2.5  }, // solid amber to highlight the line we are on
 };
+

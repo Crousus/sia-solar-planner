@@ -19,11 +19,12 @@
 //   - Snap guides:      colored dashed lines — see GUIDE_STYLE in drawingSnap.ts
 // ────────────────────────────────────────────────────────────────────────────
 
-import { Group, Line, Circle, Text } from 'react-konva';
+import { useState } from 'react';
+import { Group, Line, Circle, Text, Path } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { polygonCentroid } from '../utils/geometry';
 import { GUIDE_STYLE, type SnapGuide } from '../utils/drawingSnap';
-import type { Point } from '../types';
+import type { Point, Roof } from '../types';
 
 interface Props {
   drawingPoints: Point[];        // in-progress polygon, owned by KonvaOverlay
@@ -33,6 +34,8 @@ interface Props {
   lengthSnapped?: boolean;       // true → style the label as "snapped"
   angleSnapped?: boolean;        // true → style the preview line as "snapped"
   mpp?: number;                  // meters per pixel, for the length label
+  setRotationAbsolute?: (deg: number) => void;
+  stageScale?: number;
 }
 
 export default function RoofLayer({
@@ -43,23 +46,86 @@ export default function RoofLayer({
   lengthSnapped = false,
   angleSnapped = false,
   mpp = 0,
+  setRotationAbsolute,
+  stageScale = 1,
 }: Props) {
   const roofs = useProjectStore((s) => s.project.roofs);
   const selectedRoofId = useProjectStore((s) => s.selectedRoofId);
   const setSelectedRoof = useProjectStore((s) => s.setSelectedRoof);
   const toolMode = useProjectStore((s) => s.toolMode);
   const deleteRoof = useProjectStore((s) => s.deleteRoof);
+  const updateRoof = useProjectStore((s) => s.updateRoof);
 
   const drawing = toolMode === 'draw-roof' && drawingPoints.length > 0;
+
+  // When draw-roof mode is active but no new polygon is in progress, we
+  // treat it as "vertex edit" mode for committed roofs: every polygon
+  // vertex gets a draggable handle. The two predicates are NOT mutually
+  // exclusive — handles stay visible even while a new polygon is being
+  // drawn, because the user might want to align a new roof to an edge
+  // of an existing one.
+  const editHandlesVisible = toolMode === 'draw-roof';
+
+  // Track which roof edge is currently hovered to show the align button
+  // Key format: "roofId-edgeIndex"
+  const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
+
+  // Active polygon-edit state — one of:
+  //   move   → an existing vertex is being dragged to a new position
+  //   insert → a new vertex is being created mid-edge and dragged around
+  //            before being committed (drag-to-insert UX: user grabs an
+  //            edge midpoint, pulls it to where they want the corner,
+  //            releases)
+  //
+  // Held LOCALLY rather than in the store because both kinds of edit
+  // fire at ~60 Hz during the drag, and only the final state is worth
+  // persisting. While set, getLivePolygon returns an overridden polygon
+  // so edges, length labels, and centroid labels all track the cursor
+  // in real time. On dragend the final polygon is written back via a
+  // single updateRoof call — downstream effects (panel fit, roof
+  // primary angle) flow from that one store update.
+  //
+  // `atIdx` for the insert kind is the polygon index where the new
+  // vertex will be spliced in — i.e., between the edge's two endpoints.
+  // Edge `i` connects polygon[i] → polygon[(i+1) % n], so inserting
+  // between them means atIdx = i + 1.
+  type EditState =
+    | { kind: 'move'; roofId: string; idx: number; x: number; y: number }
+    | { kind: 'insert'; roofId: string; atIdx: number; x: number; y: number }
+    | null;
+  const [editState, setEditState] = useState<EditState>(null);
+
+  // Given a roof, return the polygon that should be rendered right now —
+  // either its stored polygon, or a modified copy reflecting the active
+  // edit (move replaces a vertex; insert splices in a new one). Callers
+  // use the returned array for BOTH the fill outline and any per-edge
+  // derivations (length labels, centroid), so every visual element
+  // stays consistent during a drag.
+  const getLivePolygon = (roof: Roof): Point[] => {
+    if (!editState || editState.roofId !== roof.id) return roof.polygon;
+    if (editState.kind === 'move') {
+      const pts = roof.polygon.slice();
+      pts[editState.idx] = { x: editState.x, y: editState.y };
+      return pts;
+    }
+    // insert: splice a new vertex at atIdx
+    const pts = roof.polygon.slice();
+    pts.splice(editState.atIdx, 0, { x: editState.x, y: editState.y });
+    return pts;
+  };
 
   return (
     <Group>
       {/* ── Committed roofs ───────────────────────────────────────────── */}
       {roofs.map((roof) => {
+        // If a vertex of this roof is currently being dragged, render
+        // everything from the overridden polygon so the user sees the
+        // two adjacent edges track the cursor in real time.
+        const livePolygon = getLivePolygon(roof);
         // Konva's Line with `closed` wants a flat number array, not Points.
-        const flat = roof.polygon.flatMap((p) => [p.x, p.y]);
+        const flat = livePolygon.flatMap((p) => [p.x, p.y]);
         const isSelected = roof.id === selectedRoofId;
-        const center = polygonCentroid(roof.polygon);
+        const center = polygonCentroid(livePolygon);
         return (
           <Group key={roof.id}>
             <Line
@@ -68,6 +134,14 @@ export default function RoofLayer({
               fill={isSelected ? 'rgba(255, 220, 100, 0.18)' : 'rgba(255, 255, 255, 0.10)'}
               stroke={isSelected ? '#ffcb47' : '#ffffff'}
               strokeWidth={isSelected ? 3 : 2}
+              onMouseEnter={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = 'pointer';
+              }}
+              onMouseLeave={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = '';
+              }}
               onClick={(e) => {
                 // cancelBubble stops the event from reaching the Stage's
                 // click handler — which would otherwise (in draw-roof mode)
@@ -94,6 +168,281 @@ export default function RoofLayer({
               shadowBlur={3}
               listening={false}
             />
+
+            {/* Individual edges for rotation alignment button (only visible when not drawing) */}
+            {!drawing && livePolygon.map((p1, i) => {
+              const p2 = livePolygon[(i + 1) % livePolygon.length];
+              const edgeKey = `${roof.id}-${i}`;
+              const isHovered = hoveredEdge === edgeKey;
+              
+              // Edge midpoint
+              const mx = (p1.x + p2.x) / 2;
+              const my = (p1.y + p2.y) / 2;
+              
+              // Edge angle and length
+              const dx = p2.x - p1.x;
+              const dy = p2.y - p1.y;
+              let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+              const lenPx = Math.hypot(dx, dy);
+              const lenM = lenPx * (mpp || 1);
+
+              // Size the hit area and button relative to zoom
+              const hitRadius = 15 / stageScale;
+              const btnScale = 1 / stageScale;
+
+              // Text rotation (keep it readable, not upside down)
+              let textAngle = angle;
+              if (textAngle > 90 || textAngle < -90) {
+                textAngle += 180;
+              }
+
+              // Normal vector for text offset
+              const nx = -dy / lenPx;
+              const ny = dx / lenPx;
+              const textOffset = 15 / stageScale;
+
+              return (
+                <Group
+                  key={edgeKey}
+                  onMouseEnter={(e) => {
+                    const stage = e.target.getStage();
+                    // In draw-roof mode the edge is a drag-to-insert
+                    // target, so a 'copy' cursor reads as "click here to
+                    // add". In other modes only the rotation-align
+                    // affordance is available, where a 'crosshair' fits.
+                    if (stage) stage.container().style.cursor = editHandlesVisible ? 'copy' : 'crosshair';
+                    setHoveredEdge(edgeKey);
+                  }}
+                  onMouseLeave={(e) => {
+                    const stage = e.target.getStage();
+                    if (stage) stage.container().style.cursor = '';
+                    setHoveredEdge(null);
+                  }}
+                >
+                  {/*
+                    Invisible hit area covering the edge segment.
+
+                    In draw-roof mode this line is draggable for
+                    vertex insertion: pressing anywhere along the edge
+                    and dragging creates a new vertex AT THE POINTER
+                    POSITION (not the midpoint) and lets the user pull
+                    it immediately. We read world coordinates from
+                    stage.getPointerPosition() on each drag event — we
+                    can't use e.target.x()/y() because the Line was
+                    never given a meaningful position to offset from
+                    (its geometry lives entirely in `points`). On
+                    dragend we splice the new vertex into the polygon
+                    and reset the Line's position so Konva's drag
+                    offset doesn't linger into the next render.
+
+                    Outside draw-roof mode the Line is a passive hit
+                    target — it still triggers hover (for the rotate
+                    button to appear) but doesn't start a drag, so
+                    click-through behaviour in other modes is
+                    unchanged.
+                  */}
+                  <Line
+                    points={[p1.x, p1.y, p2.x, p2.y]}
+                    stroke="transparent"
+                    strokeWidth={hitRadius * 2}
+                    draggable={editHandlesVisible}
+                    onDragStart={editHandlesVisible ? (e) => {
+                      e.cancelBubble = true;
+                      const stage = e.target.getStage();
+                      const pointer = stage?.getPointerPosition();
+                      if (!stage || !pointer) return;
+                      const world = stage.getAbsoluteTransform().copy().invert().point(pointer);
+                      setEditState({
+                        kind: 'insert',
+                        roofId: roof.id,
+                        atIdx: i + 1,
+                        x: world.x,
+                        y: world.y,
+                      });
+                    } : undefined}
+                    onDragMove={editHandlesVisible ? (e) => {
+                      const stage = e.target.getStage();
+                      const pointer = stage?.getPointerPosition();
+                      if (!stage || !pointer) return;
+                      const world = stage.getAbsoluteTransform().copy().invert().point(pointer);
+                      setEditState({
+                        kind: 'insert',
+                        roofId: roof.id,
+                        atIdx: i + 1,
+                        x: world.x,
+                        y: world.y,
+                      });
+                    } : undefined}
+                    onDragEnd={editHandlesVisible ? (e) => {
+                      const stage = e.target.getStage();
+                      const pointer = stage?.getPointerPosition();
+                      // Reset the Line's drag offset unconditionally —
+                      // if we skip this on an early-return, Konva
+                      // leaves the line translated by (dx, dy) and
+                      // the hit region drifts off the rendered edge
+                      // until the next roof-wide re-render.
+                      e.target.position({ x: 0, y: 0 });
+                      if (!stage || !pointer) {
+                        setEditState(null);
+                        return;
+                      }
+                      const world = stage.getAbsoluteTransform().copy().invert().point(pointer);
+                      const newPolygon = roof.polygon.slice();
+                      newPolygon.splice(i + 1, 0, { x: world.x, y: world.y });
+                      updateRoof(roof.id, { polygon: newPolygon });
+                      setEditState(null);
+                    } : undefined}
+                  />
+
+                  {/* Edge Length Label */}
+                  {lenM > 0 && (
+                    <Text
+                      x={mx + nx * textOffset}
+                      y={my + ny * textOffset}
+                      rotation={textAngle}
+                      text={`${lenM.toFixed(1)}m`}
+                      fontSize={12 / stageScale}
+                      fill="#ffffff"
+                      shadowColor="black"
+                      shadowBlur={2 / stageScale}
+                      offsetX={20 / stageScale} // approximate center of text
+                      offsetY={6 / stageScale}
+                      listening={false}
+                    />
+                  )}
+
+                  {/* Rotate Align Button */}
+                  {isHovered && setRotationAbsolute && (
+
+                    <Group 
+                      x={mx} 
+                      y={my}
+                      scaleX={btnScale}
+                      scaleY={btnScale}
+                      rotation={angle}
+                      onClick={(e) => {
+                        e.cancelBubble = true;
+                        // Align the canvas so this edge is horizontal (0 or 180 deg)
+                        // If we want it strictly horizontal, we just subtract the angle
+                        setRotationAbsolute(-angle);
+                      }}
+                    >
+                      <Circle radius={14} fill="#171717" stroke="#ffcb47" strokeWidth={1.5} />
+                      <Text 
+                        text="⇄" 
+                        x={-7} 
+                        y={-8} 
+                        fontSize={16} 
+                        fill="#ffcb47" 
+                        fontStyle="bold"
+                        listening={false} 
+                      />
+                    </Group>
+                  )}
+                </Group>
+              );
+            })}
+
+            {/* ── Draggable vertex handles ──────────────────────────────
+                Shown whenever the user is in draw-roof mode — even if a
+                new polygon is also in progress — so the user can refine
+                any previously-drawn shape without switching tool modes.
+                Each handle is one vertex of the committed polygon; the
+                two edges adjacent to it follow the drag via the
+                `livePolygon` override above, without committing to the
+                store until dragend.
+
+                The handle radius and stroke are divided by stageScale so
+                the on-screen size stays constant regardless of zoom —
+                otherwise handles would become unclickably tiny at the
+                zoom levels where precise vertex editing matters most.
+
+                cancelBubble on both click and dragstart is important:
+                draw-roof's Stage-level click handler would otherwise add
+                a NEW polygon vertex at the handle's location the moment
+                the user releases the mouse (a pure drag ends with a
+                click event in Konva if no motion was registered). */}
+            {editHandlesVisible && livePolygon.map((p, i) => (
+              <Circle
+                key={`vhandle-${i}`}
+                x={p.x}
+                y={p.y}
+                radius={6 / stageScale}
+                fill="#ffcb47"
+                stroke="#000"
+                strokeWidth={1.5 / stageScale}
+                draggable
+                onMouseEnter={(e) => {
+                  const stage = e.target.getStage();
+                  if (stage) stage.container().style.cursor = 'move';
+                }}
+                onMouseLeave={(e) => {
+                  const stage = e.target.getStage();
+                  if (stage) stage.container().style.cursor = '';
+                }}
+                onClick={(e) => {
+                  // Swallow so Stage.onClick doesn't try to append a new
+                  // drawing vertex at the handle's position.
+                  e.cancelBubble = true;
+                }}
+                onContextMenu={(e) => {
+                  // Right-click removes this vertex, as long as the
+                  // polygon would still have ≥3 corners left (anything
+                  // less isn't a polygon). We cancelBubble + preventDefault
+                  // so the browser's context menu doesn't pop up AND the
+                  // Stage-level right-click (which KonvaOverlay uses to
+                  // trigger canvas pan) doesn't fire. This matches the
+                  // PanelLayer convention where right-click = remove.
+                  e.evt.preventDefault();
+                  e.cancelBubble = true;
+                  if (roof.polygon.length <= 3) return;
+                  // Use the edit-state index if we happen to be mid-drag
+                  // on this same vertex (shouldn't really happen — a
+                  // drag eats right-click — but defensive). Otherwise
+                  // the iteration index IS the polygon index, because
+                  // livePolygon matches roof.polygon 1:1 when no insert
+                  // is active.
+                  if (editState?.kind === 'insert' && editState.roofId === roof.id) return;
+                  const removeIdx =
+                    editState?.kind === 'move' && editState.roofId === roof.id && editState.idx === i
+                      ? editState.idx
+                      : i;
+                  const newPolygon = roof.polygon.slice();
+                  newPolygon.splice(removeIdx, 1);
+                  updateRoof(roof.id, { polygon: newPolygon });
+                }}
+                onDragStart={(e) => {
+                  e.cancelBubble = true;
+                  setEditState({ kind: 'move', roofId: roof.id, idx: i, x: p.x, y: p.y });
+                }}
+                onDragMove={(e) => {
+                  setEditState({
+                    kind: 'move',
+                    roofId: roof.id,
+                    idx: i,
+                    x: e.target.x(),
+                    y: e.target.y(),
+                  });
+                }}
+                onDragEnd={(e) => {
+                  const nx = e.target.x();
+                  const ny = e.target.y();
+                  // Commit against the STORED vertex, not the live
+                  // override — see the original move commit for the
+                  // longer rationale (short version: comparing against
+                  // `p` would always read ~0 distance because `p` IS
+                  // the override during drag, so nothing would persist).
+                  const orig = roof.polygon[i];
+                  if (Math.hypot(nx - orig.x, ny - orig.y) > 0.5) {
+                    const newPolygon = roof.polygon.slice();
+                    newPolygon[i] = { x: nx, y: ny };
+                    updateRoof(roof.id, { polygon: newPolygon });
+                  }
+                  setEditState(null);
+                }}
+              />
+            ))}
+
           </Group>
         );
       })}

@@ -4,7 +4,30 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='28' font-size='28'%3E%E2%98%80%3C/text%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Solar Planner</title>
+    <meta name="color-scheme" content="dark" />
+    <title>Solar Planner · precision PV layout</title>
+
+    <!--
+      Fonts for the "Precision Solar Instrument" aesthetic:
+        - Bricolage Grotesque: variable display face with optical sizing + grade axis.
+          Used for headings, the wordmark, and any moment that should feel crafted.
+          Picked over Space Grotesk/Inter specifically because it has a strong,
+          non-generic character (see https://fonts.google.com/specimen/Bricolage+Grotesque).
+        - JetBrains Mono: technical/numeric readouts (kWp, counts, tilt, keyboard hints).
+          Mono for numbers gives them weight; JBM has distinctive italics and tabular
+          figures which matter when stats tick during edits.
+        - Geist: clean modern body. Used for controls and prose. Quietly distinctive
+          without screaming "AI-slop Inter clone".
+      Preconnect first so the stylesheet request can start a TLS handshake in parallel
+      with the HTML parse. display=swap avoids invisible-text flash of the initial
+      locked screen (first contentful paint is the hint banner).
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

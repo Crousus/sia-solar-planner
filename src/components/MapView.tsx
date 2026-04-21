@@ -1,22 +1,24 @@
 // ────────────────────────────────────────────────────────────────────────────
-// MapView — react-leaflet container + lock/unlock sync.
+// MapView — react-leaflet container, rendered ONLY while the map is unlocked.
 //
 // Responsibilities:
-//   1. Render an ESRI World Imagery satellite basemap (no API key needed).
-//   2. Hand the `L.Map` instance up to App via onMapReady so other parts
-//      of the app can read getCenter()/getZoom() when locking.
-//   3. Enable/disable all map interaction when `mapState.locked` toggles.
-//      This is essential — a panning map under a drawing overlay would
-//      cause disasters (clicks drag the map, drawings "float" away).
+//   1. Render a satellite basemap (ESRI World Imagery or Bayern DOP/ALKIS).
+//   2. Hand the `L.Map` instance up to App via onMapReady so the toolbar
+//      can read getCenter()/getZoom() at lock time.
 //
-// We purposely keep react-leaflet as dumb as possible. Roof polygons and
-// panels are NOT rendered via Leaflet layers; they go on a separate Konva
-// canvas overlay above this component. Reason: Leaflet's per-feature DOM
+// Post-ADR-007, this component is *unmounted* the moment the user locks the
+// map — at that point the Konva overlay takes over with a rasterized PNG
+// backdrop and owns pan/zoom natively. That's why there's no lock-state
+// toggling of Leaflet handlers here anymore: there's nothing to toggle,
+// the whole subtree goes away.
+//
+// Roof polygons and panels are NOT rendered via Leaflet layers; they go on
+// a separate Konva canvas above this component. Leaflet's per-feature DOM
 // (SVG) doesn't scale well to hundreds of panels, and Konva gives us
 // object-level event handlers we need for drag/ghost/lasso.
 // ────────────────────────────────────────────────────────────────────────────
 
-import { MapContainer, TileLayer, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, WMSTileLayer, useMap } from 'react-leaflet';
 import { useEffect, useRef } from 'react';
 import { useProjectStore } from '../store/projectStore';
 
@@ -26,6 +28,12 @@ import { useProjectStore } from '../store/projectStore';
 const ESRI_SAT =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
+// Geodaten Bayern WMS URL for current 20cm RGB Orthophotos.
+const BAYERN_WMS = 'https://geoservices.bayern.de/od/wms/dop/v1/dop20';
+
+// Geodaten Bayern ALKIS WMS URL for building footprints (Parzellarkarte).
+const BAYERN_ALKIS_WMS = 'https://geoservices.bayern.de/od/wms/alkis/v1/parzellarkarte';
+
 /**
  * Bridges the map instance out of react-leaflet's context. This is the
  * documented pattern: a child component uses useMap() and relays the
@@ -34,46 +42,8 @@ const ESRI_SAT =
 function MapBinder({ onMapReady }: { onMapReady: (m: L.Map) => void }) {
   const map = useMap();
   useEffect(() => {
-    onMapReady(map);
+    if (map) onMapReady(map);
   }, [map, onMapReady]);
-  return null;
-}
-
-/**
- * Watches the persisted `locked` flag and toggles all Leaflet interaction
- * handlers accordingly. Placed as a child of MapContainer so it has access
- * to the map via useMap().
- *
- * Note `tap` is mobile-only and not in @types/leaflet — we narrow-cast to
- * an optional shape to keep strict TypeScript happy.
- */
-function MapLockSync() {
-  const map = useMap();
-  const locked = useProjectStore((s) => s.project.mapState.locked);
-
-  useEffect(() => {
-    if (!map) return;
-    if (locked) {
-      map.dragging.disable();
-      map.touchZoom.disable();
-      map.doubleClickZoom.disable();
-      map.scrollWheelZoom.disable();
-      map.boxZoom.disable();
-      map.keyboard.disable();
-      const tap = (map as unknown as { tap?: { disable: () => void; enable: () => void } }).tap;
-      if (tap) tap.disable();
-    } else {
-      map.dragging.enable();
-      map.touchZoom.enable();
-      map.doubleClickZoom.enable();
-      map.scrollWheelZoom.enable();
-      map.boxZoom.enable();
-      map.keyboard.enable();
-      const tap = (map as unknown as { tap?: { disable: () => void; enable: () => void } }).tap;
-      if (tap) tap.enable();
-    }
-  }, [map, locked]);
-
   return null;
 }
 
@@ -102,9 +72,31 @@ export default function MapView({ onMapReady }: Props) {
       attributionControl={false} // keep the UI clean; we credit in PDF/docs instead
       style={{ height: '100%', width: '100%' }}
     >
-      <TileLayer url={ESRI_SAT} maxZoom={22} maxNativeZoom={19} />
+      {(!center.mapProvider || center.mapProvider === 'esri') && (
+        <TileLayer url={ESRI_SAT} maxZoom={22} maxNativeZoom={19} />
+      )}
+      {(center.mapProvider === 'bayern' || center.mapProvider === 'bayern_alkis') && (
+        <WMSTileLayer
+          url={BAYERN_WMS}
+          layers="by_dop20c"
+          format="image/png"
+          transparent={true}
+          version="1.3.0"
+          maxZoom={22}
+        />
+      )}
+      {center.mapProvider === 'bayern_alkis' && (
+        <WMSTileLayer
+          url={BAYERN_ALKIS_WMS}
+          layers="by_alkis_parzellarkarte_umr_gelb"
+          format="image/png"
+          transparent={true}
+          version="1.3.0"
+          maxZoom={22}
+          zIndex={10}
+        />
+      )}
       <MapBinder onMapReady={onMapReady} />
-      <MapLockSync />
     </MapContainer>
   );
 }

@@ -2,30 +2,571 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ * Solar Planner — "Precision Solar Instrument" design system
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * Aesthetic thesis:
+ *   This is a working tool for planning real PV installations. It should feel
+ *   like a piece of professional engineering software (Linear, Figma) crossed
+ *   with a draftsman's lamp — warm, precise, and quietly luxurious. Dark
+ *   mode, not cold; technical without feeling clinical.
+ *
+ * How the system holds together:
+ *   1. Palette tokens (--ink-*, --sun-*, --copper-*, --volt-*) are the single
+ *      source of color truth. Everything downstream references them.
+ *   2. Type stack is a trio: Bricolage Grotesque (display), Geist (body),
+ *      JetBrains Mono (all numeric / technical readouts). Numbers are the
+ *      hero of this app, so they always land in mono.
+ *   3. Material / elevation primitives give floating panels a hairline
+ *      top-highlight + soft bottom shadow, so they read as "raised metal"
+ *      rather than flat rectangles.
+ *   4. Component primitives (.btn-*, .input, .chip, .section-title, etc.)
+ *      live here so the React components can stay mostly markup and avoid
+ *      reinventing classes per-file. Matches the pattern the pre-existing
+ *      Toolbar already used (inline <style>) but pulled upstream for reuse.
+ *
+ * Nothing here changes layout math: konva-overlay, leaflet-container, and
+ * canvas-bg maintain the exact same selectors the app relies on.
+ */
+
+/* ── Design tokens ────────────────────────────────────────────────────── */
+:root {
+  /* Warm-charcoal base (hsl(32, 8%, L%)). See tailwind.config.js for the
+     same values exposed as `ink-*` utilities. Kept in CSS as well so
+     inline styles and pseudo-elements can reference them too. */
+  --ink-950: #0a0804;
+  --ink-900: #121009;
+  --ink-800: #1a1812;
+  --ink-700: #24211a;
+  --ink-600: #322e25;
+  --ink-500: #494337;
+  --ink-400: #6c6557;
+  --ink-300: #9a9284;
+  --ink-200: #c8c1b5;
+  --ink-100: #e7e2da;
+  --ink-50:  #f6f3ef;
+
+  /* Primary — solar sunburst amber. */
+  --sun-200: #ffe29a;
+  --sun-300: #ffcb5f;
+  --sun-400: #f5b544;
+  --sun-500: #e39a20;
+  --sun-600: #c07a0e;
+
+  /* Secondary — tungsten copper warmth. */
+  --copper-400: #ff7043;
+  --copper-500: #e55a2e;
+
+  /* Tertiary — electrical cyan, reserved for wiring/strings emphasis. */
+  --volt-400: #2fd0ef;
+
+  /* Hairline border color used on every card/control. A single token so we
+     can tune the whole UI's "weight" in one line. */
+  --hairline: rgba(255, 228, 185, 0.08);
+  --hairline-strong: rgba(255, 228, 185, 0.16);
+
+  /* Ambient glow color for active states — solar amber, low opacity. */
+  --glow-sun: rgba(245, 181, 68, 0.35);
+}
+
+/* ── Global resets ────────────────────────────────────────────────────── */
 html, body, #root {
   height: 100%;
   margin: 0;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  /* Geist as the default body stack. `font-feature-settings` enables
+     contextual alternates + stylistic alternates which give Geist its
+     slightly refined punctuation — easy to miss but matters in dense UIs. */
+  font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--ink-100);
+  background: var(--ink-950);
   overflow: hidden;
 }
 
+/* Give every standalone heading that uses .font-display the optical-size
+   adjustment that Bricolage was designed for — the variable `opsz` axis
+   makes the cuts visibly sharper at headline sizes. */
+.font-display {
+  font-variation-settings: "opsz" 48, "wght" 600;
+  letter-spacing: -0.02em;
+}
+
+/* Mono numerics universally get tabular figures so a changing count
+   (e.g. panels placed) doesn't shift the adjacent "kWp" label around. */
+.font-mono, code, kbd, pre, samp {
+  font-feature-settings: "tnum", "zero";
+}
+
+/* ── Leaflet integration ──────────────────────────────────────────────── */
 .leaflet-container {
   height: 100%;
   width: 100%;
-  background: #1a1a1a;
+  /* Match the app's deep ink background so map loads don't flash a generic
+     gray. Same intent as the original code, just updated to the new palette. */
+  background: var(--ink-900);
+  font-family: inherit;
 }
 
+/* Re-skin Leaflet's built-in zoom control so it reads as part of our UI
+   rather than stock Leaflet. Only applies while the map is unlocked. */
+.leaflet-control-zoom a {
+  background: rgba(26, 24, 18, 0.85) !important;
+  color: var(--ink-100) !important;
+  border: 1px solid var(--hairline) !important;
+  backdrop-filter: blur(8px);
+  transition: background 120ms ease, color 120ms ease;
+}
+.leaflet-control-zoom a:hover {
+  background: rgba(50, 46, 37, 0.95) !important;
+  color: var(--sun-400) !important;
+}
+
+/* ── Konva overlay states ─────────────────────────────────────────────── */
 .konva-overlay {
   position: absolute;
   inset: 0;
   z-index: 500;
 }
+.konva-overlay-locked { pointer-events: auto; }
+.konva-overlay-passive { pointer-events: none; }
+.konva-overlay-drawing { cursor: crosshair; }
+.konva-overlay-grab { cursor: grab; }
+.konva-overlay-grab:active { cursor: grabbing; }
 
-.konva-overlay-active {
-  pointer-events: auto;
-  cursor: crosshair;
+/*
+ * ── "Drafting paper" backdrop ─────────────────────────────────────────
+ *
+ * Visible when Leaflet is unmounted (locked) AND the captured satellite
+ * image is hidden via the toolbar toggle. Was previously a flat slate grid
+ * — upgraded to an atmospheric composition that matches the refreshed
+ * aesthetic:
+ *
+ *   1. Warm ink base color.
+ *   2. Radial sunflare near the top, tinted amber — gives the canvas a
+ *      sense of light source and depth.
+ *   3. Counter-radial cool gradient at bottom-left for contrast.
+ *   4. A 40px grid, subtle amber-tinted, evoking engineering graph paper.
+ *   5. A 200px coarse grid overlay for visual rhythm at zoomed-out scale.
+ *   6. SVG grain overlay for texture — stops the gradients from looking
+ *      banded on low-bit displays.
+ *
+ * Non-interactive; purely cosmetic. Grid spacing is screen-pixel based;
+ * it doesn't zoom with the Konva stage (a true metric grid would live on
+ * the Konva Layer, not here).
+ */
+.canvas-bg {
+  background-color: var(--ink-900);
+  background-image:
+    /* grain overlay — base64-encoded tiny SVG noise pattern */
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.7  0 0 0 0 0.3  0 0 0 0.07 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
+    /* fine grid — near-invisible, amber-tinted */
+    linear-gradient(rgba(245, 181, 68, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(245, 181, 68, 0.035) 1px, transparent 1px),
+    /* coarse grid — slightly stronger for rhythm */
+    linear-gradient(rgba(245, 181, 68, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(245, 181, 68, 0.06) 1px, transparent 1px),
+    /* counter-cool accent */
+    radial-gradient(ellipse 60% 45% at 15% 85%, rgba(47, 208, 239, 0.06), transparent 70%),
+    /* sunflare — the signature move */
+    radial-gradient(ellipse 80% 55% at 70% 10%, rgba(245, 181, 68, 0.18), transparent 65%),
+    /* base vignette */
+    radial-gradient(ellipse at center, var(--ink-800) 0%, var(--ink-950) 100%);
+  background-size:
+    160px 160px,
+    40px 40px, 40px 40px,
+    200px 200px, 200px 200px,
+    100% 100%, 100% 100%, 100% 100%;
+  background-repeat: repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat, no-repeat;
 }
 
-.konva-overlay-passive {
-  pointer-events: none;
+/* ── Scrollbars ───────────────────────────────────────────────────────── */
+/*
+ * Custom scrollbars on the sidebar & any scrollable pane. WebKit + Firefox
+ * syntax. Thin, hairline-colored, amber hover — matches the instrument
+ * aesthetic. Falls back to native on platforms that don't support it.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-500) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--ink-600);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--sun-600);
+  background-clip: padding-box;
+}
+
+/* ── Selection ────────────────────────────────────────────────────────── */
+::selection {
+  background: var(--sun-400);
+  color: var(--ink-950);
+}
+
+/* ── Focus rings ──────────────────────────────────────────────────────── */
+/*
+ * We replace the default blue focus ring with a warm amber one so focus
+ * reads as part of the instrument, not a browser default. Only applied on
+ * :focus-visible so mouse-only users don't see rings constantly.
+ */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--sun-400);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Component primitives
+ *
+ * All declared as @layer components so utility classes beat them when a
+ * caller wants to override, and so Tailwind's purge keeps them all.
+ * ───────────────────────────────────────────────────────────────────── */
+@layer components {
+
+  /* ── Panels / cards ──────────────────────────────────────────────── */
+  /* The raised surface used for floating docks, cards, and grouped
+     sidebar controls. Hairline top highlight simulates an engraved metal
+     bevel; the backdrop-blur lets this layer sit convincingly over the
+     canvas without obscuring it. */
+  .surface {
+    background: linear-gradient(180deg, rgba(50, 46, 37, 0.75) 0%, rgba(26, 24, 18, 0.75) 100%);
+    border: 1px solid var(--hairline);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 1px 0 rgba(0, 0, 0, 0.4),
+      0 8px 24px -12px rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────── */
+  /*
+   * Three flavors share a common base via `.btn`:
+   *   .btn-ghost   — transparent, hairline border, default actions.
+   *   .btn-tool    — denser, for toolbar icon+label buttons.
+   *   .btn-primary — amber filled, for the lock/confirm moment.
+   *   .btn-danger  — copper tint for destructive actions (still warm, not red-alert).
+   *
+   * All buttons share the same motion curve (cubic-bezier `ease-out-quart`
+   * style) so the UI feels like one instrument, not a patchwork.
+   */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition:
+      background-color 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      border-color 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      color 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    user-select: none;
+    cursor: pointer;
+  }
+  .btn:active:not(:disabled) { transform: translateY(0.5px); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: rgba(36, 33, 26, 0.7);
+    border-color: var(--hairline);
+    color: var(--ink-100);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: rgba(50, 46, 37, 0.9);
+    border-color: var(--hairline-strong);
+    color: var(--ink-50);
+  }
+
+  .btn-tool {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-200);
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+  .btn-tool:hover:not(:disabled) {
+    background: rgba(50, 46, 37, 0.8);
+    color: var(--ink-50);
+  }
+
+  .btn-primary {
+    background: linear-gradient(180deg, var(--sun-400) 0%, var(--sun-500) 100%);
+    border-color: var(--sun-600);
+    color: var(--ink-950);
+    font-weight: 600;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 0 0 1px var(--sun-600),
+      0 6px 18px -6px var(--glow-sun);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, var(--sun-300) 0%, var(--sun-400) 100%);
+  }
+
+  .btn-danger {
+    background: transparent;
+    border-color: transparent;
+    color: var(--copper-400);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(229, 90, 46, 0.12);
+    color: var(--copper-300);
+  }
+
+  /* ── Segmented switcher ──────────────────────────────────────────── */
+  /*
+   * Holds the tool-mode buttons as a single unified control. The
+   * internal separators are 1px hairlines; the active button gets an
+   * amber glow + elevated treatment so the state reads at a glance.
+   *
+   * The markup pattern is: <div class="segmented"> <button class="segment"
+   * [data-active]> ... </button> ... </div>.
+   */
+  .segmented {
+    display: inline-flex;
+    padding: 3px;
+    background: rgba(18, 16, 9, 0.7);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    gap: 2px;
+    box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
+  }
+  .segment {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1;
+    border-radius: 5px;
+    color: var(--ink-300);
+    background: transparent;
+    border: 1px solid transparent;
+    transition: all 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .segment:hover:not(:disabled):not([data-active="true"]) {
+    color: var(--ink-100);
+    background: rgba(50, 46, 37, 0.5);
+  }
+  .segment[data-active="true"] {
+    color: var(--ink-950);
+    background: linear-gradient(180deg, var(--sun-300) 0%, var(--sun-400) 100%);
+    border-color: var(--sun-500);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 0 12px -2px var(--glow-sun);
+  }
+  .segment:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ── Inputs ──────────────────────────────────────────────────────── */
+  .input {
+    width: 100%;
+    background: rgba(18, 16, 9, 0.6);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: var(--ink-100);
+    font-size: 12.5px;
+    font-family: inherit;
+    transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  }
+  .input:hover:not(:focus) { border-color: var(--hairline-strong); }
+  .input:focus {
+    outline: none;
+    border-color: var(--sun-500);
+    background: rgba(26, 24, 18, 0.9);
+    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.12);
+  }
+  .input-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
+  select.input {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%239a9284' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    padding-right: 24px;
+  }
+
+  /* ── Custom range slider ─────────────────────────────────────────── */
+  /*
+   * Used for tilt control. Native range is ugly and inconsistent across
+   * browsers; we restyle the track + thumb to match the instrument.
+   * Track is hairline-thin with an amber-filled portion indicating the
+   * current value (rendered via background-image gradient + CSS var
+   * `--val` set by inline style from React).
+   */
+  .slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background:
+      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 163, 184, 0.15) var(--val, 0%), rgba(148, 163, 184, 0.15) 100%);
+    border: 1px solid var(--hairline);
+  }
+  .slider::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background:
+      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 163, 184, 0.15) var(--val, 0%), rgba(148, 163, 184, 0.15) 100%);
+    border: 1px solid var(--hairline);
+  }
+  .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -6px;
+    background: var(--ink-50);
+    border: 2px solid var(--sun-500);
+    border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15), 0 2px 4px rgba(0, 0, 0, 0.5);
+    transition: transform 100ms ease;
+  }
+  .slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--ink-50);
+    border: 2px solid var(--sun-500);
+    border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15), 0 2px 4px rgba(0, 0, 0, 0.5);
+  }
+  .slider:active::-webkit-slider-thumb { transform: scale(1.15); }
+
+  /* ── Chips / badges ──────────────────────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+    border: 1px solid var(--hairline);
+    background: rgba(18, 16, 9, 0.6);
+    color: var(--ink-200);
+  }
+  .chip-amber {
+    background: rgba(245, 181, 68, 0.1);
+    border-color: rgba(245, 181, 68, 0.35);
+    color: var(--sun-300);
+  }
+  .chip-emerald {
+    background: rgba(52, 211, 153, 0.1);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: #6ee7b7;
+  }
+
+  /* Tiny keyboard-shortcut indicator — used in the hint banner and
+     tooltips. Bright mono glyph on a sunken chip. */
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--sun-300);
+    background: rgba(18, 16, 9, 0.8);
+    border: 1px solid var(--hairline-strong);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    line-height: 1;
+  }
+
+  /* ── Section & field (sidebar) ───────────────────────────────────── */
+  .section-title {
+    font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
+    font-variation-settings: "opsz" 14, "wght" 600;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-300);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  /* Horizontal hairline that fills the rest of the row after the title. */
+  .section-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--hairline-strong), transparent 70%);
+  }
+
+  .field-label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-300);
+    margin-bottom: 4px;
+  }
+
+  /* ── Hairline divider (vertical) ─────────────────────────────────── */
+  .divider-v {
+    width: 1px;
+    height: 20px;
+    background: linear-gradient(180deg, transparent, var(--hairline-strong), transparent);
+  }
+
+  /* ── Ambient sunburst glow ───────────────────────────────────────── */
+  /*
+   * Used behind the Lock button when active, and behind selected
+   * elements. A soft radial amber bloom that makes the target feel
+   * "illuminated from within". Elements applying this expect a
+   * `position: relative` and use an ::after pseudo-element via the
+   * `.glows` class.
+   */
+  .glows { position: relative; }
+  .glows::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    border-radius: inherit;
+    background: radial-gradient(circle at center, var(--glow-sun), transparent 70%);
+    opacity: 0.6;
+    filter: blur(12px);
+    z-index: -1;
+    pointer-events: none;
+  }
 }

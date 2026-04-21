@@ -59,16 +59,28 @@ export interface Roof {
 export interface Panel {
   id: string;
   roofId: string;                   // which Roof this panel lives on
+  groupId: string;                  // which panel group this panel belongs to (used for grid snapping)
   cx: number;                       // center x, canvas pixels
   cy: number;                       // center y, canvas pixels
   stringId: string | null;          // null = unassigned
   indexInString: number | null;     // 1-based; reflects wiring order
+  /**
+   * Per-panel orientation. All panels in the same group share the same
+   * value — orientation is logically a group-level attribute, but we
+   * store it on the panel so the data model stays flat (no PanelGroup
+   * entity to keep in sync). Missing/undefined on legacy panels loaded
+   * from older saves; callers fall back to `roof.panelOrientation` in
+   * that case. See panelDisplaySize() and updateGroupOrientation().
+   */
+  orientation?: 'portrait' | 'landscape';
 }
 
 /**
  * A PV string: an ordered set of panels wired in series, optionally routed
  * to an inverter. Panel membership lives on the Panel via `stringId`; the
- * order comes from `renumberStrings()` sorting by (bottom→top, left→right).
+ * order is the sequence the user added the panels (via paint/lasso),
+ * preserved across geometric moves and compacted on delete. See
+ * `renumberStrings()` in projectStore for the full policy.
  */
 export interface PvString {
   id: string;
@@ -85,12 +97,25 @@ export interface Inverter {
 
 /**
  * Map viewport snapshot. The app has two map states:
- *  - `locked: false` → user is panning/zooming to find their building.
- *    No drawing is possible. The Konva overlay has pointer-events: none.
- *  - `locked: true`  → viewport is frozen. `metersPerPixel` was computed
- *    from (zoom, lat) via Web Mercator and is the ONE calibration number
- *    used by the rest of the app. Unlocking invalidates drawings for
- *    practical purposes (we don't re-project them on unlock).
+ *  - `locked: false` → user is panning/zooming to find their building via
+ *    Leaflet. No drawing is possible; the Konva overlay is a passthrough.
+ *  - `locked: true`  → Leaflet is torn down from the view. At lock time we
+ *    rasterize the current tiles (html2canvas → PNG dataURL) and stash
+ *    them in `capturedImage`. Konva then shows that image as a static
+ *    background, owning pan/zoom natively without any Leaflet round-trip
+ *    (which historically desynchronized scale during zoom animations —
+ *    see ADR-001, superseded by ADR-007).
+ *
+ * `metersPerPixel` is computed from (zoom, lat) via Web Mercator at lock
+ * time; it's the ONE calibration number used by the rest of the app.
+ * Unlocking invalidates drawings for practical purposes (we don't
+ * re-project them on unlock).
+ *
+ * `capturedWidth`/`capturedHeight` are the pixel dimensions of the
+ * Leaflet container at lock time — which is also the coordinate frame
+ * all roofs/panels are stored in. Used by the background layer to know
+ * the image's native size (after Konva zoom the image is scaled, but
+ * world pixels stay anchored to these dims).
  */
 export interface MapState {
   locked: boolean;
@@ -98,6 +123,14 @@ export interface MapState {
   centerLng: number;
   zoom: number;
   metersPerPixel: number;
+  /** base64 PNG dataURL of the satellite view captured at lock time. */
+  capturedImage?: string;
+  /** Width of the captured image in canvas pixels (world-frame width). */
+  capturedWidth?: number;
+  /** Height of the captured image in canvas pixels (world-frame height). */
+  capturedHeight?: number;
+  /** The currently selected map tile provider. */
+  mapProvider?: 'esri' | 'bayern' | 'bayern_alkis';
 }
 
 /**

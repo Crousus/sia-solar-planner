@@ -40,6 +40,31 @@ npx tsc --noEmit # typecheck only
 
 There are no tests or linters configured. Typecheck + `npm run build` is the acceptance gate.
 
+## Architecture Decision Records (ADRs)
+
+We use ADRs to document significant architectural decisions, requirements, and their rationale. This ensures that the reasoning behind the project's evolution is preserved for future contributors (AI or human).
+
+- **Location:** All ADRs live in the `adr/` directory.
+- **Naming:** Files are named `ADR-NNN-short-description.md` (e.g., `ADR-001-zoom-synchronization.md`).
+- **When to create one:** Whenever you introduce a new system-wide pattern, change the data model significantly, or implement a complex requirement that isn't fully explained by the code itself.
+- **Template:**
+  ```markdown
+  # ADR-NNN: [Short Description]
+
+  - **Status:** [Proposed | Accepted | Superseded]
+  - **Date:** [YYYY-MM-DD]
+  - **Requirement:** [What user need or technical constraint is being addressed?]
+
+  ## Context
+  [What is the problem? Why is it a problem? What are the existing constraints?]
+
+  ## Decision
+  [What was chosen? How does it solve the problem?]
+
+  ## Consequences
+  [What are the trade-offs? What new constraints or opportunities does this create?]
+  ```
+
 ## Project layout
 
 ```

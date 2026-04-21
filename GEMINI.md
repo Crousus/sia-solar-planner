@@ -31,5 +31,5 @@ The project uses `npm` for package management.
 - **Tool Modes & Shortcuts:** The application relies on specific "modes" (idle, draw-roof, place-panels, assign-string, delete). Single-letter keyboard shortcuts (e.g., `r`, `p`, `s`, `d`) are used to quickly switch modes. `Escape` universally cancels current operations.
 - **Persistence:** Ensure that non-essential UI state (like half-drawn polygons or current tool mode) is excluded from `localStorage` persistence via Zustand's `partialize` to avoid corrupting the saved project.
 - **Geometry & Rendering:** Handle complex rendering (many panels) via Konva rather than Leaflet SVG layers for performance. Complex geometric calculations (snapping, point-in-polygon) are decoupled into utility functions (`src/utils/`).
-- **Comments** Always comment code inline so Agents will know the thought process of each and every piece of the code.
+- **Comments** Always comment code inline so Agents will know the thought process of each and every piece of the code. Add larger explanations of appropiate
 - **Agent.md** Also the AGENT.md file contains important information

@@ -12,7 +12,7 @@
 //     work regardless of focus
 // ────────────────────────────────────────────────────────────────────────────
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import MapView from './components/MapView';
 import KonvaOverlay from './components/KonvaOverlay';
 import Sidebar from './components/Sidebar';
@@ -38,10 +38,10 @@ export default function App() {
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const locked = useProjectStore((s) => s.project.mapState.locked);
 
-  const handleMapReady = (m: L.Map) => {
+  const handleMapReady = useCallback((m: L.Map) => {
     mapRef.current = m;
     forceRerender((n) => n + 1);
-  };
+  }, []);
 
   // Global keyboard shortcuts. Rules:
   //   - Only active when map is locked (modes are meaningless otherwise)
@@ -64,21 +64,74 @@ export default function App() {
   }, [locked, setToolMode]);
 
   return (
-    <div className="h-full w-full flex flex-col bg-neutral-950">
+    <div className="h-full w-full flex flex-col" style={{ background: 'var(--ink-950)' }}>
       <Toolbar mapRef={mapRef} />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar />
-        <main ref={canvasContainerRef} className="flex-1 relative">
-          <MapView onMapReady={handleMapReady} />
-          <KonvaOverlay containerRef={canvasContainerRef} />
+        {/*
+          `canvas-bg` paints a warm drafting-paper backdrop (sunflare
+          gradient + amber grid + grain) beneath the Konva stage. It's
+          normally covered by either the Leaflet map (unlocked) or the
+          captured satellite image (locked), so the only time it's visible
+          is when the user explicitly hides the background via the toolbar
+          toggle — at which point this is what they see instead of a flat
+          void. See index.css for the composition.
+        */}
+        <main ref={canvasContainerRef} className="flex-1 relative canvas-bg">
+          {/*
+            Leaflet is only mounted in the UNLOCKED state — the "navigate
+            to your building" phase. Once locked, we tear it down entirely:
+            the user's satellite backdrop has already been rasterized and
+            handed to Konva (see Toolbar.handleLock + ADR-007). Keeping
+            Leaflet mounted post-lock previously caused zoom desync
+            between its CSS-animated tiles and our Stage scale — the
+            cleanest fix is to just stop rendering it.
+
+            mapRef goes stale on unmount, but that's fine: the next
+            unlock remounts MapView, which calls onMapReady again and
+            refreshes the ref before the next Lock Map press.
+          */}
+          {!locked && <MapView onMapReady={handleMapReady} />}
+          <KonvaOverlay containerRef={canvasContainerRef} mapRef={mapRef} />
           {/*
             Hint banner — shown only before the map is locked. High z-index
             so it sits above the overlay; `pointer-events-none` so it
             doesn't block clicks on the map behind it.
           */}
           {!locked && (
-            <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/70 text-amber-300 text-sm px-3 py-1.5 rounded shadow z-[600] pointer-events-none">
-              Navigate to your location, then <strong>Lock Map</strong> to start drawing.
+            /*
+              Hint banner — only shown pre-lock. Redesigned as a glass-morphic
+              pill with a pulsing solar-dot "status light" on the left and a
+              kbd-style emphasis for the Lock Map action. `surface` primitive
+              provides the backdrop blur + hairline border; high z-index so
+              it sits above the Konva overlay; pointer-events-none so clicks
+              pass through to the map.
+            */
+            <div
+              className="surface absolute top-4 left-1/2 -translate-x-1/2 rounded-full px-4 py-2 z-[600] pointer-events-none flex items-center gap-2.5"
+              style={{ fontSize: 12.5 }}
+            >
+              {/* Pulsing sunburst dot — the "system armed" pilot light */}
+              <span className="relative flex items-center justify-center" style={{ width: 10, height: 10 }}>
+                <span
+                  className="absolute inset-0 rounded-full animate-pulse-sun"
+                  style={{ background: 'var(--sun-400)', filter: 'blur(4px)' }}
+                />
+                <span
+                  className="relative rounded-full"
+                  style={{ width: 6, height: 6, background: 'var(--sun-300)' }}
+                />
+              </span>
+              <span style={{ color: 'var(--ink-100)' }}>
+                Navigate to your location, then
+              </span>
+              <span
+                className="font-display font-semibold"
+                style={{ color: 'var(--sun-300)', letterSpacing: '-0.01em' }}
+              >
+                Lock Map
+              </span>
+              <span style={{ color: 'var(--ink-300)' }}>to start drawing.</span>
             </div>
           )}
         </main>

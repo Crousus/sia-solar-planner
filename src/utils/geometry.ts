@@ -86,8 +86,14 @@ export function polygonArea(polygon: Point[]): number {
  * Ray-casting point-in-polygon test.
  *
  * Classic algorithm: cast a horizontal ray from the point to +∞ and count
- * polygon-edge crossings; odd = inside, even = outside. The `|| 1e-12`
- * guards against division-by-zero on horizontal edges.
+ * polygon-edge crossings; odd = inside, even = outside.
+ *
+ * Why no horizontal-edge guard: the first clause `yi > p.y !== yj > p.y`
+ * is only true when the two endpoints sit on opposite sides of the ray
+ * (one strictly above, one at-or-below). That rules out horizontal edges
+ * (yi === yj puts both on the same side → skip), so `yj - yi` can't be
+ * zero by the time we reach the division. A previous version had a
+ * `|| 1e-12` epsilon fallback here; it was dead code.
  *
  * Points exactly on an edge are unspecified (could go either way); for our
  * use case (snap validation) this is fine because the grid is discrete and
@@ -102,7 +108,7 @@ export function isInsidePolygon(p: Point, polygon: Point[]): boolean {
     const yj = polygon[j].y;
     const intersect =
       yi > p.y !== yj > p.y &&
-      p.x < ((xj - xi) * (p.y - yi)) / (yj - yi || 1e-12) + xi;
+      p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi;
     if (intersect) inside = !inside;
   }
   return inside;
@@ -161,18 +167,27 @@ export function roofPrimaryAngle(polygon: Point[]): number {
  *                roofs, maximizes rows).
  *   "Landscape" = panel's long side runs across the slope.
  *
+ * Orientation is taken explicitly (not from the roof) because orientation
+ * is now per-panel-group, not per-roof. Callers resolve it from either
+ * `panel.orientation` (for an existing panel) or the active group's
+ * representative panel (for the ghost), falling back to the roof default
+ * when neither is available. Tilt still comes from the roof because a
+ * roof has a single physical slope regardless of how its groups are laid
+ * out.
+ *
  * Returns { w, h } where w is along the roof's long axis and h is along
  * the slope (compressed). The caller rotates these dimensions into the
  * canvas frame using roofPrimaryAngle().
  */
 export function panelDisplaySize(
   panelType: PanelType,
-  roof: Roof,
+  orientation: 'portrait' | 'landscape',
+  tiltDeg: number,
   mpp: number
 ): { w: number; h: number } {
-  const tilt = (roof.tiltDeg * Math.PI) / 180;
+  const tilt = (tiltDeg * Math.PI) / 180;
   const cosT = Math.cos(tilt);
-  if (roof.panelOrientation === 'portrait') {
+  if (orientation === 'portrait') {
     // Short side across the roof's long axis, long side up the slope.
     return {
       w: panelType.widthM / mpp,
@@ -249,28 +264,35 @@ export function snapPanelToGrid(
   cursorPos: Point,
   roof: Roof,
   panelType: PanelType,
+  orientation: 'portrait' | 'landscape',
   mpp: number,
-  existingCenters: Point[]
+  existingCenters: Point[],
+  origin: Point | null = null,
+  snap: boolean = true
 ): Point | null {
   const angle = roofPrimaryAngle(roof.polygon);
-  const { w: cellW, h: cellH } = panelDisplaySize(panelType, roof, mpp);
+  const { w: cellW, h: cellH } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
   if (cellW <= 0 || cellH <= 0) return null; // defensive: degenerate panel
 
-  const origin = polygonCentroid(roof.polygon);
+  const gridOrigin = origin || polygonCentroid(roof.polygon);
 
-  // Step 1: cursor → roof-local frame (rotate by -angle around centroid).
-  const local = rotatePoint(cursorPos, -angle, origin);
+  let candidate: Point;
+  if (snap) {
+    // Step 1: cursor → roof-local frame (rotate by -angle around centroid).
+    const local = rotatePoint(cursorPos, -angle, gridOrigin);
 
-  // Step 2: snap to grid anchored at the centroid. Snapping `(local - origin)`
-  // and adding origin back keeps the grid stable when the centroid shifts
-  // slightly due to floating-point roundoff.
-  const snappedLocal = {
-    x: origin.x + Math.round((local.x - origin.x) / cellW) * cellW,
-    y: origin.y + Math.round((local.y - origin.y) / cellH) * cellH,
-  };
+    // Step 2: snap to grid anchored at the centroid. Snapping `(local - gridOrigin)`
+    // and adding origin back keeps the grid stable.
+    const snappedLocal = {
+      x: gridOrigin.x + Math.round((local.x - gridOrigin.x) / cellW) * cellW,
+      y: gridOrigin.y + Math.round((local.y - gridOrigin.y) / cellH) * cellH,
+    };
 
-  // Step 3: back to canvas frame.
-  const candidate = rotatePoint(snappedLocal, angle, origin);
+    // Step 3: back to canvas frame.
+    candidate = rotatePoint(snappedLocal, angle, gridOrigin);
+  } else {
+    candidate = cursorPos;
+  }
 
   // Step 4: polygon containment check on all 4 corners.
   const corners = panelCorners(candidate, angle, cellW, cellH);
@@ -289,7 +311,182 @@ export function snapPanelToGrid(
   return candidate;
 }
 
+export interface PanelDimension {
+  centerCanvas: Point;
+  lengthM: number;
+  textAngle: number;
+}
+
+/**
+ * Computes the dimensions of outer straight edges of contiguous panel groups.
+ * Used to draw length labels for connected panels.
+ */
+export function getPanelGroupDimensions(
+  panels: { cx: number; cy: number }[],
+  roof: Roof,
+  panelType: PanelType,
+  orientation: 'portrait' | 'landscape',
+  mpp: number
+): PanelDimension[] {
+  if (panels.length === 0) return [];
+  const angle = roofPrimaryAngle(roof.polygon);
+  const { w: cellW, h: cellH } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
+  if (cellW <= 0 || cellH <= 0) return [];
+
+  // Origin is defined by the first panel in the group
+  const origin = { x: panels[0].cx, y: panels[0].cy };
+
+  const edges = new Set<string>();
+
+  for (const p of panels) {
+    const local = rotatePoint({ x: p.cx, y: p.cy }, -angle, origin);
+    const gx = Math.round((local.x - origin.x) / cellW);
+    const gy = Math.round((local.y - origin.y) / cellH);
+
+    // 4 directed edges of the cell
+    const top = `${gx},${gy}->${gx + 1},${gy}`;
+    const right = `${gx + 1},${gy}->${gx + 1},${gy + 1}`;
+    const bottom = `${gx + 1},${gy + 1}->${gx},${gy + 1}`;
+    const left = `${gx},${gy + 1}->${gx},${gy}`;
+
+    for (const e of [top, right, bottom, left]) {
+      const [from, to] = e.split('->');
+      const rev = `${to}->${from}`;
+      if (edges.has(rev)) {
+        edges.delete(rev);
+      } else {
+        edges.add(e);
+      }
+    }
+  }
+
+  const edgeList = Array.from(edges).map(e => {
+    const [from, to] = e.split('->');
+    const [x1, y1] = from.split(',').map(Number);
+    const [x2, y2] = to.split(',').map(Number);
+    return { x1, y1, x2, y2 };
+  });
+
+  // Merge contiguous collinear edges
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < edgeList.length; i++) {
+      for (let j = 0; j < edgeList.length; j++) {
+        if (i === j) continue;
+        const e1 = edgeList[i];
+        const e2 = edgeList[j];
+        const dx1 = Math.sign(e1.x2 - e1.x1);
+        const dy1 = Math.sign(e1.y2 - e1.y1);
+        const dx2 = Math.sign(e2.x2 - e2.x1);
+        const dy2 = Math.sign(e2.y2 - e2.y1);
+        
+        if (e1.x2 === e2.x1 && e1.y2 === e2.y1 && dx1 === dx2 && dy1 === dy2) {
+          e1.x2 = e2.x2;
+          e1.y2 = e2.y2;
+          edgeList.splice(j, 1);
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+
+  const dimensions: PanelDimension[] = [];
+
+  for (const e of edgeList) {
+    const gridLen = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    if (gridLen > 1) { // Only for edges longer than one panel
+      const isHorizontal = (e.y1 === e.y2);
+      const lenPx = isHorizontal ? gridLen * cellW : gridLen * cellH;
+      const lenM = lenPx * mpp;
+
+      const mx = (e.x1 + e.x2) / 2;
+      const my = (e.y1 + e.y2) / 2;
+
+      const px = mx * cellW;
+      const py = my * cellH;
+
+      const dx = Math.sign(e.x2 - e.x1);
+      const dy = Math.sign(e.y2 - e.y1);
+      const nx = dy;
+      const ny = -dx;
+
+      // Shift outwards by 15 pixels in local space
+      const shiftedPx = px + nx * 15;
+      const shiftedPy = py + ny * 15;
+
+      const centerCanvas = rotatePoint(
+        { x: origin.x + shiftedPx, y: origin.y + shiftedPy },
+        angle,
+        origin
+      );
+
+      // Text angle
+      // Edge goes from e1 to e2, local angle:
+      let localAngle = Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180 / Math.PI;
+      let textAngle = (angle * 180 / Math.PI) + localAngle;
+      
+      // Normalize text angle to keep it readable
+      while (textAngle > 180) textAngle -= 360;
+      while (textAngle <= -180) textAngle += 360;
+      
+      if (textAngle > 90 || textAngle < -90) {
+        textAngle += 180;
+      }
+
+      dimensions.push({
+        centerCanvas,
+        lengthM: lenM,
+        textAngle
+      });
+    }
+  }
+
+  return dimensions;
+}
+
 /** Euclidean distance — convenience wrapper, kept for call-site readability. */
 export function distance(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/**
+ * Re-validate an *already placed* panel under a (possibly new) panelType.
+ *
+ * Used when the user edits panelType.widthM / heightM: existing panels keep
+ * their stored (cx, cy) center but their rendered rectangle grows/shrinks
+ * around that point. A panel that previously fit may now overflow the
+ * polygon or collide with neighbours.
+ *
+ * The check mirrors the two invariants enforced at placement time
+ * (see snapPanelToGrid):
+ *   1. All 4 corners must lie inside the roof polygon.
+ *   2. No neighbour center may sit closer than 0.7 × min(cellW, cellH).
+ *
+ * NB: The symmetric-overlap check means that if two neighbours each
+ * overlap the other, both will report invalid. Callers that auto-prune
+ * should remove all at once rather than iteratively — see Sidebar's
+ * panel-type edit guard.
+ */
+export function panelFitsOnRoof(
+  panel: { id: string; cx: number; cy: number },
+  roof: Roof,
+  panelType: PanelType,
+  orientation: 'portrait' | 'landscape',
+  mpp: number,
+  siblings: { id: string; cx: number; cy: number }[]
+): boolean {
+  const angle = roofPrimaryAngle(roof.polygon);
+  const { w, h } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
+  if (w <= 0 || h <= 0) return false;
+  const corners = panelCorners({ x: panel.cx, y: panel.cy }, angle, w, h);
+  if (!corners.every((c) => isInsidePolygon(c, roof.polygon))) return false;
+  const minDist = Math.min(w, h) * 0.7;
+  for (const s of siblings) {
+    if (s.id === panel.id) continue;
+    if (Math.hypot(s.cx - panel.cx, s.cy - panel.cy) < minDist) return false;
+  }
+  return true;
 }
