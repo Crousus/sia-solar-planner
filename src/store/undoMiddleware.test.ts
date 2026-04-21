@@ -335,3 +335,24 @@ describe('coalescing', () => {
     }
   });
 });
+
+describe('depth cap', () => {
+  it('caps past at MAX_PAST and drops the oldest entry', async () => {
+    const { MAX_PAST } = await import('./undoMiddleware');
+    const store = makeStore();
+    // Ensure coalescing does NOT collapse these. Space them with unique times + distinct keys.
+    const nowRef = { t: 10_000 };
+    vi.stubGlobal('performance', { now: () => (nowRef.t += 600) });
+    try {
+      for (let i = 0; i < MAX_PAST + 1; i++) {
+        store.getState().setName(`n-${i}`);
+      }
+      expect(store.getState().past.length).toBe(MAX_PAST);
+      // The oldest snapshot captured the original name 'p' — with one
+      // overflow, that one was dropped.
+      expect(store.getState().past[0].name).not.toBe('p');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
