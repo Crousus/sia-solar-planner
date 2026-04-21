@@ -66,8 +66,13 @@ const defaultPanelType: PanelType = {
  * Initial project state. The lat/lng defaults to central Munich because we
  * had to pick somewhere and the user is German-speaking; the user will
  * navigate away on first use.
+ *
+ * Exported (Task 9) so the team-view "+ New project" path can seed a
+ * brand-new server-side row with the same well-formed shape the editor
+ * uses on first open. The store remains the single source of truth for
+ * what a fresh project looks like — no inline duplicates.
  */
-const initialProject: Project = {
+export const initialProject: Project = {
   name: 'Untitled Project',
   panelType: defaultPanelType,
   roofs: [],

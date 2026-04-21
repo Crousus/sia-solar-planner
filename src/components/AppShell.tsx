@@ -35,10 +35,7 @@ import TeamPicker from './TeamPicker';
 import NewTeamPage from './NewTeamPage';
 import TeamView from './TeamView';
 import TeamMembers from './TeamMembers';
-// ProjectEditor lands in Task 9 — /p/:projectId is intentionally absent
-// from <Routes> until then, so attempts to navigate there will fall
-// through to the router's no-match (404) behavior rather than render
-// an undefined component.
+import ProjectEditor from './ProjectEditor';
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -73,7 +70,13 @@ export default function AppShell() {
         <Route path="/teams/new" element={<AuthGuard><NewTeamPage /></AuthGuard>} />
         <Route path="/teams/:teamId" element={<AuthGuard><TeamView /></AuthGuard>} />
         <Route path="/teams/:teamId/members" element={<AuthGuard><TeamMembers /></AuthGuard>} />
-        {/* /p/:projectId lands in Task 9 */}
+        {/*
+          Project editor (Task 9). The dynamic segment is the PB record id
+          of the project row. ProjectEditor handles fetch/loadProject on
+          mount and resetProject on unmount; the underlying <App/> stays
+          server-agnostic.
+        */}
+        <Route path="/p/:projectId" element={<AuthGuard><ProjectEditor /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   );

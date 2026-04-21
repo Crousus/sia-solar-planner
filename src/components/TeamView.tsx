@@ -18,6 +18,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
 import type { Project } from '../types';
+import { initialProject } from '../store/projectStore';
 import { useAuthUser } from './AppShell';
 
 export default function TeamView() {
@@ -65,7 +66,13 @@ export default function TeamView() {
       // than an empty {}) means the editor can render immediately
       // without a "needs setup" branch — and the diff/patch path in
       // later tasks always operates on a well-formed document.
-      const doc: Project = initialProjectDoc();
+      //
+      // We import the SAME `initialProject` value the store uses on first
+      // load (Task 9), so a server-created row and a local-only project
+      // start from byte-identical shapes. This avoids subtle drift bugs
+      // where a "fresh from server" project differs from a "fresh in
+      // editor" one — important once Task 12/13 turns on diff-based sync.
+      const doc: Project = initialProject;
       const created = await pb.collection('projects').create<ProjectRecord>({
         team: teamId,
         name: 'Untitled Project',
@@ -154,59 +161,3 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * Build a fresh, valid Project document for a brand-new server-side row.
- *
- * Why inline rather than import from projectStore:
- *   - `projectStore.ts` keeps `initialProject` as a module-private const
- *     (it's only used by the store's own `initialProject`/`resetProject`
- *     paths). Exporting it for our use here would widen its API surface
- *     for one caller, and re-exporting could re-trigger the persist
- *     middleware's setup at import time on this page (it runs at module
- *     load). Inlining keeps this route lean and avoids accidentally
- *     importing the entire Zustand store machinery just to read one
- *     constant.
- *
- * Field-by-field rationale (mirrors projectStore.ts so the editor sees
- * the same starting point on first open):
- *   - panelType: a generic 400W module — sensible default the user can
- *     edit in the sidebar. Watt/dimensions are illustrative; widthM/
- *     heightM are the real-world short/long sides in meters.
- *   - roofs/panels/strings/inverters: empty arrays — nothing drawn yet.
- *   - mapState: unlocked variant centred on Munich at zoom 19, with a
- *     placeholder mpp. Real mpp is set on Lock Map. The discriminated
- *     union requires `locked: false` here so the Konva overlay knows
- *     it's in pan/zoom mode.
- *
- * The `panelType.id` uses Date.now() as a quick uid; we don't need
- * cryptographic entropy and reusing projectStore's `uid()` would mean
- * exporting it. The collision risk for a one-off id at row-create time
- * is essentially zero.
- */
-function initialProjectDoc(): Project {
-  return {
-    name: 'Untitled Project',
-    panelType: {
-      id: `pt_${Date.now().toString(36)}`,
-      name: 'Generic 400W',
-      widthM: 1.134,
-      heightM: 1.722,
-      wattPeak: 400,
-    },
-    roofs: [],
-    panels: [],
-    strings: [],
-    inverters: [],
-    mapState: {
-      locked: false,
-      centerLat: 48.137,
-      centerLng: 11.575,
-      zoom: 19,
-      // Placeholder; real value set on Lock Map (computed from zoom + lat
-      // via Web Mercator). Keeping a non-zero default so any defensive
-      // `mpp <= 0` checks elsewhere don't accidentally fail before lock.
-      metersPerPixel: 0.1,
-      mapProvider: 'esri',
-    },
-  };
-}
