@@ -351,11 +351,27 @@ const undoableImpl = (
       // Intentionally warn — not throw — so a new action under development
       // doesn't hard-crash the app before its policy is wired up. Task 14
       // will make this a compile-time error via a stricter ActionName type.
+      //
+      // Guard uses `import.meta.env.DEV` because Vite statically replaces
+      // that token with a literal boolean at build time (true in `vite dev`,
+      // false in production bundles — the warn and its branch are dead-code
+      // eliminated from the prod build). Crucially, vitest also populates
+      // `import.meta.env.DEV` (defaults to true under `vitest run`), so the
+      // warn fires in both the browser dev server AND the test runner.
+      //
+      // The previous `typeof process !== 'undefined'` check was a Node-ism
+      // that silently failed in the browser: Vite does not inject a `process`
+      // global into the browser runtime (it only rewrites `process.env.NODE_ENV`
+      // string references), so the guard short-circuited to false and the warn
+      // never fired during actual dev work — defeating its purpose of
+      // surfacing forgotten policy entries early.
+      //
+      // Ordering matters: `import.meta.env.DEV` is first so the whole check
+      // compiles away in production after DCE, regardless of `name`.
       if (
+        import.meta.env.DEV &&
         name &&
-        !(name in ACTION_POLICY) &&
-        typeof process !== 'undefined' &&
-        process.env?.NODE_ENV !== 'production'
+        !(name in ACTION_POLICY)
       ) {
         // eslint-disable-next-line no-console
         console.warn(`[undoable] Unclassified action name: ${name}`);
