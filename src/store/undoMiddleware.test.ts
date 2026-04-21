@@ -32,3 +32,14 @@ describe('undoable middleware (shell)', () => {
     expect(s.getState().lastActionSig).toBeNull();
   });
 });
+
+describe('ACTION_POLICY', () => {
+  it('classifies known bypass, record, and special action names', async () => {
+    const mod = await import('./undoMiddleware');
+    expect(mod.ACTION_POLICY.setSelectedRoof.kind).toBe('bypass');
+    expect(mod.ACTION_POLICY.setProjectName.kind).toBe('record');
+    expect(mod.ACTION_POLICY.assignPanelsToString.kind).toBe('record');
+    expect(mod.ACTION_POLICY.resetProject.kind).toBe('clear-history');
+    expect(mod.ACTION_POLICY.loadProject.kind).toBe('load-history');
+  });
+});

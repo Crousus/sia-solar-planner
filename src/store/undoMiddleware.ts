@@ -37,6 +37,80 @@ export interface HistoryState {
   } | null;
 }
 
+/**
+ * Per-action classification. Every store action must appear in ACTION_POLICY
+ * below. TypeScript enforces coverage via `Record<ActionName, Policy>` once
+ * `ActionName` is tightened in Task 14.
+ */
+export type Policy =
+  | { kind: 'bypass' }
+  | { kind: 'clear-history' }
+  | { kind: 'load-history' }
+  | {
+      kind: 'record';
+      // Coalesce key derived from the action arguments. If undefined, the
+      // action still coalesces on action-name + 500ms window but with no
+      // per-instance discriminator. If the function returns null, same
+      // effect (no key).
+      keyFrom?: (...args: any[]) => string | null;
+    };
+
+/**
+ * ACTION_POLICY — single source of truth for per-action behavior.
+ *
+ * Keys are action names, values are Policy entries. At runtime, the middleware
+ * reads the third argument of `set(partial, replace, actionName)` and looks up
+ * the policy here.
+ *
+ * Unknown / missing names default to "bypass" with a dev-only console.warn,
+ * so a forgotten label surfaces early without corrupting history.
+ */
+export const ACTION_POLICY: Record<string, Policy> = {
+  // ── Record (undoable) ──────────────────────────────────────────────
+  setProjectName:          { kind: 'record', keyFrom: () => 'name' },
+  updatePanelType:         { kind: 'record', keyFrom: () => 'panelType' },
+  addRoof:                 { kind: 'record' },
+  updateRoof:              { kind: 'record', keyFrom: (id) => id },
+  deleteRoof:              { kind: 'record' },
+  splitRoof:               { kind: 'record' },
+  mergeRoofs:              { kind: 'record' },
+  addPanel:                { kind: 'record', keyFrom: (_roofId, _cx, _cy, groupId) => groupId },
+  updateGroupOrientation:  { kind: 'record' },
+  moveGroup:               { kind: 'record' },
+  deletePanel:             { kind: 'record' },
+  deletePanels:            { kind: 'record' },
+  addString:               { kind: 'record' },
+  deleteString:            { kind: 'record' },
+  assignPanelsToString:    { kind: 'record', keyFrom: (_panelIds, stringId) => stringId },
+  unassignPanel:           { kind: 'record', keyFrom: () => 'unassign' },
+  setStringInverter:       { kind: 'record', keyFrom: (stringId) => stringId },
+  updateString:            { kind: 'record', keyFrom: (id) => id },
+  addInverter:             { kind: 'record' },
+  renameInverter:          { kind: 'record', keyFrom: (id) => id },
+  deleteInverter:          { kind: 'record' },
+
+  // ── Bypass (UI + mapState) ─────────────────────────────────────────
+  lockMap:                 { kind: 'bypass' },
+  unlockMap:               { kind: 'bypass' },
+  setMapProvider:          { kind: 'bypass' },
+  setToolMode:             { kind: 'bypass' },
+  setSelectedRoof:         { kind: 'bypass' },
+  setActiveString:         { kind: 'bypass' },
+  setSelectedInverter:     { kind: 'bypass' },
+  setActivePanelGroup:     { kind: 'bypass' },
+  setSplitCandidateRoof:   { kind: 'bypass' },
+  toggleBackground:        { kind: 'bypass' },
+
+  // ── Special ────────────────────────────────────────────────────────
+  resetProject:            { kind: 'clear-history' },
+  loadProject:             { kind: 'load-history' },
+
+  // Undo/redo themselves bypass the record path (they manipulate stacks
+  // directly); classified as 'bypass' so the middleware doesn't re-snapshot.
+  undo:                    { kind: 'bypass' },
+  redo:                    { kind: 'bypass' },
+};
+
 // --- Type plumbing to widen set() to accept an action-name 3rd arg ---
 // Mirror of zustand/middleware/devtools.d.ts internal helpers. These are
 // local (not re-exported) because they're implementation detail of the
