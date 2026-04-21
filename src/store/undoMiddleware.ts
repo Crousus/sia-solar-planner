@@ -310,6 +310,25 @@ export const COALESCE_MS = 500;
  * (which this helper sets) when deciding whether the next set() call
  * coalesces with the previous one.
  *
+ * IMPORTANT: Must be called IMMEDIATELY before — and for the SAME action
+ * name as — the record-path set() that follows. Two failure modes:
+ *   1. Forgetting this call entirely: the action coalesces only by action
+ *      name with key=null, meaning two rapid edits to DIFFERENT entity ids
+ *      collapse into a single undo step within the 500ms window (silent
+ *      data loss from the user's perspective — undoing one roof rename
+ *      would also undo an unrelated second-roof rename that happened to
+ *      come right after).
+ *   2. Calling this helper but not issuing the matching set() next (or
+ *      issuing a set() under a different action name): the pending key
+ *      leaks into the next record-path call. The action-name guard in the
+ *      middleware (`pending.action === name`) provides a partial defense —
+ *      a stale pending from action A won't be picked up by action B — but
+ *      the INVARIANT is that this helper and its matching set() are paired.
+ *      The middleware also clears `_pendingCoalesce` on the no-op early-
+ *      return path (where a record-path set() produces no reference change
+ *      and drops the phantom push) to uphold this invariant even when the
+ *      mutation is a no-op.
+ *
  * Why a separate helper rather than deriving the key inside the middleware:
  * the per-instance discriminator (e.g. a roofId for `updateRoof`) lives in
  * the action's arguments, not in the set() partial. The middleware only sees
@@ -469,7 +488,29 @@ const undoableImpl = (
         const before = buildSlice(get().project);
         (set as any)(partial, replace, name);
         const after = buildSlice(get().project);
-        if (slicesEqual(before, after)) return; // no-op: drop phantom step
+        if (slicesEqual(before, after)) {
+          // No-op: the mutation didn't change any top-level slice field
+          // (e.g. splitRoof rejecting an invalid cut, or setProjectName
+          // called with the already-current name). Drop the phantom push.
+          //
+          // Invariant: a `_pendingCoalesce` written by setCoalesceKey for
+          // THIS call must be consumed here, even though we're not pushing.
+          // Otherwise a stale pending key could leak into the next record-
+          // path call — the action-name guard at the consume site is a
+          // partial defense, but the design contract is that helper writes
+          // are consumed immediately by the next record-path set()
+          // UNCONDITIONALLY. The `!= null` guard avoids redundant
+          // `__history__` writes (and the listener notification they
+          // trigger) when there was no pending key to clear.
+          if (get()._pendingCoalesce != null) {
+            (set as any)(
+              { _pendingCoalesce: null } as Partial<HistoryState>,
+              false,
+              '__history__',
+            );
+          }
+          return;
+        }
 
         // Time source: prefer performance.now because it's monotonic and
         // unaffected by wall-clock adjustments. Feature-detect both the

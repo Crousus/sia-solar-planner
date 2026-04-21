@@ -216,6 +216,90 @@ describe('coalescing', () => {
     }
   });
 
+  it('clears _pendingCoalesce on the no-op record path so it does not leak', () => {
+    // Regression for a bug where setCoalesceKey wrote _pendingCoalesce,
+    // the subsequent set() produced a no-op (reference-equal slice → early
+    // return), and the pending key was left dangling. A later DIFFERENT
+    // action's record-path set() would then see the stale pending (though
+    // the action-name guard prevented it from being applied, the invariant
+    // that pending is consumed unconditionally is load-bearing for future
+    // changes and reasoning clarity).
+    const nowRef = { t: 4000 };
+    vi.stubGlobal('performance', { now: () => nowRef.t });
+    try {
+      const store = createStore<
+        TestState & { setRoofName: (id: string, n: string) => void }
+      >()(
+        undoable((set) => ({
+          past: [],
+          future: [],
+          lastActionSig: null,
+          project: {
+            name: 'p',
+            roofs: [{ id: 'r1', name: 'a' }] as any,
+            panels: [],
+            strings: [],
+            inverters: [],
+            panelType: { id: 'pt1' },
+          },
+          selectedRoofId: null,
+          // setName intentionally uses action 'setProjectName' — a DIFFERENT
+          // action from updateRoof used below. We want to assert that after
+          // a no-op updateRoof, a subsequent setProjectName call does not
+          // observe any stale pending coalesce state.
+          setName: (n) =>
+            set(
+              (s) => ({ project: { ...s.project, name: n } }),
+              false,
+              'setProjectName',
+            ),
+          // A no-op updateRoof: the mapper returns the SAME roof object
+          // reference when the name is already `n`, so `roofs.map(...)`
+          // produces a new array but buildSlice's field-level reference
+          // check still sees roofs as a different ref. To make this a real
+          // no-op at the slice level, we return the project unchanged when
+          // the roof already has the target name.
+          setRoofName: (id, n) => {
+            setCoalesceKey(set as any, 'updateRoof', id);
+            set(
+              (s: any) => {
+                const roof = s.project.roofs.find((r: any) => r.id === id);
+                if (roof && roof.name === n) return s; // true no-op
+                return {
+                  project: {
+                    ...s.project,
+                    roofs: s.project.roofs.map((r: any) =>
+                      r.id === id ? { ...r, name: n } : r,
+                    ),
+                  },
+                };
+              },
+              false,
+              'updateRoof',
+            );
+          },
+        })),
+      );
+      // Trigger the no-op record path: updateRoof with the existing name.
+      // setCoalesceKey writes _pendingCoalesce, the set() is a no-op, and
+      // the middleware's no-op branch must now clear the pending key.
+      store.getState().setRoofName('r1', 'a');
+      expect(store.getState()._pendingCoalesce ?? null).toBeNull();
+      expect(store.getState().past.length).toBe(0);
+
+      // Now a DIFFERENT action's record-path set() — it must push normally,
+      // unaffected by any lingering pending state.
+      nowRef.t += 10;
+      store.getState().setName('new-name');
+      expect(store.getState().past.length).toBe(1);
+      expect(store.getState().project.name).toBe('new-name');
+      // lastActionSig reflects the setProjectName push, not updateRoof.
+      expect(store.getState().lastActionSig?.action).toBe('setProjectName');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not coalesce across different keys', () => {
     const nowRef = { t: 3000 };
     vi.stubGlobal('performance', { now: () => nowRef.t });
