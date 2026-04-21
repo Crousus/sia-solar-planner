@@ -245,12 +245,30 @@ export const useProjectStore = create<ProjectStore>()(
       // impression that the initial value has any meaning.
 
       // ── Project-level ───────────────────────────────────────────────────
-      setProjectName: (name) => set((s) => ({ project: { ...s.project, name } })),
+      setProjectName: (name) => {
+        // Coalesce by the stable literal 'name' — rapid keystrokes into the
+        // project-name field collapse into a single undo step within the
+        // 500ms window (instead of one step per character).
+        setCoalesceKey(set as any, 'setProjectName', 'name');
+        set(
+          (s) => ({ project: { ...s.project, name } }),
+          false,
+          'setProjectName',
+        );
+      },
 
-      updatePanelType: (changes) =>
-        set((s) => ({
-          project: { ...s.project, panelType: { ...s.project.panelType, ...changes } },
-        })),
+      updatePanelType: (changes) => {
+        // Coalesce by the literal 'panelType' — scrubbing a wattage slider or
+        // retyping dimensions should collapse into a single history step.
+        setCoalesceKey(set as any, 'updatePanelType', 'panelType');
+        set(
+          (s) => ({
+            project: { ...s.project, panelType: { ...s.project.panelType, ...changes } },
+          }),
+          false,
+          'updatePanelType',
+        );
+      },
 
       // ── Map lock/unlock ─────────────────────────────────────────────────
       // `lockMap` stores the Web-Mercator-derived mpp AND a rasterized
@@ -262,21 +280,25 @@ export const useProjectStore = create<ProjectStore>()(
       // we added the image triple, and positional calls were becoming
       // error-prone (easy to swap width/height). See ADR-007.
       lockMap: ({ centerLat, centerLng, zoom, mpp, capturedImage, capturedWidth, capturedHeight }) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            mapState: {
-              locked: true,
-              centerLat,
-              centerLng,
-              zoom,
-              metersPerPixel: mpp,
-              capturedImage,
-              capturedWidth,
-              capturedHeight,
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              mapState: {
+                locked: true,
+                centerLat,
+                centerLng,
+                zoom,
+                metersPerPixel: mpp,
+                capturedImage,
+                capturedWidth,
+                capturedHeight,
+              },
             },
-          },
-        })),
+          }),
+          false,
+          'lockMap',
+        ),
 
       // Unlock also resets the tool mode. Rationale: an active tool mode with
       // an unlocked (pannable) map is confusing — clicking to draw would
@@ -287,19 +309,23 @@ export const useProjectStore = create<ProjectStore>()(
       // forward for no reason bloats localStorage (which is capped ~5 MB).
       // Re-locking will re-capture.
       unlockMap: () =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            mapState: {
-              ...s.project.mapState,
-              locked: false,
-              capturedImage: undefined,
-              capturedWidth: undefined,
-              capturedHeight: undefined,
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              mapState: {
+                ...s.project.mapState,
+                locked: false,
+                capturedImage: undefined,
+                capturedWidth: undefined,
+                capturedHeight: undefined,
+              },
             },
-          },
-          toolMode: 'idle',
-        })),
+            toolMode: 'idle',
+          }),
+          false,
+          'unlockMap',
+        ),
 
       // ── Roofs ───────────────────────────────────────────────────────────
       // Adds a roof and immediately selects it so the sidebar editor shows up
@@ -313,26 +339,39 @@ export const useProjectStore = create<ProjectStore>()(
           tiltDeg: 30,                 // reasonable default pitch for typical homes
           panelOrientation: 'portrait',// most common; user can toggle
         };
-        set((s) => ({
-          project: { ...s.project, roofs: [...s.project.roofs, roof] },
-          selectedRoofId: id,
-        }));
+        set(
+          (s) => ({
+            project: { ...s.project, roofs: [...s.project.roofs, roof] },
+            selectedRoofId: id,
+          }),
+          false,
+          'addRoof',
+        );
         return id;
       },
 
-      updateRoof: (id, changes) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            roofs: s.project.roofs.map((r) => (r.id === id ? { ...r, ...changes } : r)),
-          },
-        })),
+      updateRoof: (id, changes) => {
+        // Coalesce by roof id — rapid drags of the same roof (vertex
+        // handles, name retype, tilt scrub) collapse into one step.
+        setCoalesceKey(set as any, 'updateRoof', id);
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              roofs: s.project.roofs.map((r) => (r.id === id ? { ...r, ...changes } : r)),
+            },
+          }),
+          false,
+          'updateRoof',
+        );
+      },
 
       // Cascading delete: panels on this roof go with it. Any strings that
       // lose members need re-numbering (indexInString would otherwise have
       // holes in the sequence).
       deleteRoof: (id) =>
-        set((s) => {
+        set(
+          (s) => {
           const remainingPanels = s.project.panels.filter((p) => p.roofId !== id);
           const affectedStringIds = new Set(
             s.project.panels
@@ -349,7 +388,10 @@ export const useProjectStore = create<ProjectStore>()(
             },
             selectedRoofId: s.selectedRoofId === id ? null : s.selectedRoofId,
           };
-        }),
+          },
+          false,
+          'deleteRoof',
+        ),
 
       // ── Split a roof into two by a polyline cut ────────────────────
       // All panels stay on the original roofId (grouped). The half with
@@ -413,17 +455,21 @@ export const useProjectStore = create<ProjectStore>()(
           panelOrientation: roof.panelOrientation,
         };
 
-        set((prev) => ({
-          project: {
-            ...prev.project,
-            roofs: prev.project.roofs
-              .map((r) => (r.id === roofId ? { ...r, polygon: survivorPoly } : r))
-              .concat(newRoof),
-          },
-          // Clear the cut-candidate marker on commit — the draw flow
-          // that created it is done with.
-          splitCandidateRoofId: null,
-        }));
+        set(
+          (prev) => ({
+            project: {
+              ...prev.project,
+              roofs: prev.project.roofs
+                .map((r) => (r.id === roofId ? { ...r, polygon: survivorPoly } : r))
+                .concat(newRoof),
+            },
+            // Clear the cut-candidate marker on commit — the draw flow
+            // that created it is done with.
+            splitCandidateRoofId: null,
+          }),
+          false,
+          'splitRoof',
+        );
         return true;
       },
 
@@ -442,7 +488,8 @@ export const useProjectStore = create<ProjectStore>()(
       // pair, or the user right-clicked an edge that happens to only
       // belong to one roof), this is a no-op.
       mergeRoofs: (roofAId, roofBId) =>
-        set((s) => {
+        set(
+          (s) => {
           if (roofAId === roofBId) return s;
           const roofA = s.project.roofs.find((r) => r.id === roofAId);
           const roofB = s.project.roofs.find((r) => r.id === roofBId);
@@ -527,29 +574,41 @@ export const useProjectStore = create<ProjectStore>()(
                 ? survivor.id
                 : s.selectedRoofId,
           };
-        }),
+          },
+          false,
+          'mergeRoofs',
+        ),
 
       // ── Panels ──────────────────────────────────────────────────────────
       // Caller (PanelLayer) has already snapped + validated the position.
       // We just record it; string assignment happens later via lasso.
-      addPanel: (roofId, cx, cy, groupId, orientation) =>
-        set((s) => {
-          const panel: Panel = {
-            id: uid(),
-            roofId,
-            groupId,
-            cx,
-            cy,
-            stringId: null,
-            indexInString: null,
-            orientation,
-          };
-          return {
-            project: { ...s.project, panels: [...s.project.panels, panel] },
-            // Auto-activate this group so subsequent panels snap to it
-            activePanelGroupId: groupId
-          };
-        }),
+      addPanel: (roofId, cx, cy, groupId, orientation) => {
+        // Coalesce by groupId — placing several panels in the same group
+        // during a paint-drag collapses into a single undo step, so one
+        // Ctrl-Z removes the whole run rather than N individual cells.
+        setCoalesceKey(set as any, 'addPanel', groupId);
+        set(
+          (s) => {
+            const panel: Panel = {
+              id: uid(),
+              roofId,
+              groupId,
+              cx,
+              cy,
+              stringId: null,
+              indexInString: null,
+              orientation,
+            };
+            return {
+              project: { ...s.project, panels: [...s.project.panels, panel] },
+              // Auto-activate this group so subsequent panels snap to it
+              activePanelGroupId: groupId
+            };
+          },
+          false,
+          'addPanel',
+        );
+      },
 
       // Flip every panel in a group between portrait and landscape AND
       // re-pack the panels so the new grid is tight (no overlap, no gaps).
@@ -573,7 +632,8 @@ export const useProjectStore = create<ProjectStore>()(
       // cy values change → affected strings need renumbering because the
       // wiring order sort is (−cy, cx).
       updateGroupOrientation: (groupId, orientation) =>
-        set((s) => {
+        set(
+          (s) => {
           const groupPanels = s.project.panels.filter((p) => p.groupId === groupId);
           if (groupPanels.length === 0) return s;
 
@@ -643,7 +703,10 @@ export const useProjectStore = create<ProjectStore>()(
           return {
             project: { ...s.project, panels: renumberStrings(updated, affected) },
           };
-        }),
+          },
+          false,
+          'updateGroupOrientation',
+        ),
 
       // Translate every panel in a group by (dx, dy) in canvas pixels.
       //
@@ -668,26 +731,31 @@ export const useProjectStore = create<ProjectStore>()(
       // renumberStrings), so we renumber every string that had a
       // member in this group.
       moveGroup: (groupId, dx, dy) =>
-        set((s) => {
-          if (dx === 0 && dy === 0) return s;
-          const updated = s.project.panels.map((p) =>
-            p.groupId === groupId
-              ? { ...p, cx: p.cx + dx, cy: p.cy + dy }
-              : p
-          );
-          const affected = new Set<string>();
-          for (const p of s.project.panels) {
-            if (p.groupId === groupId && p.stringId) affected.add(p.stringId);
-          }
-          return {
-            project: { ...s.project, panels: renumberStrings(updated, affected) },
-          };
-        }),
+        set(
+          (s) => {
+            if (dx === 0 && dy === 0) return s;
+            const updated = s.project.panels.map((p) =>
+              p.groupId === groupId
+                ? { ...p, cx: p.cx + dx, cy: p.cy + dy }
+                : p
+            );
+            const affected = new Set<string>();
+            for (const p of s.project.panels) {
+              if (p.groupId === groupId && p.stringId) affected.add(p.stringId);
+            }
+            return {
+              project: { ...s.project, panels: renumberStrings(updated, affected) },
+            };
+          },
+          false,
+          'moveGroup',
+        ),
 
       // If the deleted panel belonged to a string, renumber the remainder so
       // the indexInString sequence stays 1..N without gaps.
       deletePanel: (id) =>
-        set((s) => {
+        set(
+          (s) => {
           const panel = s.project.panels.find((p) => p.id === id);
           const remaining = s.project.panels.filter((p) => p.id !== id);
           const affectedStringIds = panel?.stringId
@@ -704,7 +772,10 @@ export const useProjectStore = create<ProjectStore>()(
             project: { ...s.project, panels: renumbered },
             activePanelGroupId: newActiveGroup
           };
-        }),
+          },
+          false,
+          'deletePanel',
+        ),
 
       // Batch delete. Used by panel-type-edit validation: when the user
       // shrinks or reshapes the panel so that existing placements no
@@ -712,7 +783,8 @@ export const useProjectStore = create<ProjectStore>()(
       // renumber affected strings exactly once) rather than N separate
       // store updates.
       deletePanels: (ids) =>
-        set((s) => {
+        set(
+          (s) => {
           if (ids.length === 0) return s;
           const idSet = new Set(ids);
           const removed = s.project.panels.filter((p) => idSet.has(p.id));
@@ -729,7 +801,10 @@ export const useProjectStore = create<ProjectStore>()(
             project: { ...s.project, panels: renumbered },
             activePanelGroupId: groupSurvives ? activeGid : null,
           };
-        }),
+          },
+          false,
+          'deletePanels',
+        ),
 
       // ── Strings ─────────────────────────────────────────────────────────
       // Creating a string immediately switches to assign-string mode and
@@ -757,11 +832,15 @@ export const useProjectStore = create<ProjectStore>()(
           inverterId: get().selectedInverterId,
           color,
         };
-        set((s) => ({
-          project: { ...s.project, strings: [...s.project.strings, str] },
-          activeStringId: id,
-          toolMode: 'assign-string',
-        }));
+        set(
+          (s) => ({
+            project: { ...s.project, strings: [...s.project.strings, str] },
+            activeStringId: id,
+            toolMode: 'assign-string',
+          }),
+          false,
+          'addString',
+        );
         return id;
       },
 
@@ -769,16 +848,20 @@ export const useProjectStore = create<ProjectStore>()(
       // the user probably wants to re-group them into a different string,
       // not lose the panels entirely.
       deleteString: (id) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            strings: s.project.strings.filter((str) => str.id !== id),
-            panels: s.project.panels.map((p) =>
-              p.stringId === id ? { ...p, stringId: null, indexInString: null } : p
-            ),
-          },
-          activeStringId: s.activeStringId === id ? null : s.activeStringId,
-        })),
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              strings: s.project.strings.filter((str) => str.id !== id),
+              panels: s.project.panels.map((p) =>
+                p.stringId === id ? { ...p, stringId: null, indexInString: null } : p
+              ),
+            },
+            activeStringId: s.activeStringId === id ? null : s.activeStringId,
+          }),
+          false,
+          'deleteString',
+        ),
 
       // Assign a batch of panels to `stringId`. Panels previously in OTHER
       // strings get moved (their old string loses those panels); panels
@@ -794,57 +877,87 @@ export const useProjectStore = create<ProjectStore>()(
       // which calls this one panel at a time). Without the reset a panel
       // moving from string A (where it was #3) to string B would keep
       // index 3 and jump into the middle of B's sequence.
-      assignPanelsToString: (panelIds, stringId) =>
-        set((s) => {
-          const idSet = new Set(panelIds);
-          const updated = s.project.panels.map((p) =>
-            idSet.has(p.id) ? { ...p, stringId, indexInString: null } : p
-          );
-          const affected = new Set<string>([stringId]);
-          for (const pid of panelIds) {
-            const old = s.project.panels.find((p) => p.id === pid);
-            if (old?.stringId) affected.add(old.stringId);
-          }
-          return {
-            project: {
-              ...s.project,
-              panels: renumberStrings(updated, affected, panelIds),
-            },
-          };
-        }),
+      assignPanelsToString: (panelIds, stringId) => {
+        // Coalesce by target stringId — a paint-drag that assigns panels
+        // one-at-a-time to the same string collapses into a single undo
+        // step, so one Ctrl-Z clears the whole lasso rather than popping
+        // panels off the string one by one in reverse paint order.
+        setCoalesceKey(set as any, 'assignPanelsToString', stringId);
+        set(
+          (s) => {
+            const idSet = new Set(panelIds);
+            const updated = s.project.panels.map((p) =>
+              idSet.has(p.id) ? { ...p, stringId, indexInString: null } : p
+            );
+            const affected = new Set<string>([stringId]);
+            for (const pid of panelIds) {
+              const old = s.project.panels.find((p) => p.id === pid);
+              if (old?.stringId) affected.add(old.stringId);
+            }
+            return {
+              project: {
+                ...s.project,
+                panels: renumberStrings(updated, affected, panelIds),
+              },
+            };
+          },
+          false,
+          'assignPanelsToString',
+        );
+      },
 
       unassignPanel: (panelId) =>
-        set((s) => {
-          const panel = s.project.panels.find((p) => p.id === panelId);
-          if (!panel?.stringId) return s;
-          const oldStringId = panel.stringId;
-          const updated = s.project.panels.map((p) =>
-            p.id === panelId ? { ...p, stringId: null, indexInString: null } : p
-          );
-          return {
-            project: { ...s.project, panels: renumberStrings(updated, new Set([oldStringId])) },
-          };
-        }),
-
-      setStringInverter: (stringId, inverterId) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            strings: s.project.strings.map((str) =>
-              str.id === stringId ? { ...str, inverterId } : str
-            ),
+        set(
+          (s) => {
+            const panel = s.project.panels.find((p) => p.id === panelId);
+            if (!panel?.stringId) return s;
+            const oldStringId = panel.stringId;
+            const updated = s.project.panels.map((p) =>
+              p.id === panelId ? { ...p, stringId: null, indexInString: null } : p
+            );
+            return {
+              project: { ...s.project, panels: renumberStrings(updated, new Set([oldStringId])) },
+            };
           },
-        })),
+          false,
+          'unassignPanel',
+        ),
 
-      updateString: (id, changes) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            strings: s.project.strings.map((str) =>
-              str.id === id ? { ...str, ...changes } : str
-            ),
-          },
-        })),
+      setStringInverter: (stringId, inverterId) => {
+        // Coalesce by stringId — quickly re-picking inverter in a dropdown
+        // for the same string collapses into one undo step.
+        setCoalesceKey(set as any, 'setStringInverter', stringId);
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              strings: s.project.strings.map((str) =>
+                str.id === stringId ? { ...str, inverterId } : str
+              ),
+            },
+          }),
+          false,
+          'setStringInverter',
+        );
+      },
+
+      updateString: (id, changes) => {
+        // Coalesce by string id — typing into the string's label field or
+        // picking a new color collapses rapid edits into one step.
+        setCoalesceKey(set as any, 'updateString', id);
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              strings: s.project.strings.map((str) =>
+                str.id === id ? { ...str, ...changes } : str
+              ),
+            },
+          }),
+          false,
+          'updateString',
+        );
+      },
 
       // ── Inverters ───────────────────────────────────────────────────────
       // Default-named "Inverter A", "Inverter B", … via ASCII offset 65.
@@ -854,85 +967,121 @@ export const useProjectStore = create<ProjectStore>()(
         const id = uid();
         const idx = get().project.inverters.length;
         const inv: Inverter = { id, name: `Inverter ${String.fromCharCode(65 + idx)}` };
-        set((s) => ({
-          project: { ...s.project, inverters: [...s.project.inverters, inv] },
-          // Immediately select the new inverter to streamline the common 
-          // "add inverter -> create strings" workflow.
-          selectedInverterId: id,
-        }));
+        set(
+          (s) => ({
+            project: { ...s.project, inverters: [...s.project.inverters, inv] },
+            // Immediately select the new inverter to streamline the common
+            // "add inverter -> create strings" workflow.
+            selectedInverterId: id,
+          }),
+          false,
+          'addInverter',
+        );
         return id;
       },
 
-      renameInverter: (id, name) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            inverters: s.project.inverters.map((i) => (i.id === id ? { ...i, name } : i)),
-          },
-        })),
+      renameInverter: (id, name) => {
+        // Coalesce by inverter id — typing into the rename field collapses
+        // per-keystroke writes into a single undo step.
+        setCoalesceKey(set as any, 'renameInverter', id);
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              inverters: s.project.inverters.map((i) => (i.id === id ? { ...i, name } : i)),
+            },
+          }),
+          false,
+          'renameInverter',
+        );
+      },
 
       // Cascading: strings pointing at this inverter get their inverterId
       // cleared. We don't delete the strings themselves — they're still
       // valid, just orphaned, and the user can re-assign.
       deleteInverter: (id) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            inverters: s.project.inverters.filter((i) => i.id !== id),
-            strings: s.project.strings.map((str) =>
-              str.inverterId === id ? { ...str, inverterId: null } : str
-            ),
-          },
-          // Clear the selection if the inverter being deleted was the one 
-          // selected (prevents stale selection IDs in UIState).
-          selectedInverterId: s.selectedInverterId === id ? null : s.selectedInverterId,
-        })),
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              inverters: s.project.inverters.filter((i) => i.id !== id),
+              strings: s.project.strings.map((str) =>
+                str.inverterId === id ? { ...str, inverterId: null } : str
+              ),
+            },
+            // Clear the selection if the inverter being deleted was the one
+            // selected (prevents stale selection IDs in UIState).
+            selectedInverterId: s.selectedInverterId === id ? null : s.selectedInverterId,
+          }),
+          false,
+          'deleteInverter',
+        ),
 
       // ── UI state (not persisted) ────────────────────────────────────────
-      setToolMode: (mode) => set((s) => ({ 
-        toolMode: mode,
-        // Optional: clear active panel group when leaving place-panels mode
-        // so entering it again starts a new group.
-        activePanelGroupId: mode === 'place-panels' ? s.activePanelGroupId : null 
-      })),
-      setSelectedRoof: (id) => set({ selectedRoofId: id }),
-      setActiveString: (id) => set({ activeStringId: id }),
-      setSelectedInverter: (id) => set({ selectedInverterId: id }),
-      setActivePanelGroup: (id) => set({ activePanelGroupId: id }),
-      setSplitCandidateRoof: (id) => set({ splitCandidateRoofId: id }),
+      setToolMode: (mode) => set(
+        (s) => ({
+          toolMode: mode,
+          // Optional: clear active panel group when leaving place-panels mode
+          // so entering it again starts a new group.
+          activePanelGroupId: mode === 'place-panels' ? s.activePanelGroupId : null
+        }),
+        false,
+        'setToolMode',
+      ),
+      setSelectedRoof: (id) => set({ selectedRoofId: id }, false, 'setSelectedRoof'),
+      setActiveString: (id) => set({ activeStringId: id }, false, 'setActiveString'),
+      setSelectedInverter: (id) => set({ selectedInverterId: id }, false, 'setSelectedInverter'),
+      setActivePanelGroup: (id) => set({ activePanelGroupId: id }, false, 'setActivePanelGroup'),
+      setSplitCandidateRoof: (id) => set({ splitCandidateRoofId: id }, false, 'setSplitCandidateRoof'),
       setMapProvider: (provider) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            mapState: { ...s.project.mapState, mapProvider: provider },
-          },
-        })),
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              mapState: { ...s.project.mapState, mapProvider: provider },
+            },
+          }),
+          false,
+          'setMapProvider',
+        ),
       // Flip the captured-background visibility. Intentionally does NOT
       // clear `capturedImage` — hiding is purely a render-layer concern,
       // so the user can toggle it back on without having to re-lock.
-      toggleBackground: () => set((s) => ({ showBackground: !s.showBackground })),
+      toggleBackground: () => set(
+        (s) => ({ showBackground: !s.showBackground }),
+        false,
+        'toggleBackground',
+      ),
 
       // ── Persistence entry points ────────────────────────────────────────
       // loadProject: replace everything. Resets ephemeral UI state because
       // the loaded project's ids may not match current selection/activeString.
       loadProject: (p) =>
-        set({
-          project: p,
-          toolMode: 'idle',
-          selectedRoofId: null,
-          activeStringId: null,
-          selectedInverterId: null,
-          activePanelGroupId: null,
-        }),
+        set(
+          {
+            project: p,
+            toolMode: 'idle',
+            selectedRoofId: null,
+            activeStringId: null,
+            selectedInverterId: null,
+            activePanelGroupId: null,
+          },
+          false,
+          'loadProject',
+        ),
       resetProject: () =>
-        set({
-          project: initialProject,
-          toolMode: 'idle',
-          selectedRoofId: null,
-          activeStringId: null,
-          selectedInverterId: null,
-          activePanelGroupId: null,
-        }),
+        set(
+          {
+            project: initialProject,
+            toolMode: 'idle',
+            selectedRoofId: null,
+            activeStringId: null,
+            selectedInverterId: null,
+            activePanelGroupId: null,
+          },
+          false,
+          'resetProject',
+        ),
 
       // ── Undo / Redo ─────────────────────────────────────────────────────
       // Thin wrappers around the pure `applyUndo` / `applyRedo` helpers in
