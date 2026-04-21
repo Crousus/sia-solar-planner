@@ -423,6 +423,26 @@ describe('assertReferentialIntegrity', () => {
     expect(errors[0]).toMatch(/GONE/);
   });
 
+  // Regression: the panel.stringId failure leg had no test before. The
+  // "consistent slice" test exercises the success side (panel.stringId = s1,
+  // strings = [{id: s1}]), but without this case an accidental regression
+  // that silently dropped the stringId check would have slipped past CI.
+  it('reports a panel with an unknown stringId', () => {
+    const errors: string[] = [];
+    const slice: UndoableSlice = {
+      name: 'p',
+      panelType: { id: 'pt' },
+      roofs: [{ id: 'r1' }],
+      panels: [{ id: 'pa1', roofId: 'r1', stringId: 'GONE' }] as any,
+      strings: [],
+      inverters: [],
+    };
+    assertReferentialIntegrity(slice, (msg) => errors.push(msg));
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toMatch(/pa1/);
+    expect(errors[0]).toMatch(/GONE/);
+  });
+
   it('reports a string with an unknown inverterId', () => {
     const errors: string[] = [];
     const slice: UndoableSlice = {
