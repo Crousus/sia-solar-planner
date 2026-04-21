@@ -498,6 +498,11 @@ type StoreUndoable<S> = S extends { setState: (...a: infer Sa) => infer Sr }
   : never;
 
 declare module 'zustand' {
+  // StoreMutators<S, A> — A must match zustand's own declaration exactly for
+  // interface merging (TS 2428 otherwise). We don't consume A ourselves (our
+  // mutator widens setState based on S alone), so the unused-parameter warning
+  // for A is intentional and suppressed.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface StoreMutators<S, A> {
     'undoable': WithUndoable<S>;
   }
