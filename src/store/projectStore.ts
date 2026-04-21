@@ -27,7 +27,7 @@ import type {
   Point,
 } from '../types';
 import { STRING_COLORS } from '../types';
-import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon } from '../utils/geometry';
+import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
 import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
 
 /**
@@ -415,11 +415,24 @@ export const useProjectStore = create<ProjectStore>()(
                 reversed: shared.reversed,
               };
 
-          const mergedPolygon = mergePolygons(
+          const rawMerged = mergePolygons(
             survivor.polygon,
             absorbed.polygon,
             sharedForSurvivor,
           );
+          // Collinearity cleanup on the stitched boundary.
+          //
+          // mergePolygons walks both polygons' rings and concatenates
+          // them at the shared edge without deduping — its own comment
+          // notes "cleanup can be added later if needed". The shared
+          // edge's two endpoints almost always end up as redundant
+          // corners on an otherwise-straight merged boundary (they
+          // were only interesting as corners because of the OTHER
+          // polygon's seam, which is gone now). Without this pass,
+          // the merged roof shows ghost length labels and extra edge
+          // hit-areas where the user sees a single clean line. Same
+          // fix rationale as the edge-delete path in RoofLayer.
+          const mergedPolygon = simplifyCollinear(rawMerged);
 
           // Reassign absorbed's panels to survivor. Track which
           // stringIds were touched so we can renumber them after the

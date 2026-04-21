@@ -458,11 +458,11 @@ export function mergePolygons(
   const fromB: Point[] = [];
   if (reversed) {
     // Start one past B[j+1], end one before B[j], going forward.
+    // Indices j+2, j+3, ..., j+nB-1 (mod nB) — exactly nB-2 vertices,
+    // every B vertex EXCEPT B[j] and B[j+1].
     for (let k = 1; k < nB - 1; k++) {
-      fromB.push(polyB[(j + 2 + k) % nB]);
+      fromB.push(polyB[(j + 1 + k) % nB]);
     }
-    // The loop above yields nB - 2 vertices, which is every B vertex
-    // EXCEPT B[j] and B[j+1] — correct.
   } else {
     // Walk B backward from B[j-1] around to B[j+2].
     for (let k = 1; k < nB - 1; k++) {

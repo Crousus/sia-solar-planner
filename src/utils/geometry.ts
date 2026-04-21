@@ -83,6 +83,80 @@ export function polygonArea(polygon: Point[]): number {
 }
 
 /**
+ * Remove vertices that lie (within tolerance) on the straight line between
+ * their two polygon-ring neighbors. In practical terms: if three consecutive
+ * corners V(i-1), V(i), V(i+1) are collinear, V(i) contributes nothing to
+ * the shape and should be dropped — otherwise length labels split a
+ * visually-single edge into two (30.7m + 18.1m where it should read 48.8m)
+ * and the edge hit-areas likewise fragment.
+ *
+ * Origin of the artifact: edge-delete collapses an edge's two endpoints to
+ * their midpoint, which can leave that midpoint dead-center on a now-longer
+ * straight run. Similarly, merging two roofs along a shared edge often
+ * leaves the shared-edge endpoints as redundant vertices on what should be
+ * a clean boundary. Running this pass after such operations keeps the
+ * polygon topology aligned with what the user "sees".
+ *
+ * Tolerance: perpendicular distance from V(i) to the line V(i-1)→V(i+1),
+ * measured in the same units as the input (canvas pixels here). 1.5 px is
+ * tighter than findSharedEdge's 2 px — we want to be slightly more
+ * conservative because false-positive removal distorts the polygon, whereas
+ * a false-positive shared-edge match is only surfaced on explicit merge.
+ *
+ * Iteration: a single sweep over the ring. Removing V(i) never makes a
+ * previously non-collinear triple become collinear (the other triples are
+ * untouched), so one pass is enough — no fixpoint loop needed. We do
+ * build indices against the CURRENT (shrinking) array so the "previous"
+ * vertex naturally updates as we remove; this matters when two removable
+ * vertices are adjacent.
+ *
+ * Safety floor: we refuse to shrink below 3 vertices (degenerate polygon).
+ * This is a defensive guard — it shouldn't trigger in practice because a
+ * truly degenerate input would already have been rejected upstream.
+ */
+export function simplifyCollinear(polygon: Point[], tolPx: number = 1.5): Point[] {
+  if (polygon.length <= 3) return polygon.slice();
+  const out = polygon.slice();
+  // Walk forward, removing collinear middle vertices in-place. `i`
+  // advances only when the current vertex is kept, so removals don't
+  // skip the replacement neighbor.
+  let i = 0;
+  while (i < out.length && out.length > 3) {
+    const n = out.length;
+    const prev = out[(i - 1 + n) % n];
+    const curr = out[i];
+    const next = out[(i + 1) % n];
+    // Perpendicular distance from curr to the infinite line through
+    // prev→next. Formula: |cross(next-prev, curr-prev)| / |next-prev|.
+    // Cross product magnitude = 2 × triangle area; dividing by the base
+    // length (|next-prev|) yields the height, which IS the perpendicular
+    // distance we want.
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const baseLen = Math.hypot(dx, dy);
+    // Near-zero base means prev == next (a spike). Treat curr as
+    // redundant — the "edge" is actually a degenerate backtrack and
+    // removing curr unkinks it. This case mostly protects downstream
+    // rendering from divide-by-zero; users shouldn't produce such
+    // polygons, but merges occasionally can.
+    if (baseLen < 1e-9) {
+      out.splice(i, 1);
+      continue;
+    }
+    const cross = Math.abs(dx * (curr.y - prev.y) - dy * (curr.x - prev.x));
+    const perpDist = cross / baseLen;
+    if (perpDist <= tolPx) {
+      out.splice(i, 1);
+      // Don't advance i: the new out[i] is the old next, and its
+      // collinearity relative to its NEW neighbors hasn't been tested.
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+/**
  * Ray-casting point-in-polygon test.
  *
  * Classic algorithm: cast a horizontal ray from the point to +∞ and count
