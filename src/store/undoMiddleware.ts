@@ -59,54 +59,115 @@ export interface HistoryState {
 
 /**
  * Per-action classification. Every store action must appear in ACTION_POLICY
- * below. TypeScript enforces coverage via `Record<ActionName, Policy>` once
- * `ActionName` is tightened in Task 14.
+ * below — TypeScript enforces coverage via `Record<ActionName, Policy>`.
+ *
+ * There is deliberately NO `keyFrom` field here. An earlier design sketched
+ * per-policy key derivation from action arguments; it never got wired to
+ * the runtime, which instead uses the `_pendingCoalesce` channel written by
+ * `setCoalesceKey` at the call site. Keeping `keyFrom` as dead
+ * documentation invited two kinds of confusion: readers assumed the key
+ * flowed through it, and new actions copied a vestigial field that did
+ * nothing. The coalescing key contract lives entirely with
+ * setCoalesceKey + the middleware's record branch; see those call sites.
  */
 export type Policy =
   | { kind: 'bypass' }
   | { kind: 'clear-history' }
   | { kind: 'load-history' }
-  | {
-      kind: 'record';
-      // Coalesce key derived from the action arguments. If undefined, the
-      // action still coalesces on action-name + 500ms window but with no
-      // per-instance discriminator. If the function returns null, same
-      // effect (no key).
-      keyFrom?: (...args: any[]) => string | null;
-    };
+  | { kind: 'record' };
+
+/**
+ * ActionName — exhaustive union of every name passed as the 3rd arg to set().
+ *
+ * Keeping this union in sync with the projectStore actions is enforced
+ * indirectly: ACTION_POLICY below is typed as `Record<ActionName, Policy>`,
+ * so forgetting an entry is a compile error; adding an entry under a name
+ * not in the union is also a compile error. That makes this type the single
+ * truth-source for "what labels may flow through the middleware" — any new
+ * action must land here AND in ACTION_POLICY together.
+ *
+ * `__history__` is the internal marker the middleware uses for its own
+ * past/future/coalesce-sig writes — included in the union so the helper
+ * passes type-checks, even though no store action emits it directly.
+ */
+export type ActionName =
+  // ── Record (undoable) ──────────────────────────────────────────────
+  | 'setProjectName'
+  | 'updatePanelType'
+  | 'addRoof'
+  | 'updateRoof'
+  | 'deleteRoof'
+  | 'splitRoof'
+  | 'mergeRoofs'
+  | 'addPanel'
+  | 'updateGroupOrientation'
+  | 'moveGroup'
+  | 'deletePanel'
+  | 'deletePanels'
+  | 'addString'
+  | 'deleteString'
+  | 'assignPanelsToString'
+  | 'unassignPanel'
+  | 'setStringInverter'
+  | 'updateString'
+  | 'addInverter'
+  | 'renameInverter'
+  | 'deleteInverter'
+  // ── Bypass (UI + mapState) ─────────────────────────────────────────
+  | 'lockMap'
+  | 'unlockMap'
+  | 'setMapProvider'
+  | 'setToolMode'
+  | 'setSelectedRoof'
+  | 'setActiveString'
+  | 'setSelectedInverter'
+  | 'setActivePanelGroup'
+  | 'setSplitCandidateRoof'
+  | 'toggleBackground'
+  // ── Special (history management) ───────────────────────────────────
+  | 'resetProject'
+  | 'loadProject'
+  | 'undo'
+  | 'redo'
+  // ── Middleware-internal ────────────────────────────────────────────
+  | '__history__';
 
 /**
  * ACTION_POLICY — single source of truth for per-action behavior.
  *
- * Keys are action names, values are Policy entries. At runtime, the middleware
- * reads the third argument of `set(partial, replace, actionName)` and looks up
- * the policy here.
+ * Keys are ActionName union members, values are Policy entries. At runtime,
+ * the middleware reads the third argument of `set(partial, replace, actionName)`
+ * and looks up the policy here.
  *
  * Unknown / missing names default to "bypass" with a dev-only console.warn,
- * so a forgotten label surfaces early without corrupting history.
+ * so a forgotten label surfaces early without corrupting history. (Because
+ * ACTION_POLICY is typed as `Record<ActionName, Policy>`, a typo at a
+ * set() call-site won't match the union and won't compile — but the runtime
+ * fallback remains for defensive coverage, e.g. if an ActionName literal
+ * is constructed dynamically.)
  */
-export const ACTION_POLICY: Record<string, Policy> = {
+export const ACTION_POLICY: Record<ActionName, Policy> = {
   // ── Record (undoable) ──────────────────────────────────────────────
-  setProjectName:          { kind: 'record', keyFrom: () => 'name' },
-  updatePanelType:         { kind: 'record', keyFrom: () => 'panelType' },
+  setProjectName:          { kind: 'record' },
+  updatePanelType:         { kind: 'record' },
   addRoof:                 { kind: 'record' },
-  updateRoof:              { kind: 'record', keyFrom: (id) => id },
+  updateRoof:              { kind: 'record' },
   deleteRoof:              { kind: 'record' },
   splitRoof:               { kind: 'record' },
   mergeRoofs:              { kind: 'record' },
-  addPanel:                { kind: 'record', keyFrom: (_roofId, _cx, _cy, groupId) => groupId },
+  addPanel:                { kind: 'record' },
   updateGroupOrientation:  { kind: 'record' },
   moveGroup:               { kind: 'record' },
   deletePanel:             { kind: 'record' },
   deletePanels:            { kind: 'record' },
   addString:               { kind: 'record' },
   deleteString:            { kind: 'record' },
-  assignPanelsToString:    { kind: 'record', keyFrom: (_panelIds, stringId) => stringId },
-  unassignPanel:           { kind: 'record', keyFrom: () => 'unassign' },
-  setStringInverter:       { kind: 'record', keyFrom: (stringId) => stringId },
-  updateString:            { kind: 'record', keyFrom: (id) => id },
+  assignPanelsToString:    { kind: 'record' },
+  unassignPanel:           { kind: 'record' },
+  setStringInverter:       { kind: 'record' },
+  updateString:            { kind: 'record' },
   addInverter:             { kind: 'record' },
-  renameInverter:          { kind: 'record', keyFrom: (id) => id },
+  renameInverter:          { kind: 'record' },
   deleteInverter:          { kind: 'record' },
 
   // ── Bypass (UI + mapState) ─────────────────────────────────────────
@@ -677,14 +738,20 @@ const undoableImpl = (
   (set, get, api) => {
     const wrappedSet = ((partial: any, replace?: any, actionName?: string) => {
       const name = typeof actionName === 'string' ? actionName : undefined;
+      // Runtime lookup against the typed Record. The cast to ActionName is
+      // the escape hatch the typed union requires: at compile-time, every
+      // in-tree set() call-site gets narrowed via NamedSet's typing, but
+      // this wrapper receives the string after type erasure. The runtime
+      // fallback + dev warning below cover the "typo or dynamically-built
+      // name" case that the compile-time check can't.
       const policy: Policy = name
-        ? ACTION_POLICY[name] ?? { kind: 'bypass' }
+        ? ACTION_POLICY[name as ActionName] ?? { kind: 'bypass' }
         : { kind: 'bypass' };
 
       // Dev-only signal that a store action forgot to register a policy.
-      // Intentionally warn — not throw — so a new action under development
-      // doesn't hard-crash the app before its policy is wired up. Task 14
-      // will make this a compile-time error via a stricter ActionName type.
+      // With the tightened ActionName union this is now mostly a defense
+      // against dynamically-constructed action names (none exist today);
+      // a typo'd literal at a set() call-site fails at compile-time.
       //
       // Guard uses `import.meta.env.DEV` because Vite statically replaces
       // that token with a literal boolean at build time (true in `vite dev`,
