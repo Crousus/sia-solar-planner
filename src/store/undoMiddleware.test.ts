@@ -131,3 +131,32 @@ describe('cleanUiRefs', () => {
     expect(cleanUiRefs(ui, slice)).toEqual(ui);
   });
 });
+
+describe('record policy', () => {
+  it('pushes a snapshot before applying a record-path mutation', () => {
+    const store = makeStore();
+    store.getState().setName('new-name');
+    const state = store.getState();
+    expect(state.past.length).toBe(1);
+    expect(state.past[0].name).toBe('p'); // pre-mutation name
+    expect(state.project.name).toBe('new-name');
+    expect(state.future).toEqual([]);
+  });
+
+  it('ignores actions whose set() produces no reference change (no-op)', () => {
+    const store = createStore<TestState>()(
+      undoable((set) => ({
+        past: [],
+        future: [],
+        lastActionSig: null,
+        project: { name: 'p', roofs: [], panels: [], strings: [], inverters: [], panelType: { id: 'pt1' } },
+        selectedRoofId: null,
+        setName: (n) => set((s) => ({ project: { ...s.project, name: n } }), false, 'setProjectName'),
+      }))
+    );
+    // No-op: same name. Set still runs, but buildSlice returns
+    // reference-equal fields → no push.
+    store.getState().setName('p');
+    expect(store.getState().past.length).toBe(0);
+  });
+});

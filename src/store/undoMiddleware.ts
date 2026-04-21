@@ -109,6 +109,12 @@ export const ACTION_POLICY: Record<string, Policy> = {
   // directly); classified as 'bypass' so the middleware doesn't re-snapshot.
   undo:                    { kind: 'bypass' },
   redo:                    { kind: 'bypass' },
+
+  // Internal marker for the middleware's own set() calls that update
+  // past/future after a recorded mutation. Bypass prevents infinite
+  // recursion (pushing history about the push itself) and keeps the
+  // history-maintenance step out of the "unclassified" dev warning.
+  __history__:             { kind: 'bypass' },
 };
 
 /**
@@ -250,25 +256,152 @@ declare module 'zustand' {
 // action argument — analogous to devtools' NamedSet.
 export type NamedSet<T> = WithUndoable<StoreApi<T>>['setState'];
 
-// The middleware signature: it introduces the 'undoable' mutator at the
-// outside of the mutator chain, exactly like `devtools` introduces
-// 'zustand/devtools'. Phase 1 is a no-op pass-through; classification and
-// history logic are added in later tasks so each step stays reviewable.
+/**
+ * Record-path constants. Exposed for tests; the 500 ms coalescing window
+ * is added in Task 7.
+ *
+ * MAX_PAST caps the number of retained snapshots. Chosen as 100 to balance
+ * "enough headroom that users practically never hit the ceiling mid-session"
+ * against memory growth. Because snapshots share references with the live
+ * project tree (structural sharing via buildSlice), the marginal cost of each
+ * entry is small — essentially six pointer-sized fields plus whatever
+ * sub-trees have since been replaced by newer edits.
+ */
+export const MAX_PAST = 100;
+
+/**
+ * Detects a no-op mutation: every field in `next` is reference-equal to
+ * `prev`. Zustand actions that call set(...) but don't actually change any
+ * branch of the undoable slice (e.g., splitRoof rejecting an invalid cut and
+ * returning false, or setProjectName called with the already-current name
+ * where the reducer spreads a new project wrapper but all leaf refs stay the
+ * same) would otherwise push a phantom step. This sweep drops them.
+ *
+ * We compare at the slice field level (not deep-equal) because every reducer
+ * in projectStore uses immutable spread updates: any real change produces a
+ * new reference for at least one top-level field. Reference equality is
+ * therefore both necessary and sufficient for no-op detection, and it's O(1).
+ */
+function slicesEqual(a: UndoableSlice, b: UndoableSlice): boolean {
+  return (
+    Object.is(a.name, b.name) &&
+    Object.is(a.panelType, b.panelType) &&
+    Object.is(a.roofs, b.roofs) &&
+    Object.is(a.panels, b.panels) &&
+    Object.is(a.strings, b.strings) &&
+    Object.is(a.inverters, b.inverters)
+  );
+}
+
+/**
+ * The middleware signature. Keeps the mutator-chain generic form established
+ * in Task 3 so the 'undoable' mutator is stamped onto the resulting store
+ * type — this is what lets callers write `set(partial, replace, actionName)`
+ * with full 3-arg TypeScript support (via the `declare module 'zustand'`
+ * widening above). The runtime body is generic-free and operates on the
+ * erased shape; all generic gymnastics here are purely to preserve call-site
+ * types, not to constrain behavior.
+ */
 type Undoable = <
-  T extends HistoryState,
+  T extends HistoryState & { project: any },
   Mps extends [StoreMutatorIdentifier, unknown][] = [],
   Mcs extends [StoreMutatorIdentifier, unknown][] = [],
 >(
   initializer: StateCreator<T, [...Mps, ['undoable', never]], Mcs>
 ) => StateCreator<T, Mps, [['undoable', never], ...Mcs]>;
 
-// Runtime implementation: for now, just forward set/get/api unchanged.
-// Cast via `unknown` because the mutator types are erased at runtime —
-// the wrapper just passes arguments through.
-export const undoable: Undoable = ((config) =>
-  (set, get, api) =>
-    (config as unknown as StateCreator<HistoryState, [], []>)(
-      set as never,
-      get as never,
-      api as never
-    )) as Undoable;
+/**
+ * Runtime implementation.
+ *
+ * Behavior per action:
+ *   - bypass / unknown: pass through untouched.
+ *   - record: call buildSlice before + after; if anything changed, push the
+ *             "before" snapshot onto `past`, reset `future`, and cap at
+ *             MAX_PAST. If nothing changed (no-op), don't push.
+ *   - clear-history / load-history: pass through for now; Tasks 9+ fill in.
+ *
+ * Why build the slice twice (before + after) rather than inspecting the
+ * `partial` argument directly: `partial` can be a function, a partial object,
+ * or involve replace-semantics, and we'd have to re-implement zustand's merge
+ * rules to know what the state looks like after. Reading get().project
+ * before and after the real set() is trivially correct and costs one extra
+ * shallow object construction per action.
+ *
+ * We re-use zustand's own `set` for the mutation itself, then issue a second
+ * `set` to update past/future. Two listener notifications fire per recorded
+ * action — acceptable for Task 6; Task 7's coalescing window will merge most
+ * adjacent record steps and a later task can batch the history write into
+ * the same set() if the extra render proves costly in practice.
+ *
+ * The `as unknown as` cast bridge through the mutator-chain generics is the
+ * same pattern zustand's own devtools middleware uses: runtime types are
+ * erased, so we assert to the caller-visible shape at the boundary.
+ */
+const undoableImpl = (
+  config: StateCreator<HistoryState & { project: any }, [], []>,
+): StateCreator<HistoryState & { project: any }, [], []> =>
+  (set, get, api) => {
+    const wrappedSet = ((partial: any, replace?: any, actionName?: string) => {
+      const name = typeof actionName === 'string' ? actionName : undefined;
+      const policy: Policy = name
+        ? ACTION_POLICY[name] ?? { kind: 'bypass' }
+        : { kind: 'bypass' };
+
+      // Dev-only signal that a store action forgot to register a policy.
+      // Intentionally warn — not throw — so a new action under development
+      // doesn't hard-crash the app before its policy is wired up. Task 14
+      // will make this a compile-time error via a stricter ActionName type.
+      if (
+        name &&
+        !(name in ACTION_POLICY) &&
+        typeof process !== 'undefined' &&
+        process.env?.NODE_ENV !== 'production'
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(`[undoable] Unclassified action name: ${name}`);
+      }
+
+      if (policy.kind === 'bypass') {
+        (set as any)(partial, replace, name);
+        return;
+      }
+
+      if (policy.kind === 'record') {
+        // Snapshot BEFORE the mutation so an undo can restore the
+        // pre-action state. This matches the "past = states we can go
+        // back to" mental model: at the moment of a new edit, the most
+        // recent `past` entry is the state we just left.
+        const before = buildSlice(get().project);
+        (set as any)(partial, replace, name);
+        const after = buildSlice(get().project);
+        if (slicesEqual(before, after)) return; // no-op: drop phantom step
+
+        // Spread-create a fresh past array, then shift() its head if we
+        // blew the cap. Mutating after-spread is safe because `newPast`
+        // is our local copy; no React/zustand consumer has seen it yet.
+        const newPast = [...get().past, before];
+        if (newPast.length > MAX_PAST) newPast.shift();
+
+        // Replace=false (partial merge): we only want to overwrite the
+        // past/future fields; everything else (project, UI, etc.) must
+        // stay untouched. Action name '__history__' is classified as
+        // bypass so this call doesn't recurse into the record branch.
+        (set as any)(
+          { past: newPast, future: [] },
+          false,
+          '__history__',
+        );
+        return;
+      }
+
+      // clear-history / load-history: pass through for now. These paths
+      // get dedicated handling in later tasks (9 and 10 respectively);
+      // pass-through is the same behavior the no-op shell had, so no
+      // existing tests regress.
+      (set as any)(partial, replace, name);
+    }) as typeof set;
+
+    return config(wrappedSet, get, api);
+  };
+
+export const undoable: Undoable = undoableImpl as unknown as Undoable;
