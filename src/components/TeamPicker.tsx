@@ -54,7 +54,7 @@ export default function TeamPicker() {
   }
 
   if (error) return <Shell><p className="text-red-400">{error}</p></Shell>;
-  if (!teams) return <Shell><p>Loading…</p></Shell>;
+  if (!teams) return <Shell><p>{t('team.loading')}</p></Shell>;
 
   return (
     <Shell>
@@ -62,7 +62,7 @@ export default function TeamPicker() {
         <h1 className="text-xl font-semibold">{t('team.yourTeams')}</h1>
         <div className="text-sm text-zinc-400">
           {user?.email}
-          <button className="ml-3 underline" onClick={signOut}>Sign out</button>
+          <button className="ml-3 underline" onClick={signOut}>{t('team.signOut')}</button>
         </div>
       </header>
 

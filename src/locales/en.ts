@@ -76,6 +76,10 @@ const en = {
       '1 placed panel no longer fits under the new dimensions ({{w}} × {{h}} m). Delete it and proceed?',
     panelResizeConfirm_other:
       '{{count}} placed panels no longer fit under the new dimensions ({{w}} × {{h}} m). Delete them and proceed?',
+    statPanels: 'Panels',
+    statKwp: 'kWp',
+    orientationPortrait: 'portrait',
+    orientationLandscape: 'landscape',
   },
   sync: {
     synced: 'Synced',
@@ -130,6 +134,8 @@ const en = {
     hoursAgo: '{{count}}h ago',
     daysAgo: '{{count}}d ago',
     revUpdated: 'rev {{rev}} · updated {{stamp}}',
+    loading: 'Loading…',
+    signOut: 'Sign out',
   },
 } as const;
 

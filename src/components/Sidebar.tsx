@@ -184,12 +184,12 @@ export default function Sidebar() {
             because it's the one number most users actually quote. */}
         <div className="grid grid-cols-2 gap-2 mt-3">
           <StatCard
-            label="Panels"
+            label={t('sidebar.statPanels')}
             value={totalPanels.toString()}
             emphasis={false}
           />
           <StatCard
-            label="kWp"
+            label={t('sidebar.statKwp')}
             value={totalKwp.toFixed(2)}
             emphasis
           />
@@ -544,7 +544,7 @@ export default function Sidebar() {
                           <rect x="1" y="1" width="10" height="8" rx="0.5" stroke="currentColor" strokeWidth="1.3" />
                         </svg>
                       )}
-                      <span>{o}</span>
+                      <span>{o === 'portrait' ? t('sidebar.orientationPortrait') : t('sidebar.orientationLandscape')}</span>
                     </button>
                   ))}
                 </div>

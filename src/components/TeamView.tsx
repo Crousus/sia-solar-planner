@@ -106,7 +106,7 @@ export default function TeamView() {
   }
 
   if (error) return <Shell><p className="text-red-400">{error}</p></Shell>;
-  if (!team || !projects || !myRole) return <Shell><p>Loading…</p></Shell>;
+  if (!team || !projects || !myRole) return <Shell><p>{t('team.loading')}</p></Shell>;
 
   return (
     <Shell>

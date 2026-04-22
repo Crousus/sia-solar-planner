@@ -77,6 +77,10 @@ const de = {
       '1 platziertes Modul passt nicht mehr in die neuen Abmessungen ({{w}} × {{h}} m). Löschen und fortfahren?',
     panelResizeConfirm_other:
       '{{count}} platzierte Module passen nicht mehr in die neuen Abmessungen ({{w}} × {{h}} m). Löschen und fortfahren?',
+    statPanels: 'Module',
+    statKwp: 'kWp',
+    orientationPortrait: 'Hochformat',
+    orientationLandscape: 'Querformat',
   },
   sync: {
     synced: 'Gespeichert',
@@ -131,6 +135,8 @@ const de = {
     hoursAgo: 'vor {{count}} Std.',
     daysAgo: 'vor {{count}} Tagen',
     revUpdated: 'Rev. {{rev}} · aktualisiert {{stamp}}',
+    loading: 'Laden…',
+    signOut: 'Abmelden',
   },
 } satisfies Translations;
 

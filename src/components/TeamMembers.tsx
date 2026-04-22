@@ -110,7 +110,7 @@ export default function TeamMembers() {
   }
 
   if (error && !rows) return <Shell><p className="text-red-400">{error}</p></Shell>;
-  if (!rows) return <Shell><p>Loading…</p></Shell>;
+  if (!rows) return <Shell><p>{t('team.loading')}</p></Shell>;
 
   return (
     <Shell>
