@@ -115,7 +115,7 @@ export default function TeamView() {
         <nav className="text-sm space-x-3">
           <Link to="/" className="underline">{t('team.allTeams')}</Link>
           {myRole === 'admin' && (
-            <Link to={`/teams/${team.id}/members`} className="underline">{t('team.membersTitle')}</Link>
+            <Link to={`/teams/${team.id}/members`} className="underline">{t('team.manageMembers')}</Link>
           )}
         </nav>
       </header>
