@@ -26,12 +26,31 @@
 //   a Back link.
 // ────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { ProjectRecord } from '../backend/types';
 import { useProjectStore } from '../store/projectStore';
+import { createSyncClient, type SyncClient } from '../backend/syncClient';
 import App from '../App';
+
+// Module-level bridge so sibling components (KonvaOverlay's gesture
+// hooks in Task 13, SyncStatusIndicator in Task 14) can access the
+// active client without React context or prop drilling. The variable
+// is null outside of a mounted ProjectEditor — callers must null-check.
+//
+// Why module-level rather than context:
+//   - Only one ProjectEditor can be mounted at a time (single-editor
+//     route), so there's no multi-instance ambiguity.
+//   - Callers are imperative (a Konva pointerdown handler isn't a React
+//     hook consumer) and would awkwardly wrap in useContext or prop-drill.
+//   - Tests don't need to reset this because each test either doesn't
+//     mount ProjectEditor (unit tests of syncClient directly) or does
+//     (and the cleanup below resets the ref on unmount).
+let activeSyncClient: SyncClient | null = null;
+export function getActiveSyncClient(): SyncClient | null {
+  return activeSyncClient;
+}
 
 export default function ProjectEditor() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -43,6 +62,11 @@ export default function ProjectEditor() {
   // session (or the default initialProject, which would look like a
   // half-loaded blank project to the user).
   const [loaded, setLoaded] = useState(false);
+  // Holds the active syncClient instance for the lifetime of this mount.
+  // We use a ref (not state) because nothing in React's render path
+  // depends on the client — only imperative paths (unmount cleanup,
+  // sibling components via getActiveSyncClient) need to read it.
+  const syncClientRef = useRef<SyncClient | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -61,6 +85,23 @@ export default function ProjectEditor() {
         // to re-render this component when other store fields change.
         useProjectStore.getState().loadProject(record.doc);
         setLoaded(true);
+        // Start the sync client AFTER loadProject so its initial
+        // `lastSyncedDoc` fetch aligns with the doc we just loaded.
+        // `start()` does its own getOne internally, which means the
+        // client will briefly fetch the project twice at startup —
+        // acceptable for simplicity; we could optimize by passing the
+        // record through, but that would couple the client's startup
+        // signature to this caller.
+        const client = createSyncClient(projectId);
+        // Fire-and-forget: start is async (awaits the initial fetch and
+        // SSE subscription) but we don't block rendering on it. If the
+        // initial fetch fails the client will simply stay in `synced`
+        // status with no lastSyncedDoc; the next user edit will schedule
+        // a flush that early-exits until the subscribe completes on the
+        // next tick (or surfaces an error via the retry path).
+        void client.start();
+        syncClientRef.current = client;
+        activeSyncClient = client;
       })
       .catch((err) => {
         if (cancelled) return;
@@ -76,6 +117,13 @@ export default function ProjectEditor() {
       });
     return () => {
       cancelled = true;
+      // Stop the sync client BEFORE resetting the store — stop() clears
+      // its debounce timer and store subscription, so the resetProject()
+      // below won't trigger a spurious outbound flush for a doc the
+      // user is about to navigate away from.
+      syncClientRef.current?.stop();
+      syncClientRef.current = null;
+      activeSyncClient = null;
       // Clear the store on unmount so the next project load starts clean.
       // See header comment for why this matters across project navigation.
       useProjectStore.getState().resetProject();
