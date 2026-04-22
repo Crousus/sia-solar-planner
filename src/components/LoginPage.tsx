@@ -18,6 +18,7 @@
 
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import { maybeImportLocalStorage } from '../backend/migrateLocalStorage';
 
@@ -37,6 +38,13 @@ export default function LoginPage() {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // i18n: all user-visible strings in this form route through the
+  // `login` namespace in src/locales. Error text stays untranslated
+  // because it is passed through verbatim from PocketBase (see the
+  // `catch` block in submit()); wiring translations for PB's error
+  // messages is a separate task that needs a mapping layer.
+  const { t } = useTranslation();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -97,12 +105,12 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-zinc-900 text-zinc-100">
       <form onSubmit={submit} className="w-full max-w-sm space-y-3 p-6 bg-zinc-800 rounded-lg">
         <h1 className="text-xl font-semibold">
-          {mode === 'signin' ? 'Sign in' : 'Create an account'}
+          {mode === 'signin' ? t('login.signIn') : t('login.signUp')}
         </h1>
 
         {mode === 'signup' && (
           <label className="block">
-            <span className="text-sm">Name</span>
+            <span className="text-sm">{t('login.nameLabel')}</span>
             <input
               className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
               type="text"
@@ -115,7 +123,7 @@ export default function LoginPage() {
         )}
 
         <label className="block">
-          <span className="text-sm">Email</span>
+          <span className="text-sm">{t('login.emailLabel')}</span>
           <input
             className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
             type="email"
@@ -127,7 +135,7 @@ export default function LoginPage() {
         </label>
 
         <label className="block">
-          <span className="text-sm">Password</span>
+          <span className="text-sm">{t('login.passwordLabel')}</span>
           <input
             className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
             type="password"
@@ -148,7 +156,17 @@ export default function LoginPage() {
           className="w-full py-2 bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50"
           disabled={busy}
         >
-          {busy ? '…' : mode === 'signin' ? 'Sign in' : 'Create account'}
+          {/*
+            Busy label is mode-specific so password managers / screen
+            readers announce the action in progress, not a bare ellipsis.
+          */}
+          {busy
+            ? mode === 'signin'
+              ? t('login.signingIn')
+              : t('login.creatingAccount')
+            : mode === 'signin'
+              ? t('login.signIn')
+              : t('login.signUp')}
         </button>
 
         <button
@@ -159,7 +177,15 @@ export default function LoginPage() {
             setError(null);
           }}
         >
-          {mode === 'signin' ? 'Need an account? Sign up' : 'Already have an account? Sign in'}
+          {/*
+            Two translation keys joined by a space rather than one
+            interpolated string: keeps the prompt and the call-to-action
+            independently reorderable per locale (e.g. a translator may
+            want only the CTA or may move punctuation around).
+          */}
+          {mode === 'signin'
+            ? `${t('login.noAccount')} ${t('login.createOne')}`
+            : `${t('login.alreadyRegistered')} ${t('login.signInLink')}`}
         </button>
       </form>
     </div>
