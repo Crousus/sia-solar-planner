@@ -19,6 +19,9 @@ import ReactDOM from 'react-dom/client';
 import AppShell from './components/AppShell';
 import 'leaflet/dist/leaflet.css';
 import './index.css';
+// Side-effect import: configures the i18next instance before the React
+// tree mounts, so useTranslation() is ready on first render.
+import './i18n';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

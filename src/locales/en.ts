@@ -134,4 +134,17 @@ const en = {
 } as const;
 
 export default en;
-export type Translations = typeof en;
+
+// `typeof en` is a deep-readonly object whose leaves are *string literal
+// types* (e.g. `'Sign in'`), because of `as const`. That's great for
+// i18n.ts's type augmentation — it gives full key autocomplete on `t()`.
+//
+// But for other locales we only care about *shape* completeness: German
+// strings must cover every key, not match English literals. So we widen
+// the leaves to `string` here. The `satisfies Translations` in de.ts
+// then enforces "same keys as en" without demanding "same values".
+export type Translations = {
+  readonly [K in keyof typeof en]: {
+    readonly [K2 in keyof (typeof en)[K]]: string;
+  };
+};
