@@ -271,6 +271,58 @@ describe('syncClient conflict handling', () => {
   });
 });
 
+describe('syncClient gesture safety valve', () => {
+  // Regression test for: Konva stage onMouseUp is canvas-scoped and won't
+  // fire if the user releases the mouse outside the browser window (or
+  // tab-switches mid-drag). Without a fallback, gestureActive stays true
+  // forever and outbound flushes get suppressed indefinitely.
+  //
+  // We verify the fallback behaviorally rather than via internal state
+  // inspection: gestures suppress outbound POSTs via the gestureActive
+  // guard in flush(). So the observable test is:
+  //   1. begin a gesture
+  //   2. mutate the store (would normally schedule a flush)
+  //   3. advance past the debounce window — no POST fires because
+  //      gestureActive is true
+  //   4. dispatch a window-level mouseup (the safety valve)
+  //   5. the subsequent flush should now actually POST, proving that
+  //      endGesture was called by our listener
+  it('releases gesture on window mouseup so sync can resume', async () => {
+    const serverDoc = fixtureProject({ name: 'Original' });
+    installPbFakes(serverRecord(serverDoc, 1));
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      json: () => Promise.resolve({ newRevision: 2 }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = createSyncClient('proj1');
+    await client.start();
+
+    // Simulate KonvaOverlay's onMouseDown handler.
+    client.beginGesture();
+
+    // Make an edit and advance past the debounce window. Because
+    // gestureActive is true, flush() should early-return and no POST
+    // should occur yet.
+    useProjectStore.getState().setProjectName('Mid-gesture edit');
+    vi.advanceTimersByTime(DEBOUNCE);
+    await vi.runAllTimersAsync();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // The safety valve: a window-level mouseup should release the
+    // gesture (equivalent to the user releasing the button outside the
+    // canvas). endGesture() internally calls scheduleFlush(), so we
+    // advance time again and expect the POST to fire.
+    window.dispatchEvent(new Event('mouseup'));
+    vi.advanceTimersByTime(DEBOUNCE);
+    await vi.runAllTimersAsync();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    client.stop();
+  });
+});
+
 // Shared constant — `const DEBOUNCE_MS` lives inside syncClient.ts and
 // isn't exported. Replicating it here keeps the tests' intent explicit
 // ("advance by the debounce window") and decoupled from the module

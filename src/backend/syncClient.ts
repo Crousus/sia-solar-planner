@@ -153,6 +153,12 @@ export function createSyncClient(projectId: string): SyncClient {
 
   let storeUnsub: (() => void) | null = null;
   let sseUnsub: (() => void) | null = null;
+  // Window-level listeners that act as a safety valve for gesture state.
+  // See start() for the rationale: Konva's onMouseUp is canvas-scoped and
+  // doesn't fire if the user releases the mouse outside the browser window
+  // (or tab-switches mid-drag), which would otherwise leave gestureActive
+  // stuck at true and stall sync indefinitely.
+  let windowListenersUnsub: (() => void) | null = null;
   // `stopped` protects against late async work (a POST that completes
   // after the component unmounts) touching a dead client. Every async
   // path re-checks `stopped` before calling setStatus or re-entering
@@ -549,6 +555,47 @@ export function createSyncClient(projectId: string): SyncClient {
       storeUnsub = useProjectStore.subscribe(scheduleFlush);
 
       await subscribeSse();
+
+      // ── Gesture safety valve ─────────────────────────────────────────
+      //
+      // KonvaOverlay calls beginGesture on stage mouseDown and endGesture
+      // on stage mouseUp. Konva's pointer events are canvas-scoped, so if
+      // the user starts a drag inside the stage but releases the mouse
+      // OUTSIDE the browser window (on browser chrome, another app, etc),
+      // Konva never delivers onMouseUp. The same happens if the user
+      // Cmd-Tabs away mid-drag: focus leaves the window while the button
+      // is still held. In either case, without this fallback:
+      //   - gestureActive stays true indefinitely
+      //   - gestureInboundQueue grows unbounded (all SSE patches queued
+      //     but never drained)
+      //   - scheduleFlush's gestureActive guard suppresses every outbound
+      //     POST — the user's edits silently stop syncing
+      //
+      // Window-level mouseup catches release-outside-canvas; document
+      // visibilitychange catches tab-switch / window-blur. Either signal
+      // is a reasonable "gesture is definitely over" trigger: the user
+      // is no longer actively manipulating the canvas. Calling endGesture
+      // when no gesture is active is a no-op by construction (it clears
+      // an already-cleared flag and drains an empty queue), so we don't
+      // need a mirror `if (gestureActive)` guard on every code path —
+      // but we still check it here to avoid needlessly scheduling a
+      // flush on every stray window mouseup in the app.
+      //
+      // The `typeof window !== 'undefined'` guard keeps this safe under
+      // SSR and non-jsdom Vitest environments where global `window` is
+      // absent. In jsdom (our default test env) both window and document
+      // are present, so the listeners attach normally.
+      if (typeof window !== 'undefined') {
+        const onRelease = () => {
+          if (gestureActive) endGesture();
+        };
+        window.addEventListener('mouseup', onRelease);
+        document.addEventListener('visibilitychange', onRelease);
+        windowListenersUnsub = () => {
+          window.removeEventListener('mouseup', onRelease);
+          document.removeEventListener('visibilitychange', onRelease);
+        };
+      }
     },
 
     stop() {
@@ -556,8 +603,10 @@ export function createSyncClient(projectId: string): SyncClient {
       if (debounceTimer != null) clearTimeout(debounceTimer);
       storeUnsub?.();
       sseUnsub?.();
+      windowListenersUnsub?.();
       storeUnsub = null;
       sseUnsub = null;
+      windowListenersUnsub = null;
     },
 
     subscribeStatus(fn) {
