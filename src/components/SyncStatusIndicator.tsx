@@ -23,10 +23,13 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { getActiveSyncClient } from './ProjectEditor';
 import type { SyncStatus } from '../backend/syncClient';
 
 export default function SyncStatusIndicator() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<SyncStatus>({ kind: 'synced' });
 
   useEffect(() => {
@@ -43,7 +46,7 @@ export default function SyncStatusIndicator() {
     return client.subscribeStatus(setStatus);
   }, []);
 
-  const { color, label } = describe(status);
+  const { color, label } = describe(status, t);
   return (
     <div
       // aria-live="polite" so screen readers announce transitions
@@ -70,15 +73,15 @@ export default function SyncStatusIndicator() {
  * semantic conventions already used across the app (green=ok, amber=warn,
  * red=danger, blue=activity).
  */
-function describe(s: SyncStatus): { color: string; label: string } {
+function describe(s: SyncStatus, t: TFunction): { color: string; label: string } {
   switch (s.kind) {
     case 'synced':
-      return { color: '#22c55e', label: 'Synced' };
+      return { color: '#22c55e', label: t('sync.synced') };
     case 'syncing':
-      return { color: '#3b82f6', label: 'Syncing…' };
+      return { color: '#3b82f6', label: t('sync.syncing') };
     case 'offline':
-      return { color: '#f59e0b', label: 'Offline — changes saved locally' };
+      return { color: '#f59e0b', label: t('sync.offline') };
     case 'conflict':
-      return { color: '#ef4444', label: 'Conflict' };
+      return { color: '#ef4444', label: t('sync.conflict') };
   }
 }

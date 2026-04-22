@@ -22,10 +22,12 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getActiveSyncClient } from './ProjectEditor';
 import type { SyncStatus } from '../backend/syncClient';
 
 export default function ConflictModal() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState<SyncStatus>({ kind: 'synced' });
   // `busy` gates the buttons during the async resolveConflict call.
   // Without it a rapid double-click could fire two resolve attempts —
@@ -71,11 +73,10 @@ export default function ConflictModal() {
     >
       <div className="bg-zinc-800 text-zinc-100 p-6 rounded-lg max-w-md space-y-3 shadow-xl border border-zinc-700">
         <h2 id="conflict-modal-title" className="text-lg font-semibold">
-          Changes conflict
+          {t('conflict.title')}
         </h2>
         <p className="text-sm text-zinc-300">
-          Your edits conflict with someone else's changes to this project.
-          Pick which version to keep.
+          {t('conflict.body')}
         </p>
         <div className="flex gap-2 pt-2">
           <button
@@ -83,14 +84,14 @@ export default function ConflictModal() {
             disabled={busy}
             onClick={() => choose('discard-mine')}
           >
-            Discard mine
+            {t('conflict.discardMine')}
           </button>
           <button
             className="flex-1 py-2 bg-red-600 rounded hover:bg-red-500 disabled:opacity-50"
             disabled={busy}
             onClick={() => choose('overwrite-theirs')}
           >
-            Overwrite theirs
+            {busy ? t('conflict.working') : t('conflict.overwriteTheirs')}
           </button>
         </div>
       </div>
