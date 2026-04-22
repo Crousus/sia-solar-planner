@@ -33,6 +33,7 @@ import type { ProjectRecord } from '../backend/types';
 import { useProjectStore } from '../store/projectStore';
 import { createSyncClient, type SyncClient } from '../backend/syncClient';
 import App from '../App';
+import ConflictModal from './ConflictModal';
 
 // Module-level bridge so sibling components (KonvaOverlay's gesture
 // hooks in Task 13, SyncStatusIndicator in Task 14) can access the
@@ -145,5 +146,15 @@ export default function ProjectEditor() {
       </div>
     );
   }
-  return <App />;
+  // ConflictModal is a sibling of <App/> (not a child) so it overlays
+  // the entire editor, including the Konva canvas, without being subject
+  // to any transform/stacking-context quirks inside App's layout. The
+  // modal renders null unless status.kind === 'conflict', so there's no
+  // cost when synced — it just registers the status subscription.
+  return (
+    <>
+      <App />
+      <ConflictModal />
+    </>
+  );
 }
