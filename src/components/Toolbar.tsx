@@ -34,8 +34,10 @@ import {
 } from '../utils/projectSerializer';
 import html2canvas from 'html2canvas';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ToolMode } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
+import LanguageToggle from './LanguageToggle';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -101,13 +103,13 @@ function SunburstMark({ size = 22 }: { size?: number }) {
 // is the keyboard shortcut handled in App.tsx.
 const MODES: {
   mode: ToolMode;
-  label: string;
+  labelKey: 'toolbar.modeRoof' | 'toolbar.modePanels' | 'toolbar.modeString' | 'toolbar.modeDelete';
   key: string;
   glyph: React.ReactNode;
 }[] = [
   {
     mode: 'draw-roof',
-    label: 'Roof',
+    labelKey: 'toolbar.modeRoof',
     key: 'R',
     // Pen on a polygon corner — "draw outline"
     glyph: (
@@ -119,7 +121,7 @@ const MODES: {
   },
   {
     mode: 'place-panels',
-    label: 'Panels',
+    labelKey: 'toolbar.modePanels',
     key: 'P',
     // A stacked panel glyph
     glyph: (
@@ -131,7 +133,7 @@ const MODES: {
   },
   {
     mode: 'assign-string',
-    label: 'String',
+    labelKey: 'toolbar.modeString',
     key: 'S',
     // Lightning bolt
     glyph: (
@@ -142,7 +144,7 @@ const MODES: {
   },
   {
     mode: 'delete',
-    label: 'Delete',
+    labelKey: 'toolbar.modeDelete',
     key: 'D',
     // Trash icon
     glyph: (
@@ -176,6 +178,8 @@ export default function Toolbar({ mapRef }: Props) {
   const canRedo = useProjectStore((s) => s.canRedo);
   const undo = useProjectStore((s) => s.undo);
   const redo = useProjectStore((s) => s.redo);
+
+  const { t } = useTranslation();
 
   // Platform-appropriate chord label for the Undo/Redo button titles.
   // `navigator.platform` is read once at module load; the result doesn't
@@ -258,11 +262,11 @@ export default function Toolbar({ mapRef }: Props) {
     // the toolbar button, which is hidden when the map isn't locked.
     const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
     if (!stageEl) {
-      alert('Export failed — the map canvas is not mounted.');
+      alert(t('toolbar.exportFailed'));
       return;
     }
     const ok = await exportPdf(project, stageEl);
-    if (!ok) alert('Export failed — see console for details.');
+    if (!ok) alert(t('toolbar.exportFailedGeneral'));
   };
 
   /**
@@ -312,9 +316,9 @@ export default function Toolbar({ mapRef }: Props) {
         loadProject(project, history);
       } catch (err) {
         if (err instanceof ProjectDeserializationError) {
-          alert('Could not read project file: ' + err.message);
+          alert(t('toolbar.loadFailed', { message: err.message }));
         } else {
-          alert('Failed to load project: ' + (err as Error).message);
+          alert(t('toolbar.loadFailedGeneral', { message: (err as Error).message }));
         }
       }
     };
@@ -322,7 +326,7 @@ export default function Toolbar({ mapRef }: Props) {
   };
 
   const handleReset = () => {
-    if (confirm('Reset entire project? This cannot be undone.')) resetProject();
+    if (confirm(t('toolbar.resetConfirm'))) resetProject();
   };
 
   /**
@@ -350,10 +354,10 @@ export default function Toolbar({ mapRef }: Props) {
           }
           setToolMode(active ? 'idle' : m.mode);
         }}
-        title={disabled ? 'Lock map first' : `${m.label} — press ${m.key}`}
+        title={disabled ? t('toolbar.lockFirst') : `${t(m.labelKey)} — press ${m.key}`}
       >
         <span className="opacity-90">{m.glyph}</span>
-        <span>{m.label}</span>
+        <span>{t(m.labelKey)}</span>
         {/* Keyboard shortcut hint. Hidden on active (no room) and on
             disabled (would read as another state). The `.kbd` style
             already handles dark-on-dark contrast via var(--sun-300). */}
@@ -425,7 +429,7 @@ export default function Toolbar({ mapRef }: Props) {
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.25" />
               <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
             </svg>
-            <span>Capturing…</span>
+            <span>{t('toolbar.capturing')}</span>
           </>
         ) : locked ? (
           <>
@@ -439,7 +443,7 @@ export default function Toolbar({ mapRef }: Props) {
                 boxShadow: '0 0 6px rgba(10,8,4,0.8)',
               }}
             />
-            <span>Map Locked</span>
+            <span>{t('toolbar.mapLocked')}</span>
           </>
         ) : (
           <>
@@ -448,7 +452,7 @@ export default function Toolbar({ mapRef }: Props) {
               <path d="M5 7V5a3 3 0 0 1 6 0v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
               <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
             </svg>
-            <span>Lock Map</span>
+            <span>{t('toolbar.lockMap')}</span>
           </>
         )}
       </button>
@@ -463,9 +467,9 @@ export default function Toolbar({ mapRef }: Props) {
           onChange={(e) => setMapProvider(e.target.value as 'esri' | 'bayern' | 'bayern_alkis')}
           title="Satellite imagery provider"
         >
-          <option value="esri">ESRI Satellite</option>
-          <option value="bayern">Bayern DOP 20cm (WMS)</option>
-          <option value="bayern_alkis">Bayern DOP 20cm + ALKIS</option>
+          <option value="esri">{t('toolbar.basemapEsri')}</option>
+          <option value="bayern">{t('toolbar.basemapBayern')}</option>
+          <option value="bayern_alkis">{t('toolbar.basemapBayernAlkis')}</option>
         </select>
       )}
 
@@ -487,6 +491,7 @@ export default function Toolbar({ mapRef }: Props) {
             after Reset) because it's informational, not an action, and
             logically belongs with other project-state context rather
             than trailing the destructive Reset button. */}
+        <LanguageToggle />
         <SyncStatusIndicator />
         <div className="divider-v mx-1" />
         <button
@@ -518,7 +523,7 @@ export default function Toolbar({ mapRef }: Props) {
               />
             </svg>
           )}
-          <span>Backdrop</span>
+          <span>{t('toolbar.backdrop')}</span>
         </button>
 
         <div className="divider-v mx-1" />
@@ -533,7 +538,7 @@ export default function Toolbar({ mapRef }: Props) {
               strokeLinejoin="round"
             />
           </svg>
-          <span>Export</span>
+          <span>{t('toolbar.export')}</span>
         </button>
 
         {/*
@@ -549,7 +554,7 @@ export default function Toolbar({ mapRef }: Props) {
           disabled={!canUndo}
           title={`Undo (${undoLabel})`}
         >
-          ↶ Undo
+          ↶ {t('toolbar.undo')}
         </button>
         <button
           className="btn btn-tool"
@@ -557,7 +562,7 @@ export default function Toolbar({ mapRef }: Props) {
           disabled={!canRedo}
           title={`Redo (${redoLabel})`}
         >
-          ↷ Redo
+          ↷ {t('toolbar.redo')}
         </button>
 
         <button className="btn btn-tool" onClick={handleSave} title="Save project JSON">
@@ -586,7 +591,7 @@ export default function Toolbar({ mapRef }: Props) {
         <div className="divider-v mx-1" />
 
         <button className="btn btn-danger" onClick={handleReset} title="Reset entire project">
-          Reset
+          {t('toolbar.reset')}
         </button>
       </div>
     </header>
