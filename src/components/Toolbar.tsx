@@ -24,6 +24,7 @@
 //   a custom ambient glow ring that's easier to express inline with style.
 // ────────────────────────────────────────────────────────────────────────────
 
+import { useNavigate } from 'react-router-dom';
 import { useProjectStore } from '../store/projectStore';
 import { metersPerPixel } from '../utils/calibration';
 import { exportPdf } from '../utils/pdfExport';
@@ -39,6 +40,7 @@ import type { ToolMode } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
 import LanguageToggle from './LanguageToggle';
 import { BrandMark } from './BrandMark';
+import { getActiveProjectTeamId } from './ProjectEditor';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -112,6 +114,7 @@ const MODES: {
 
 export default function Toolbar({ mapRef }: Props) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const toolMode = useProjectStore((s) => s.toolMode);
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const locked = useProjectStore((s) => s.project.mapState.locked);
@@ -145,6 +148,13 @@ export default function Toolbar({ mapRef }: Props) {
   const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform);
   const undoLabel = isMac ? '⌘Z' : 'Ctrl+Z';
   const redoLabel = isMac ? '⇧⌘Z' : 'Ctrl+Shift+Z';
+
+  const handleBackToProjects = () => {
+    const teamId = getActiveProjectTeamId();
+    // Navigate to the team's project list if we know the team; fall back to
+    // the TeamPicker root so the user always ends up somewhere sensible.
+    navigate(teamId ? `/teams/${teamId}` : '/');
+  };
 
   // isLocking gates the Lock button during the async html2canvas capture
   // (~100-300ms). Without this, the button looks unresponsive and can be
@@ -338,14 +348,37 @@ export default function Toolbar({ mapRef }: Props) {
         boxShadow: '0 1px 0 rgba(0,0,0,0.5), 0 12px 24px -18px rgba(0,0,0,0.6)',
       }}
     >
-      {/* Wordmark — shared BrandMark glyph + "Solar" in the display face.
-          The "/planner" trailing word rides in mono caps for technical
-          feel. Color on /planner comes from ink-300 (not the scarlet
-          accent) so the brand bar stays visually calm; scarlet is reserved
-          for interactive signals below (primary CTA, active tool). */}
-      <div className="flex items-center gap-2.5 mr-1">
+      {/* Wordmark — clickable home button back to the team's project list.
+          Uses the `group` pattern so the back-chevron fades in on hover
+          without extra React state. The subtle fill on hover signals
+          interactivity while keeping the bar visually calm at rest. */}
+      <button
+        className="group flex items-center gap-2 mr-1 px-2 py-1.5 -mx-2 -my-1.5 rounded-lg transition-colors select-none"
+        style={{ cursor: 'pointer', background: 'transparent' }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.06)';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+        }}
+        onClick={handleBackToProjects}
+        title="Back to projects"
+      >
+        {/* Left chevron — invisible at rest, slides in and becomes visible
+            on hover to hint that this is a navigation control. */}
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 11 11"
+          fill="none"
+          className="shrink-0 -mr-0.5 transition-all duration-150 opacity-0 group-hover:opacity-50"
+          style={{ color: 'var(--ink-300)' }}
+          aria-hidden="true"
+        >
+          <path d="M7 2L4 5.5L7 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
         <BrandMark size={22} />
-        <div className="flex items-baseline gap-1 select-none">
+        <div className="flex items-baseline gap-1">
           <span
             className="font-display text-[15.5px] font-semibold tracking-tight"
             style={{ color: 'var(--ink-50)' }}
@@ -359,7 +392,7 @@ export default function Toolbar({ mapRef }: Props) {
             /planner
           </span>
         </div>
-      </div>
+      </button>
 
       <div className="divider-v" />
 

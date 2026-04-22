@@ -53,6 +53,14 @@ export function getActiveSyncClient(): SyncClient | null {
   return activeSyncClient;
 }
 
+// The team that owns the currently-open project. Set synchronously
+// before setLoaded(true) so the Toolbar can read it as soon as <App/>
+// mounts. Null when no project is open (outside ProjectEditor).
+let activeProjectTeamId: string | null = null;
+export function getActiveProjectTeamId(): string | null {
+  return activeProjectTeamId;
+}
+
 export default function ProjectEditor() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -85,6 +93,8 @@ export default function ProjectEditor() {
         // loadProject is an action we just want to fire once — no need
         // to re-render this component when other store fields change.
         useProjectStore.getState().loadProject(record.doc);
+        // Set before setLoaded so Toolbar can read it on first render.
+        activeProjectTeamId = record.team;
         setLoaded(true);
         // Start the sync client AFTER loadProject so its initial
         // `lastSyncedDoc` fetch aligns with the doc we just loaded.
@@ -125,6 +135,7 @@ export default function ProjectEditor() {
       syncClientRef.current?.stop();
       syncClientRef.current = null;
       activeSyncClient = null;
+      activeProjectTeamId = null;
       // Clear the store on unmount so the next project load starts clean.
       // See header comment for why this matters across project navigation.
       useProjectStore.getState().resetProject();
