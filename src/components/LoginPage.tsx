@@ -19,6 +19,7 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { pb } from '../backend/pb';
+import { maybeImportLocalStorage } from '../backend/migrateLocalStorage';
 
 type Mode = 'signin' | 'signup';
 
@@ -63,9 +64,27 @@ export default function LoginPage() {
       // For both branches we end with a fresh password auth so the
       // authStore is populated identically — sign-up doesn't auto-auth.
       await pb.collection('users').authWithPassword(email, password);
-      // Task 15 adds localStorage auto-import here. For now, navigate
-      // to the previously-requested page or /.
-      navigate(from, { replace: true });
+      // Task 15: one-shot auto-import of a pre-backend localStorage
+      // draft. Fires on BOTH sign-in and sign-up paths because a user
+      // might have tried the app offline (writing to localStorage)
+      // before creating an account, and then signed up — we still want
+      // to bring their draft forward. See migrateLocalStorage.ts for
+      // the full gating logic (non-empty local doc + no server
+      // projects). If an import happens, redirect into the new project
+      // instead of whatever `from` pointed at; otherwise preserve the
+      // existing behavior of honoring AuthGuard's intended target.
+      //
+      // The `.catch(() => null)` is deliberate: a failed import
+      // (network hiccup during the project create, a permission
+      // regression) must NOT block login. The user still gets to
+      // their intended destination; they can retry by refreshing,
+      // and the localStorage blob is preserved (see the module's
+      // post-success removeItem) so a later attempt can succeed.
+      const importedProjectId = await maybeImportLocalStorage().catch(
+        () => null,
+      );
+      const target = importedProjectId ? `/p/${importedProjectId}` : from;
+      navigate(target, { replace: true });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Sign-in failed.';
       setError(msg);
