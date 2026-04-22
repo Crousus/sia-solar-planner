@@ -12,6 +12,10 @@
 //   - lastKnownRevision ALWAYS reflects the highest revision we know
 //     the server to be at.
 //   - We never apply our own patches twice (author self-filter).
+//     Limitation: two tabs signed in as the SAME user will mutually
+//     filter each other's patches, so live sync between same-user tabs
+//     doesn't work in M3. The common fix is filtering by a per-tab
+//     deviceId rather than userId; deferred until we need it.
 //   - Any unexpected state triggers a full resync — doc at revision
 //     is always source of truth.
 //
@@ -178,8 +182,21 @@ export function createSyncClient(projectId: string): SyncClient {
         // the new baseline — not `useProjectStore.getState().project`,
         // because the user may have continued editing during the POST
         // and we'd lose those deltas on the next diff.
-        lastSyncedDoc = current;
-        lastKnownRevision = body.newRevision;
+        //
+        // Guard against a concurrent fullResync having already advanced
+        // us past body.newRevision. That happens when an SSE patch
+        // arrives from another user while our own POST is still in
+        // flight: lastKnownRevision is behind, the gap-check in
+        // applyInbound fires, fullResync pulls the authoritative doc
+        // (which already includes our ops too, because the server
+        // accepted them before mirroring over SSE), then our 200
+        // arrives with a stale newRevision. If lastKnownRevision is
+        // already >= body.newRevision, the fullResync already installed
+        // a newer baseline — leave state untouched rather than regressing.
+        if (body.newRevision > lastKnownRevision) {
+          lastSyncedDoc = current;
+          lastKnownRevision = body.newRevision;
+        }
         retryCount = 0;
         setStatus({ kind: 'synced' });
 
@@ -187,8 +204,12 @@ export function createSyncClient(projectId: string): SyncClient {
         // flush. The debounce timer was INACTIVE during the POST (it
         // fired once to enter flush()), so without this explicit check
         // late edits would sit unsynced until the NEXT user action.
+        // The `lastSyncedDoc &&` guard is defensive — in practice it's
+        // non-null by this point (we early-returned on !lastSyncedDoc
+        // at the top of flush), but TS can't narrow through the
+        // conditional assignment above, and an explicit check is cheap.
         const afterPost = useProjectStore.getState().project;
-        if (diffProjects(lastSyncedDoc, afterPost).length > 0) {
+        if (lastSyncedDoc && diffProjects(lastSyncedDoc, afterPost).length > 0) {
           scheduleFlush();
         }
       } else if (res.status === 409) {
@@ -401,6 +422,13 @@ export function createSyncClient(projectId: string): SyncClient {
           useProjectStore.getState().applyRemotePatch(queuedOps);
         }
         gestureInboundQueue = [];
+        // Intentionally set lastSyncedDoc BEFORE re-applying Alice's diff.
+        // The baseline we want for the next flush is "server + Bob's ops",
+        // so that diffProjects(lastSyncedDoc, store) yields exactly
+        // Alice's ops when we re-apply them to the store below. Moving
+        // this assignment after the Alice re-apply would make the next
+        // flush see no diff and silently drop Alice's gesture from the
+        // outbound POST.
         lastSyncedDoc = useProjectStore.getState().project;
         if (aliceDiff.length > 0) {
           // Alice's edits get re-applied via applyRemotePatch (bypass)

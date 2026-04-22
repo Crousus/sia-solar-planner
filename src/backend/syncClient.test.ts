@@ -213,6 +213,62 @@ describe('syncClient conflict handling', () => {
 
     client.stop();
   });
+
+  it('resolveConflict overwrite-theirs re-flushes against server doc', async () => {
+    // Arrange a conflict identical to the 409 test, then return 200 on
+    // the second POST to model the server accepting our "re-assert"
+    // patch relative to the new baseline.
+    const serverDoc = fixtureProject({ name: 'Original' });
+    installPbFakes(serverRecord(serverDoc, 1));
+
+    // Conflict doc at revision 9; after overwrite-theirs the client
+    // should re-POST with fromRevision=9 (the conflict's currentRevision)
+    // and the server ACKs with newRevision=10.
+    const conflictDoc = fixtureProject({ name: 'Server Authoritative' });
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        status: 409,
+        json: () => Promise.resolve({
+          currentRevision: 9,
+          currentDoc: conflictDoc,
+        }),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        json: () => Promise.resolve({ newRevision: 10 }),
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = createSyncClient('proj1');
+    await client.start();
+
+    useProjectStore.getState().setProjectName('My Edit');
+    vi.advanceTimersByTime(DEBOUNCE);
+    await vi.runAllTimersAsync();
+
+    // Collect transitions after the conflict so we see syncing → synced.
+    const seen: SyncStatus[] = [];
+    client.subscribeStatus((s) => seen.push(s));
+    expect(seen[0].kind).toBe('conflict');
+
+    // Act: keep local changes, re-flush against server's revision 9.
+    await client.resolveConflict('overwrite-theirs');
+    await vi.runAllTimersAsync();
+
+    // The second fetch should carry fromRevision=9 (NOT 1, the original).
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const secondCallBody = JSON.parse(
+      (fetchSpy.mock.calls[1][1] as { body: string }).body,
+    );
+    expect(secondCallBody.fromRevision).toBe(9);
+
+    // Status should have transitioned through syncing → synced.
+    const kinds = seen.map((s) => s.kind);
+    expect(kinds).toContain('syncing');
+    expect(seen[seen.length - 1].kind).toBe('synced');
+
+    client.stop();
+  });
 });
 
 // Shared constant — `const DEBOUNCE_MS` lives inside syncClient.ts and
