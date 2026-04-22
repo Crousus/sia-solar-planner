@@ -1,0 +1,45 @@
+# Development compose: hot-reload Vite frontend + containerised PocketBase.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# The frontend Vite dev server runs on http://localhost:5173 with full HMR.
+# It proxies /api/* to the backend container via the API_TARGET env var
+# (see vite.config.ts).
+#
+# pb_data is bind-mounted from ./server/pb_data so you can inspect or reset
+# the SQLite file from the host without running docker exec.
+# pb_migrations is also bind-mounted so migration file edits take effect on
+# the next server restart without rebuilding the image.
+
+services:
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    volumes:
+      - ./server/pb_data:/app/pb_data
+      - ./server/pb_migrations:/app/pb_migrations
+    ports:
+      # Expose to host so you can reach the PocketBase admin UI at
+      # http://localhost:8090/_/ during development.
+      - "8090:8090"
+    restart: unless-stopped
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+      # Isolate node_modules inside the container — prevents the container
+      # from using binaries compiled for the host OS.
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      # Overrides the default 127.0.0.1:8090 proxy target in vite.config.ts
+      # so the Vite dev server can reach the backend container by service name.
+      - API_TARGET=http://backend:8090
+    command: npm run dev
+    depends_on:
+      - backend

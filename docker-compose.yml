@@ -1,0 +1,36 @@
+# Production compose: builds both images and wires them together.
+#
+# Usage:
+#   docker compose up --build        # first run
+#   docker compose up -d             # subsequent starts
+#   docker compose logs -f frontend  # tail logs
+#
+# The backend's pb_data is persisted in a named Docker volume so SQLite
+# survives image rebuilds.  To wipe the database:
+#   docker compose down -v
+
+services:
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    volumes:
+      # Named volume keeps the SQLite file and uploads across rebuilds.
+      - pb_data:/app/pb_data
+    restart: unless-stopped
+    # No ports exposed to the host — the frontend nginx proxies /api to here.
+    # To access the PocketBase admin UI directly during debugging, temporarily
+    # add:  ports: ["8090:8090"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pb_data:
