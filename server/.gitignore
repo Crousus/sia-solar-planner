@@ -1,0 +1,7 @@
+# PocketBase working data (SQLite file, uploaded files, logs)
+pb_data/
+# Downloaded PocketBase binary (installed locally by the server's README)
+pocketbase
+# Windows PocketBase binary variant — some devs run the Windows build via WSL
+# or cross-platform checkouts, so make sure the .exe never lands in git either.
+*.exe

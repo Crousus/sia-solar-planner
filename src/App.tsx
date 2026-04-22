@@ -18,6 +18,7 @@ import KonvaOverlay from './components/KonvaOverlay';
 import Sidebar from './components/Sidebar';
 import Toolbar from './components/Toolbar';
 import { useProjectStore } from './store/projectStore';
+import { getActiveSyncClient } from './components/ProjectEditor';
 
 export default function App() {
   // The Leaflet map instance. null until MapView calls onMapReady().
@@ -81,6 +82,17 @@ export default function App() {
         e.preventDefault();
         useProjectStore.getState().redo();
         return;
+      }
+      if (e.key === 'Escape') {
+        // endGesture is idempotent — safe even when no gesture was active.
+        // Wired here (not inside useDrawingController) to keep the sync-client
+        // bridge out of the drawing controller's dep graph. Escape in Konva
+        // drawing clears in-progress drawings via useDrawingController's own
+        // listener; we just piggyback to release any outbound-patch hold so
+        // an escaped mid-drag doesn't leave the debouncer suspended.
+        getActiveSyncClient()?.endGesture();
+        // Intentionally no `return` — we don't preventDefault, and the
+        // drawing controller's separate Escape listener still needs to run.
       }
       if (!locked) return;
       switch (e.key.toLowerCase()) {

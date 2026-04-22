@@ -6,3 +6,7 @@ dist
 .playwright-mcp/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+# PocketBase working data (SQLite file, uploaded files, logs)
+server/pb_data/
+# Downloaded PocketBase binary (installed locally by the server's README)
+server/pocketbase

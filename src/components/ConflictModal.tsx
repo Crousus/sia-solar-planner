@@ -1,0 +1,99 @@
+// ────────────────────────────────────────────────────────────────────────
+// ConflictModal — appears when syncClient status is 'conflict'.
+//
+// A 409 from the server means someone else advanced the project past
+// our lastKnownRevision. The user picks:
+//   - "Discard mine": loadProject(serverDoc); our local edits are gone.
+//   - "Overwrite theirs": re-diff our local doc against theirs and POST;
+//     server's ops are clobbered where fields overlap.
+//
+// Deliberately NOT offering auto-merge: this is a user-supervised step
+// (Q9 in the spec). Merge semantics for array fields (roofs, panels) are
+// not obvious enough to do silently — a naive last-writer-wins on an
+// array would either drop items or duplicate them depending on how we
+// order ops. Forcing the user to pick makes the data loss (if any)
+// explicit rather than surprise-destructive.
+//
+// Why a sibling of <App/> rather than nested inside it: the modal needs
+// to overlay the entire canvas, including the Konva stage, and live
+// outside the toolbar's stacking context. Rendering as a sibling with
+// a high z-index is the simplest way to guarantee it paints on top of
+// everything else.
+// ────────────────────────────────────────────────────────────────────────
+
+import { useEffect, useState } from 'react';
+import { getActiveSyncClient } from './ProjectEditor';
+import type { SyncStatus } from '../backend/syncClient';
+
+export default function ConflictModal() {
+  const [status, setStatus] = useState<SyncStatus>({ kind: 'synced' });
+  // `busy` gates the buttons during the async resolveConflict call.
+  // Without it a rapid double-click could fire two resolve attempts —
+  // the second would see status back at 'synced' and short-circuit, but
+  // disabling the buttons while the first is in flight is cleaner UX.
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const client = getActiveSyncClient();
+    if (!client) return;
+    return client.subscribeStatus(setStatus);
+  }, []);
+
+  // Early return when not conflicting — nothing to render. This also
+  // means we don't keep a stale `busy=true` across transitions: as soon
+  // as status flips back to 'synced' (after resolve completes), the
+  // component unmounts its modal DOM entirely, and busy is reset when
+  // it re-mounts on the next conflict.
+  if (status.kind !== 'conflict') return null;
+
+  async function choose(choice: 'discard-mine' | 'overwrite-theirs') {
+    const client = getActiveSyncClient();
+    if (!client) return;
+    setBusy(true);
+    try {
+      // resolveConflict is responsible for transitioning status back to
+      // 'synced' (or 'syncing') on success, which unmounts this modal.
+      // We still clear `busy` in finally for the error case.
+      await client.resolveConflict(choice);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      // z-[1000] is comfortably above the Konva stage (which uses
+      // default stacking) and any toolbar dropdowns (which use ~z-50).
+      className="fixed inset-0 bg-black/60 z-[1000] flex items-center justify-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="conflict-modal-title"
+    >
+      <div className="bg-zinc-800 text-zinc-100 p-6 rounded-lg max-w-md space-y-3 shadow-xl border border-zinc-700">
+        <h2 id="conflict-modal-title" className="text-lg font-semibold">
+          Changes conflict
+        </h2>
+        <p className="text-sm text-zinc-300">
+          Your edits conflict with someone else's changes to this project.
+          Pick which version to keep.
+        </p>
+        <div className="flex gap-2 pt-2">
+          <button
+            className="flex-1 py-2 bg-zinc-700 rounded hover:bg-zinc-600 disabled:opacity-50"
+            disabled={busy}
+            onClick={() => choose('discard-mine')}
+          >
+            Discard mine
+          </button>
+          <button
+            className="flex-1 py-2 bg-red-600 rounded hover:bg-red-500 disabled:opacity-50"
+            disabled={busy}
+            onClick={() => choose('overwrite-theirs')}
+          >
+            Overwrite theirs
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -35,6 +35,7 @@ import {
 import html2canvas from 'html2canvas';
 import { useState } from 'react';
 import type { ToolMode } from '../types';
+import SyncStatusIndicator from './SyncStatusIndicator';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -480,6 +481,14 @@ export default function Toolbar({ mapRef }: Props) {
       {/* Right-side action group. Grouped by purpose (view, file, destructive)
           with hairline separators between. */}
       <div className="flex items-center gap-1">
+        {/* Sync status — sits at the left of the right-hand cluster so
+            the user's eye naturally lands on it when scanning for
+            "is my work saved?". Placed before the action buttons (not
+            after Reset) because it's informational, not an action, and
+            logically belongs with other project-state context rather
+            than trailing the destructive Reset button. */}
+        <SyncStatusIndicator />
+        <div className="divider-v mx-1" />
         <button
           className={`btn btn-tool ${locked && showBackground ? 'text-sun-300' : ''}`}
           onClick={toggleBackground}

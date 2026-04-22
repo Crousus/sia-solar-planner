@@ -15,7 +15,7 @@ Guide for AI coding agents working on this repo.
 7. Assigns strings to inverters
 8. Exports an A4 landscape PDF with the plan + string-to-inverter table
 
-No backend. Everything lives in `localStorage`; JSON export/import handles portability.
+Local-first editor backed by PocketBase for auth, team projects, and realtime sync. See `docs/superpowers/specs/2026-04-21-backend-sync-design.md` for the design rationale and `docs/superpowers/plans/2026-04-21-backend-sync.md` for the implementation plan.
 
 ## Tech stack
 
@@ -28,6 +28,33 @@ No backend. Everything lives in `localStorage`; JSON export/import handles porta
 | State | `zustand` with `persist` | localStorage key: `solar-planner-project` |
 | Styling | Tailwind CSS + a little inline `<style>` | No component library |
 | PDF | `jspdf` + `html2canvas` | Client-side; tile CORS may prevent capturing the map layer — code falls back to canvas only |
+
+## Backend
+
+The app is local-first but authoritative state lives server-side once a user signs in. The server is a custom Go binary that embeds PocketBase — we embed rather than use the stock `pocketbase` binary so we can ship a custom HTTP route (`/api/sp/patch`) that does RFC 6902 JSON Patch application with optimistic concurrency, which is not something PocketBase does out of the box.
+
+**Where the server lives:** `/server`.
+
+- `main.go` — bootstrap. Wires up `jsvm` (for hook scripts) and `migratecmd` (for JS-based schema migrations) so schema changes stay in version control instead of living only in the admin UI.
+- `handlers/patch.go` — the custom `/api/sp/patch` route. Takes a JSON Patch + the client's last known `version`, applies it atomically under a per-project lock, bumps `version`, writes a row into the `patches` collection (which triggers SSE fan-out to other tabs), and returns either the new version or a 409 with the current server doc for conflict UI. Also mirrors a handful of doc fields (e.g. `name`) onto the `projects` row so list queries stay cheap.
+- `handlers/hooks.go` — two things. (a) On `teams` create, the creating user is auto-added as admin so the owner always has access. (b) A cron that prunes old rows from `patches` (the SSE log grows forever otherwise; we only need recent history for late-joining subscribers).
+- `pb_migrations/` — JS migrations that define the `users`, `teams`, `team_members`, `projects`, and `patches` collections plus their rules.
+
+**How to run it locally:**
+
+```bash
+cd server && go build -o pocketbase . && ./pocketbase serve
+```
+
+Admin UI at `http://127.0.0.1:8090/_/`. Data lives in `server/pb_data/`.
+
+**Client-side sync lives in `src/backend/`:**
+
+- `pb.ts` — PocketBase SDK singleton plus thin wrappers (`currentUser`, `onAuthChange`). Centralising the singleton means other modules never construct their own client and auth state has exactly one source of truth.
+- `diff.ts` — facade over `fast-json-patch`. Exports `diffProjects`, `applyProjectPatch`, and the `Op` type. Keeping the JSON Patch library behind our own API means we can swap implementations (or add normalization) without touching callers.
+- `syncClient.ts` — per-project state machine, one instance per mounted `ProjectEditor`. Responsibilities: debounced outbound POSTs to `/api/sp/patch`, SSE inbound via `pb.collection('patches').subscribe`, optimistic concurrency with 409 handling, a gesture queue that buffers inbound patches during active pointer interactions (so a remote edit can't yank a roof out from under the user mid-drag), and a full-resync fallback when things get wedged.
+
+**`applyRemotePatch` store action:** registered as `bypass` in `ACTION_POLICY` in `projectStore.ts`. Remote-originated patches do NOT enter the undo stack — per spec Q11, undo is a local-only concept. If remote edits were undoable, Ctrl-Z in tab A could clobber tab B's work. The `syncClient` calls this action when an SSE patch arrives.
 
 ## Dev commands
 
@@ -186,6 +213,14 @@ Konva events bubble from shape → Stage. Shape handlers set `e.cancelBubble = t
 2. Add a default in `addRoof()` in `store/projectStore.ts`
 3. If mutable, add a setter or use `updateRoof(id, changes)`
 4. Render control in `Sidebar.tsx` under the selected-roof section
+
+### New persisted field on a doc-embedded collection (Roof, Panel, String, …)
+
+No server-side schema change needed — the `doc` column on `projects` is opaque JSON, so any field you add to `Project` / `Roof` / etc. flows through the existing diff + patch machinery unchanged.
+
+1. Update the TypeScript type in `src/types/index.ts` (or wherever the domain type lives).
+2. Update `migrateProject` in `src/utils/projectSerializer.ts` so localStorage drafts from before the change pick up a default for the new field.
+3. Exception: if your field is also surfaced as a column on the `projects` ROW (like `name`), add a mirror branch in `server/handlers/patch.go`'s post-apply logic — row columns are kept in sync with the doc JSON by that code, not automatically.
 
 ### New tool mode
 1. Add the literal to the `ToolMode` union
