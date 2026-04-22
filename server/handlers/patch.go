@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -12,6 +13,83 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 )
+
+// ── Per-project serialization ──────────────────────────────────────────
+//
+// WHY THIS EXISTS:
+// PocketBase's `app.RunInTransaction` uses `BEGIN DEFERRED` under the
+// hood. Under SQLite WAL mode, DEFERRED transactions start with a SHARED
+// lock and only upgrade to RESERVED/EXCLUSIVE at first write. That means
+// two concurrent POST /api/sp/patch requests for the same project can
+// both:
+//
+//   1. Enter their transactions holding only a SHARED lock,
+//   2. Read `currentRevision = N` via FindRecordById,
+//   3. Pass the OCC check `currentRevision == body.FromRevision` — both
+//      see N, both think they're the unique writer racing from N→N+1,
+//   4. Race at first write / commit — WAL may allow one through while
+//      the other fails with SQLITE_BUSY after the busy_timeout expires,
+//      OR (worse) the scheduler lets both writes serialize such that
+//      the second commits on top of the first with a stale in-memory
+//      `currentRevision`, inserting two patches rows with the same
+//      `from_revision` and desynchronizing clients.
+//
+// The clean fix would be `BEGIN IMMEDIATE` (write-intent lock at txn
+// start, serializing write-txns at the SQLite level). PocketBase v0.23
+// doesn't expose a knob for this on `RunInTransaction`, and wrapping
+// the write DB ourselves means building a `core.App` shim — invasive.
+//
+// Instead: serialize same-project patch handlers in-process via a
+// per-project mutex. Different projects proceed in parallel; same
+// project goes one-at-a-time through the critical section that spans
+// read→OCC check→write. Same-project concurrency is dominated by the
+// same user with multiple tabs plus teammates editing simultaneously;
+// the mutex wait is short (a patch txn is O(10ms)) and well within
+// the latency budget for an interactive collab tool.
+//
+// SCOPE LIMITATION:
+// This mutex lives in ONE Go process. It does NOT protect against
+// concurrent writes from a second instance of the binary. Acceptable
+// today because solar-planner runs as a single-VPS single-binary
+// deployment. If we ever horizontally scale (multiple PB instances
+// behind a load balancer), this fix is insufficient and we must
+// switch to SQLite-level `BEGIN IMMEDIATE` or a distributed lock
+// (e.g., advisory locks in Postgres if we migrate off SQLite).
+//
+// MEMORY:
+// `projectLocks` grows unboundedly as new projectIds appear — one
+// *sync.Mutex per distinct project seen since boot. At the expected
+// scale (tens to hundreds of projects) this is trivial (~dozens of
+// bytes per entry). At thousands of projects this map's memory
+// footprint becomes noticeable; revisit then with LRU eviction or
+// reference-counted cleanup tied to an idle timer. Not worth the
+// complexity today.
+var (
+	projectLocksMu sync.Mutex
+	projectLocks   = map[string]*sync.Mutex{}
+)
+
+// lockProject returns an unlock function for the given projectId,
+// blocking until the project-specific mutex is acquired. Callers do:
+//
+//	unlock := lockProject(id)
+//	defer unlock()
+//
+// The outer `projectLocksMu` guards map reads/writes only; we release
+// it before acquiring the inner per-project mutex so a long-running
+// patch for project A doesn't block map lookups for project B.
+func lockProject(projectID string) func() {
+	projectLocksMu.Lock()
+	mu, ok := projectLocks[projectID]
+	if !ok {
+		mu = &sync.Mutex{}
+		projectLocks[projectID] = mu
+	}
+	projectLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
 
 // RegisterRoutes attaches our custom routes to the PocketBase HTTP server.
 // Called once per ServeEvent (boot). The signature is dictated by how
@@ -66,6 +144,17 @@ func handlePatch(app *pocketbase.PocketBase, re *core.RequestEvent) error {
 	if len(body.Ops) == 0 {
 		return re.BadRequestError("ops required", nil)
 	}
+
+	// 2.5. Serialize same-project patch handlers. See the top-of-file
+	//      comment on `projectLocks` for the full rationale — in short,
+	//      PB's RunInTransaction uses BEGIN DEFERRED which lets two
+	//      concurrent same-project txns both pass the OCC revision
+	//      check before either has written. An in-process mutex keyed
+	//      by projectId closes that race without fighting PB's
+	//      transaction wrapper. Different projects still proceed in
+	//      parallel.
+	unlock := lockProject(body.ProjectID)
+	defer unlock()
 
 	// 3. Transactional work: read project, validate revision, apply patch,
 	//    save project, save patches record. All or nothing — we don't
