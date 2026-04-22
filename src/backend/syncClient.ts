@@ -11,11 +11,15 @@
 //     the in-flight POST (which we still haven't been ack'd on).
 //   - lastKnownRevision ALWAYS reflects the highest revision we know
 //     the server to be at.
-//   - We never apply our own patches twice (author self-filter).
-//     Limitation: two tabs signed in as the SAME user will mutually
-//     filter each other's patches, so live sync between same-user tabs
-//     doesn't work in M3. The common fix is filtering by a per-tab
-//     deviceId rather than userId; deferred until we need it.
+//   - We never apply our own patches twice (per-tab deviceId self-
+//     filter). Each tab mints a UUID on first syncClient init and
+//     stores it in sessionStorage, so a tab reload keeps the same id
+//     but a new tab of the same user gets a fresh one. The server
+//     mirrors the deviceId onto each patches row; the SSE handler
+//     drops only patches whose device_id matches our own. Patches
+//     from another tab of the SAME user (different deviceId) are
+//     applied normally. Legacy patches without a device_id fall back
+//     to author-based filtering so pre-deviceId data still works.
 //   - Any unexpected state triggers a full resync — doc at revision
 //     is always source of truth.
 //
@@ -49,6 +53,44 @@ import type { Project } from '../types';
 // via beginGesture/endGesture so the debounce timer never fires mid-
 // gesture — see gesture section below.
 const DEBOUNCE_MS = 2000;
+
+// Per-tab identifier used by the SSE self-filter (see subscribeSse).
+//
+// sessionStorage (not localStorage) is deliberate:
+//   - Different tabs of the same browser get independent sessionStorage,
+//     so each tab generates its own deviceId → the self-filter discards
+//     only a tab's own echo and applies other tabs' patches.
+//   - A tab reload reuses the same sessionStorage, so the deviceId is
+//     stable across reloads — no risk that a mid-edit reload looks like
+//     a new device and double-applies its own in-flight patch.
+//   - Closing the tab clears it, which is what we want: the next time
+//     the user opens this project in a fresh tab, it's truly a new
+//     device for sync purposes.
+//
+// Generated lazily on first access so server-side import (e.g. during
+// Vite SSR or Vitest) never touches `sessionStorage` (which is undefined
+// in Node). In tests we fall back to a random UUID that lives for the
+// process's lifetime — fine, because tests don't rely on reload
+// semantics.
+const DEVICE_ID_KEY = 'solar-planner-device-id';
+let cachedDeviceId: string | null = null;
+function getDeviceId(): string {
+  if (cachedDeviceId) return cachedDeviceId;
+  if (typeof sessionStorage !== 'undefined') {
+    const existing = sessionStorage.getItem(DEVICE_ID_KEY);
+    if (existing) {
+      cachedDeviceId = existing;
+      return existing;
+    }
+    const fresh = crypto.randomUUID();
+    sessionStorage.setItem(DEVICE_ID_KEY, fresh);
+    cachedDeviceId = fresh;
+    return fresh;
+  }
+  // Non-browser environment (Node-side test, SSR) — any stable id works.
+  cachedDeviceId = crypto.randomUUID();
+  return cachedDeviceId;
+}
 
 /**
  * Coarse sync state. Exposed via a subscribe-able observable so the
@@ -173,6 +215,10 @@ export function createSyncClient(projectId: string): SyncClient {
           projectId,
           fromRevision: lastKnownRevision,
           ops,
+          // Tab-scoped identifier. Server stores it on the patches row
+          // so the SSE handler can tell "my own echo" (drop) from
+          // "another tab of me" (apply).
+          deviceId: getDeviceId(),
         }),
       });
 
@@ -276,14 +322,28 @@ export function createSyncClient(projectId: string): SyncClient {
         const rec = e.record;
         if (rec.project !== projectId) return;
 
-        // Self-filter: if WE produced this patch (our POST just got
-        // mirrored back over SSE), ignore — we've already applied it
-        // locally to lastSyncedDoc in the POST success handler. Without
-        // this, every local edit would ALSO re-apply via SSE, doubling
-        // the operation (e.g., an "add roof" op would insert the roof
-        // twice into the array).
-        const me = currentUser();
-        if (me && rec.author === (me as { id: string }).id) return;
+        // Self-filter: drop patches this exact tab authored, but keep
+        // patches from other tabs (even of the same user).
+        //
+        // Primary check — deviceId: set on every patch we POST; unique
+        //   per sessionStorage, so it identifies THIS tab specifically.
+        //   A patch with matching device_id is our own echo; anything
+        //   else came from elsewhere and should be applied.
+        //
+        // Fallback — author: used only when a patch lacks device_id
+        //   (legacy rows written before the field shipped). Behaves
+        //   like the pre-deviceId filter: same user id = skip. Without
+        //   this fallback, a legacy patch would double-apply; with it,
+        //   the only lost capability is same-user multi-tab sync for
+        //   legacy rows, which won't happen in practice (they're <1hr
+        //   old and nobody was relying on this feature pre-fix).
+        const myDeviceId = getDeviceId();
+        if (rec.device_id) {
+          if (rec.device_id === myDeviceId) return;
+        } else {
+          const me = currentUser();
+          if (me && rec.author === (me as { id: string }).id) return;
+        }
 
         if (gestureActive) {
           // Don't disrupt an ongoing drag. Buffer the op stream and

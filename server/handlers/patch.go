@@ -28,6 +28,11 @@ type patchRequest struct {
 	ProjectID    string          `json:"projectId"`
 	FromRevision int             `json:"fromRevision"`
 	Ops          json.RawMessage `json:"ops"` // RFC 6902 patch array, kept as raw JSON
+	// DeviceID disambiguates tabs of the same signed-in user. Optional
+	// (empty string stored as-is) — legacy clients that don't send it
+	// fall back to the author-based self-filter. See the patches
+	// collection's `device_id` field for the full rationale.
+	DeviceID string `json:"deviceId"`
 }
 
 type patchConflictResponse struct {
@@ -150,6 +155,10 @@ func handlePatch(app *pocketbase.PocketBase, re *core.RequestEvent) error {
 		// avoiding a round-trip through a Go map that could reorder object
 		// keys or normalize number representation.
 		patchRec.Set("ops", body.Ops)
+		// device_id is the tab id the client self-assigned in
+		// sessionStorage. Empty string for legacy clients — the SSE
+		// receiver falls back to author-based filtering in that case.
+		patchRec.Set("device_id", body.DeviceID)
 		if err := txApp.Save(patchRec); err != nil {
 			return fmt.Errorf("save patches record: %w", err)
 		}

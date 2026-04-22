@@ -55,4 +55,9 @@ export interface PatchRecord extends BaseRecord {
   // RFC 6902 patch array. We don't narrow the Op type here; the client's
   // diff.ts wrapper re-imports from fast-json-patch where needed.
   ops: unknown[];
+  // Per-tab identifier assigned by the client via sessionStorage.
+  // Empty string for legacy patches written before the field existed.
+  // Used by the SSE self-filter to distinguish "another tab of me"
+  // from "my own echo" — see syncClient.ts subscribeSse().
+  device_id: string;
 }
