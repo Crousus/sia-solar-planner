@@ -12,11 +12,38 @@
 // assumption means empty string works there too (PocketBase sits behind
 // the same reverse proxy). If we ever split origins, set via env var.
 //
-// API NOTE: PocketBase JS SDK ≥0.26 renamed `authStore.model` to
-// `authStore.record` (the old name is still exported but deprecated and
-// emits a console warning). We use the new name throughout. The
+// API NOTE: PocketBase JS SDK v0.22 renamed `authStore.model` to
+// `authStore.record` (the old name is still exported but soft-deprecated
+// and emits a console warning). We use the new name throughout. The
 // `onChange` callback's second arg is also typed as `AuthRecord` (the
 // stored record), not the legacy `model`.
+//
+// VERSION COMPATIBILITY (verified 2026-04 against upstream changelogs):
+// This project pins pocketbase (JS SDK) to ^0.26.x while the Go server
+// in `server/go.mod` is pinned to github.com/pocketbase/pocketbase
+// v0.23.0. That looks like a mismatch but is deliberate and safe:
+//
+//   - JS SDK v0.22.0 release notes state: "works only with PocketBase
+//     v0.23.0+". No SDK release between v0.22 and v0.26.8 has raised
+//     that minimum or changed the realtime/SSE wire protocol, the
+//     Authorization header format, or the record JSON shape. The only
+//     SDK-side note about server version in this range is v0.25's
+//     `pb.crons` service — "available with PocketBase v0.24+" — which
+//     we don't use.
+//
+//   - Server v0.24/v0.25/v0.26 release notes touch rule-engine
+//     semantics, Google OAuth2 endpoints, AWS SDK internals, and
+//     similar — none touch the /api/realtime SSE protocol or the auth
+//     header contract the JS SDK depends on. The `PB_CONNECT` /
+//     `clientId` initial SSE event has been part of the protocol since
+//     long before v0.23.
+//
+// CAVEAT for future maintainers: do not bump either side in isolation
+// without re-checking both changelogs for realtime, auth, and record-
+// shape changes. The safe directions are (a) bump both together or
+// (b) downgrade the JS SDK to match the Go server. Bumping the Go
+// server alone would drag in unvetted hook/migration API changes that
+// our `server/main.go` and `pb_migrations/` may rely on.
 // ────────────────────────────────────────────────────────────────────────
 
 import PocketBase from 'pocketbase';
