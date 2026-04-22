@@ -110,20 +110,27 @@ export async function maybeImportLocalStorage(): Promise<string | null> {
 
   // Find or create a team to host the project.
   //
-  // Why prefer an existing team? If the user was invited to a team
-  // before ever signing in (unusual but possible), the totalItems gate
-  // above has already confirmed that team has no projects of theirs —
-  // putting their local draft there still respects the "my data goes
-  // in my only team" invariant without needing to create an extra team
-  // they never asked for. The `-created` sort gives a deterministic
-  // "first" choice if there are multiple, mirroring the team-picker's
-  // default selection logic.
+  // Pick the user's own team (by created_by) if one already exists,
+  // otherwise spin up a fresh one. We don't want to silently drop a
+  // personal draft into a team the user merely joined — they may have
+  // member-level permissions that prevent them from managing the
+  // result (e.g. renaming or deleting the imported project). The
+  // `-created` sort is still useful here so that, if the user somehow
+  // owns multiple teams already, we land on the most recent one —
+  // mirroring the team-picker's default selection logic.
+  //
+  // Note: getFullList here returns *all* teams visible to the user,
+  // which via the collection's list rule includes teams they were
+  // merely invited into. That's why the `created_by === user.id`
+  // check matters — `teams[0]` is emphatically NOT guaranteed to be
+  // the user's own team.
   const teams = await pb
     .collection('teams')
     .getFullList<TeamRecord>({ sort: '-created' });
+  const ownTeam = teams.find((t) => t.created_by === user.id);
   let teamId: string;
-  if (teams.length > 0) {
-    teamId = teams[0].id;
+  if (ownTeam) {
+    teamId = ownTeam.id;
   } else {
     // Create a default team. The server-side auto-admin hook (see
     // server/pb_migrations/*.js) inserts a team_members admin row for
