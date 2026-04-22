@@ -42,6 +42,7 @@ import CompassWidget from './CompassWidget';
 import RotationDock from './RotationDock';
 import { useViewport } from '../hooks/useViewport';
 import { useDrawingController } from '../hooks/useDrawingController';
+import { getActiveSyncClient } from './ProjectEditor';
 import type Konva from 'konva';
 
 interface Props {
@@ -138,6 +139,10 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
     if (!stage) return;
     const screenPos = stage.getPointerPosition();
     if (!screenPos) return;
+    // Notify syncClient so it queues inbound patches and suspends outbound
+    // debounce until pointerup. Pure pan/zoom drags are still notified —
+    // no harm if the subsequent diff is empty.
+    getActiveSyncClient()?.beginGesture();
     if (viewport.tryStartViewportDrag(e, screenPos)) return;
     drawing.handleMouseDown();
   };
@@ -158,6 +163,9 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
     // state so no stuck paint-assign can outlive the mouseup.
     viewport.handleViewportMouseUp();
     drawing.handleMouseUp();
+    // Fire AFTER drawing.handleMouseUp so the store reflects the final
+    // gesture state when syncClient computes aliceDiff.
+    getActiveSyncClient()?.endGesture();
   };
 
   // Guard: Konva crashes if the Stage is mounted at 0×0 (drawImage into
