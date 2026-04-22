@@ -64,30 +64,45 @@ export default function ConflictModal() {
 
   return (
     <div
-      // z-[1000] is comfortably above the Konva stage (which uses
-      // default stacking) and any toolbar dropdowns (which use ~z-50).
-      className="fixed inset-0 bg-black/60 z-[1000] flex items-center justify-center"
+      // z-[1000] is comfortably above the Konva stage (default stacking)
+      // and any toolbar dropdowns (~z-50). Backdrop uses a heavy blur +
+      // dark tint to push the modal forward without hard black — keeps
+      // the rest of the UI readable as context.
+      className="fixed inset-0 z-[1000] flex items-center justify-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby="conflict-modal-title"
+      style={{
+        background: 'rgba(6, 6, 8, 0.6)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+      }}
     >
-      <div className="bg-zinc-800 text-zinc-100 p-6 rounded-lg max-w-md space-y-3 shadow-xl border border-zinc-700">
-        <h2 id="conflict-modal-title" className="text-lg font-semibold">
-          {t('conflict.title')}
-        </h2>
-        <p className="text-sm text-zinc-300">
+      <div className="surface rounded-[14px] p-6 max-w-md w-[92%] space-y-4">
+        <div>
+          <span className="tech-label">SYNC · CONFLICT</span>
+          <h2
+            id="conflict-modal-title"
+            className="mt-1 font-editorial text-[28px] leading-[1.05] tracking-tight text-ink-50"
+          >
+            {t('conflict.title')}
+          </h2>
+        </div>
+        <p className="text-[13.5px] text-ink-300 leading-relaxed">
           {t('conflict.body')}
         </p>
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-1">
           <button
-            className="flex-1 py-2 bg-zinc-700 rounded hover:bg-zinc-600 disabled:opacity-50"
+            className="btn btn-ghost flex-1 justify-center"
+            style={{ padding: '9px 12px', fontSize: 12.5 }}
             disabled={busy}
             onClick={() => choose('discard-mine')}
           >
             {t('conflict.discardMine')}
           </button>
           <button
-            className="flex-1 py-2 bg-red-600 rounded hover:bg-red-500 disabled:opacity-50"
+            className="btn btn-primary flex-1 justify-center"
+            style={{ padding: '9px 12px', fontSize: 12.5 }}
             disabled={busy}
             onClick={() => choose('overwrite-theirs')}
           >

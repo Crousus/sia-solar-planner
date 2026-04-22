@@ -4,80 +4,92 @@
 
 /*
  * ─────────────────────────────────────────────────────────────────────────
- * Solar Planner — "Precision Solar Instrument" design system
+ * Solar Planner — "Command Console" design system (Raycast-inspired)
  * ─────────────────────────────────────────────────────────────────────────
  *
  * Aesthetic thesis:
- *   This is a working tool for planning real PV installations. It should feel
- *   like a piece of professional engineering software (Linear, Figma) crossed
- *   with a draftsman's lamp — warm, precise, and quietly luxurious. Dark
- *   mode, not cold; technical without feeling clinical.
+ *   A precision command console. Near-black warm-neutral base, hairline
+ *   dividers, a single signature scarlet accent used sparingly, and an
+ *   atmospheric red corner glow that only reads when you look for it.
+ *   The content is the content — the chrome is quiet, fast, technical.
+ *   One editorial break: Instrument Serif italic for hero headlines. That
+ *   contrast (typewritten UI + crafted serif) is the personality move that
+ *   keeps this from being yet-another-dark-SaaS.
  *
- * How the system holds together:
- *   1. Palette tokens (--ink-*, --sun-*, --copper-*, --volt-*) are the single
- *      source of color truth. Everything downstream references them.
- *   2. Type stack is a trio: Bricolage Grotesque (display), Geist (body),
- *      JetBrains Mono (all numeric / technical readouts). Numbers are the
- *      hero of this app, so they always land in mono.
- *   3. Material / elevation primitives give floating panels a hairline
- *      top-highlight + soft bottom shadow, so they read as "raised metal"
- *      rather than flat rectangles.
- *   4. Component primitives (.btn-*, .input, .chip, .section-title, etc.)
- *      live here so the React components can stay mostly markup and avoid
- *      reinventing classes per-file. Matches the pattern the pre-existing
- *      Toolbar already used (inline <style>) but pulled upstream for reuse.
+ * Token naming is deliberately retained from the previous pass:
+ *   --ink-*       neutral near-black surface scale (NOT amber-tinted)
+ *   --sun-*       scarlet primary accent (repurposed from amber; the
+ *                 variable name stays so Tailwind utilities and inline
+ *                 styles across the app don't need a renaming pass)
+ *   --copper-*    warm tungsten — destructive actions, warnings
+ *   --volt-*      electrical cyan — kept for string / wiring emphasis
  *
- * Nothing here changes layout math: konva-overlay, leaflet-container, and
- * canvas-bg maintain the exact same selectors the app relies on.
+ * The canvas-bg, leaflet-container, and konva-overlay selectors keep
+ * their exact names and layout math so planning geometry stays stable.
  */
 
 /* ── Design tokens ────────────────────────────────────────────────────── */
 :root {
-  /* Warm-charcoal base (hsl(32, 8%, L%)). See tailwind.config.js for the
-     same values exposed as `ink-*` utilities. Kept in CSS as well so
-     inline styles and pseudo-elements can reference them too. */
-  --ink-950: #0a0804;
-  --ink-900: #121009;
-  --ink-800: #1a1812;
-  --ink-700: #24211a;
-  --ink-600: #322e25;
-  --ink-500: #494337;
-  --ink-400: #6c6557;
-  --ink-300: #9a9284;
-  --ink-200: #c8c1b5;
-  --ink-100: #e7e2da;
-  --ink-50:  #f6f3ef;
+  /* Near-black neutral scale with a *1° warmth bias* (hsl 30, 2%, L%). The
+     trace warmth keeps the UI from feeling clinical-gray; the low saturation
+     keeps the scarlet accent from fighting the background. Pure zinc felt
+     cold; the previous amber tint fought the red accent — this is the
+     middle path. Generated sequence follows Raycast's site palette. */
+  --ink-950: #080808;
+  --ink-900: #0b0b0c;
+  --ink-800: #111113;
+  --ink-700: #18181b;
+  --ink-600: #242428;
+  --ink-500: #3a3a3f;
+  --ink-400: #65656b;
+  --ink-300: #95959c;
+  --ink-200: #c5c5cc;
+  --ink-100: #e8e8ec;
+  --ink-50:  #f7f7f8;
 
-  /* Primary — solar sunburst amber. */
-  --sun-200: #ffe29a;
-  --sun-300: #ffcb5f;
-  --sun-400: #f5b544;
-  --sun-500: #e39a20;
-  --sun-600: #c07a0e;
+  /* Primary — Raycast scarlet. Calibrated against screenshots of raycast.com:
+     a warm near-coral red that avoids both fire-engine alarm and rose pink.
+     The 400 step is the canonical accent; 300 is hover; 500+ is for pressed
+     / gradient base. Saturated enough to read at small sizes but not so
+     neon that it ruins the mostly-grayscale restraint. */
+  --sun-200: #ffb5a8;
+  --sun-300: #ff8a79;
+  --sun-400: #ff6363;   /* canonical accent */
+  --sun-500: #e84a4a;
+  --sun-600: #c13636;
 
-  /* Secondary — tungsten copper warmth. */
-  --copper-400: #ff7043;
-  --copper-500: #e55a2e;
+  /* Tungsten — secondary warmth. Used for destructive-adjacent accents
+     (delete, reset) so the primary red remains a *positive* signal. */
+  --copper-400: #ff8a5c;
+  --copper-500: #e36d3d;
+  --copper-300: #ffb493;
 
-  /* Tertiary — electrical cyan, reserved for wiring/strings emphasis. */
+  /* Electrical cyan — wiring/strings. Unchanged from prior system because
+     the planner already encodes "cyan = current/signal". */
   --volt-400: #2fd0ef;
 
-  /* Hairline border color used on every card/control. A single token so we
-     can tune the whole UI's "weight" in one line. */
-  --hairline: rgba(255, 228, 185, 0.08);
-  --hairline-strong: rgba(255, 228, 185, 0.16);
+  /* A trace mint for success / positive indicators (autosave confirmed,
+     sync green). Separate from `sun` so the semantics don't collide. */
+  --mint-400: #5eead4;
 
-  /* Ambient glow color for active states — solar amber, low opacity. */
-  --glow-sun: rgba(245, 181, 68, 0.35);
+  /* Hairline border color — warm-white with very low alpha. Drives the
+     whole "weight" of the UI in one token. */
+  --hairline: rgba(255, 255, 255, 0.06);
+  --hairline-strong: rgba(255, 255, 255, 0.11);
+
+  /* Ambient glow — the scarlet bloom used behind active elements and in
+     the atmospheric background gradients. */
+  --glow-sun: rgba(255, 99, 99, 0.35);   /* aliased-name kept for back-compat */
+  --glow-red: rgba(255, 99, 99, 0.35);
 }
 
 /* ── Global resets ────────────────────────────────────────────────────── */
 html, body, #root {
   height: 100%;
   margin: 0;
-  /* Geist as the default body stack. `font-feature-settings` enables
-     contextual alternates + stylistic alternates which give Geist its
-     slightly refined punctuation — easy to miss but matters in dense UIs. */
+  /* Geist with full feature-setting treatment: small caps variants (cv01)
+     and the distinctive Geist "a" / "g" alternates (ss01) so the UI has
+     the same refined body as the Raycast marketing site. */
   font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
   font-feature-settings: "ss01", "cv01", "cv11";
   -webkit-font-smoothing: antialiased;
@@ -87,41 +99,60 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* Give every standalone heading that uses .font-display the optical-size
-   adjustment that Bricolage was designed for — the variable `opsz` axis
-   makes the cuts visibly sharper at headline sizes. */
+/*
+ * Display class.
+ *   The previous system pointed this at Bricolage Grotesque. We've dropped
+ *   Bricolage (see index.html) and re-aimed .font-display at Geist ExtraBold
+ *   with the negative tracking that reads as "hero headline" in this
+ *   aesthetic. Any component still referencing `.font-display` (Toolbar
+ *   wordmark, ProjectEditor header) picks up the new treatment for free.
+ */
 .font-display {
-  font-variation-settings: "opsz" 48, "wght" 600;
-  letter-spacing: -0.02em;
+  font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.025em;
 }
 
-/* Mono numerics universally get tabular figures so a changing count
-   (e.g. panels placed) doesn't shift the adjacent "kWp" label around. */
+/*
+ * Hero-headline treatment. Previously an Instrument Serif italic; replaced
+ * with Geist ExtraBold at tight negative tracking, matching the Raycast
+ * marketing-site display treatment. Unified family keeps the chrome
+ * coherent and drops a font request. Class name `.font-editorial` is
+ * retained because many pages already reference it — callers don't need
+ * to change.
+ */
+.font-editorial {
+  font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  font-feature-settings: "ss01", "cv01", "cv11";
+}
+
+/* Mono gets tabular figures universally so live-counting numbers (panels
+   placed, kWp tick) don't jitter the adjacent labels. */
 .font-mono, code, kbd, pre, samp {
-  font-feature-settings: "tnum", "zero";
+  font-feature-settings: "tnum", "zero", "cv06";
 }
 
 /* ── Leaflet integration ──────────────────────────────────────────────── */
 .leaflet-container {
   height: 100%;
   width: 100%;
-  /* Match the app's deep ink background so map loads don't flash a generic
-     gray. Same intent as the original code, just updated to the new palette. */
+  /* Match app background so tile loads don't flash a neutral gray. */
   background: var(--ink-900);
   font-family: inherit;
 }
 
-/* Re-skin Leaflet's built-in zoom control so it reads as part of our UI
-   rather than stock Leaflet. Only applies while the map is unlocked. */
+/* Skin Leaflet's zoom control to belong to this UI, not stock Leaflet. */
 .leaflet-control-zoom a {
-  background: rgba(26, 24, 18, 0.85) !important;
+  background: rgba(17, 17, 19, 0.85) !important;
   color: var(--ink-100) !important;
   border: 1px solid var(--hairline) !important;
   backdrop-filter: blur(8px);
   transition: background 120ms ease, color 120ms ease;
 }
 .leaflet-control-zoom a:hover {
-  background: rgba(50, 46, 37, 0.95) !important;
+  background: rgba(36, 36, 40, 0.95) !important;
   color: var(--sun-400) !important;
 }
 
@@ -138,57 +169,50 @@ html, body, #root {
 .konva-overlay-grab:active { cursor: grabbing; }
 
 /*
- * ── "Drafting paper" backdrop ─────────────────────────────────────────
+ * ── Canvas backdrop (drafting console) ──────────────────────────────
  *
- * Visible when Leaflet is unmounted (locked) AND the captured satellite
- * image is hidden via the toolbar toggle. Was previously a flat slate grid
- * — upgraded to an atmospheric composition that matches the refreshed
- * aesthetic:
+ * Visible only when Leaflet is unmounted (post-lock) AND the satellite
+ * backdrop toggle is off. Previously a warm amber graph-paper; now a
+ * technical dot grid on near-black with a subtle scarlet atmospheric
+ * bloom in the top-right corner. Every layer is documented so a future
+ * reader can tune one thing at a time:
  *
- *   1. Warm ink base color.
- *   2. Radial sunflare near the top, tinted amber — gives the canvas a
- *      sense of light source and depth.
- *   3. Counter-radial cool gradient at bottom-left for contrast.
- *   4. A 40px grid, subtle amber-tinted, evoking engineering graph paper.
- *   5. A 200px coarse grid overlay for visual rhythm at zoomed-out scale.
- *   6. SVG grain overlay for texture — stops the gradients from looking
- *      banded on low-bit displays.
+ *   1. grain        — hairline noise so the gradients never band on
+ *                     6-bit panels
+ *   2. dot grid     — 24px dot pattern (not a line grid) because dots
+ *                     are what Raycast/Linear/Vercel use for engineering
+ *                     paper, and they don't compete with roof outlines
+ *                     the way line grids do when tracing
+ *   3. red bloom    — top-right, very low alpha. The signature atmospheric
+ *                     move. Reads as "system on" ambient light.
+ *   4. cyan counter — bottom-left, even lower alpha. Counter-balances the
+ *                     red so the canvas doesn't feel tilted.
+ *   5. vignette     — radial ink-800 → ink-950 base
  *
- * Non-interactive; purely cosmetic. Grid spacing is screen-pixel based;
- * it doesn't zoom with the Konva stage (a true metric grid would live on
- * the Konva Layer, not here).
+ * Non-interactive; purely cosmetic.
  */
 .canvas-bg {
-  background-color: var(--ink-900);
+  background-color: var(--ink-950);
   background-image:
-    /* grain overlay — base64-encoded tiny SVG noise pattern */
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.7  0 0 0 0 0.3  0 0 0 0.07 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
-    /* fine grid — near-invisible, amber-tinted */
-    linear-gradient(rgba(245, 181, 68, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(245, 181, 68, 0.035) 1px, transparent 1px),
-    /* coarse grid — slightly stronger for rhythm */
-    linear-gradient(rgba(245, 181, 68, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(245, 181, 68, 0.06) 1px, transparent 1px),
-    /* counter-cool accent */
-    radial-gradient(ellipse 60% 45% at 15% 85%, rgba(47, 208, 239, 0.06), transparent 70%),
-    /* sunflare — the signature move */
-    radial-gradient(ellipse 80% 55% at 70% 10%, rgba(245, 181, 68, 0.18), transparent 65%),
-    /* base vignette */
+    /* 1. grain overlay */
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
+    /* 2. dot grid — a single 1.3px dot tiled at 24px centers */
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.045) 1px, transparent 1.3px),
+    /* 3. scarlet bloom top-right */
+    radial-gradient(ellipse 55% 50% at 85% 8%, rgba(255, 99, 99, 0.14), transparent 70%),
+    /* 4. cyan counter bottom-left */
+    radial-gradient(ellipse 50% 40% at 12% 88%, rgba(47, 208, 239, 0.04), transparent 75%),
+    /* 5. base radial vignette */
     radial-gradient(ellipse at center, var(--ink-800) 0%, var(--ink-950) 100%);
   background-size:
-    160px 160px,
-    40px 40px, 40px 40px,
-    200px 200px, 200px 200px,
+    180px 180px,
+    24px 24px,
     100% 100%, 100% 100%, 100% 100%;
-  background-repeat: repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat, no-repeat;
+  background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat;
 }
 
 /* ── Scrollbars ───────────────────────────────────────────────────────── */
-/*
- * Custom scrollbars on the sidebar & any scrollable pane. WebKit + Firefox
- * syntax. Thin, hairline-colored, amber hover — matches the instrument
- * aesthetic. Falls back to native on platforms that don't support it.
- */
+/* Thin, hairline-colored, scarlet-on-hover. Native on platforms that ignore. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--ink-500) transparent;
@@ -205,7 +229,7 @@ html, body, #root {
   background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--sun-600);
+  background: var(--sun-500);
   background-clip: padding-box;
 }
 
@@ -216,11 +240,7 @@ html, body, #root {
 }
 
 /* ── Focus rings ──────────────────────────────────────────────────────── */
-/*
- * We replace the default blue focus ring with a warm amber one so focus
- * reads as part of the instrument, not a browser default. Only applied on
- * :focus-visible so mouse-only users don't see rings constantly.
- */
+/* Scarlet, 2px, only on :focus-visible so mice don't see rings constantly. */
 :focus { outline: none; }
 :focus-visible {
   outline: 2px solid var(--sun-400);
@@ -228,40 +248,85 @@ html, body, #root {
   border-radius: 4px;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
+/*
+ * ── Page-level atmosphere (login / team pages) ───────────────────────
+ *
+ * A near-black backdrop with the same scarlet corner bloom as the canvas,
+ * plus a subtle dot grid. Applied by the shared PageShell used on
+ * LoginPage / TeamPicker / TeamView / etc. Kept as a class (not inline) so
+ * the atmosphere can be toggled or themed as one piece later.
+ */
+.page-atmosphere {
+  background-color: var(--ink-950);
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.035 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.035) 1px, transparent 1.3px),
+    radial-gradient(ellipse 60% 55% at 88% 12%, rgba(255, 99, 99, 0.18), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 10% 92%, rgba(120, 80, 255, 0.04), transparent 75%),
+    radial-gradient(ellipse at center, var(--ink-900) 0%, var(--ink-950) 100%);
+  background-size:
+    180px 180px,
+    28px 28px,
+    100% 100%, 100% 100%, 100% 100%;
+  background-repeat: repeat, repeat, no-repeat, no-repeat, no-repeat;
+}
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────
  * Component primitives
  *
- * All declared as @layer components so utility classes beat them when a
- * caller wants to override, and so Tailwind's purge keeps them all.
+ * @layer components so utility overrides win and Tailwind's purge keeps them.
  * ───────────────────────────────────────────────────────────────────── */
 @layer components {
 
   /* ── Panels / cards ──────────────────────────────────────────────── */
-  /* The raised surface used for floating docks, cards, and grouped
-     sidebar controls. Hairline top highlight simulates an engraved metal
-     bevel; the backdrop-blur lets this layer sit convincingly over the
-     canvas without obscuring it. */
+  /*
+   * The raised surface for floating docks, cards, grouped sidebar controls.
+   * Redesigned for the Raycast aesthetic:
+   *   - flatter gradient (top highlight is almost invisible, not metallic)
+   *   - background is closer to a solid neutral — the surface differentiates
+   *     itself from the page atmosphere by 1 step of lightness, not a
+   *     dramatic bevel
+   *   - sharper-rounded default (10px) but uses border-radius from the
+   *     caller; the primitive only sets background + border + shadow
+   */
   .surface {
-    background: linear-gradient(180deg, rgba(50, 46, 37, 0.75) 0%, rgba(26, 24, 18, 0.75) 100%);
+    background: linear-gradient(180deg, rgba(24, 24, 27, 0.82) 0%, rgba(17, 17, 19, 0.82) 100%);
     border: 1px solid var(--hairline);
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.05),
-      0 1px 0 rgba(0, 0, 0, 0.4),
-      0 8px 24px -12px rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+      inset 0 1px 0 rgba(255, 255, 255, 0.03),
+      0 1px 0 rgba(0, 0, 0, 0.5),
+      0 12px 32px -14px rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /*
+   * A denser sibling for inner rows inside a .surface (e.g. list items).
+   * Borderless on default, very low-contrast fill; hover lifts to the
+   * hairline-visible state.
+   */
+  .surface-row {
+    background: rgba(255, 255, 255, 0.015);
+    border: 1px solid transparent;
+    transition: background 140ms ease, border-color 140ms ease;
+  }
+  .surface-row:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--hairline);
   }
 
   /* ── Buttons ─────────────────────────────────────────────────────── */
   /*
-   * Three flavors share a common base via `.btn`:
-   *   .btn-ghost   — transparent, hairline border, default actions.
-   *   .btn-tool    — denser, for toolbar icon+label buttons.
-   *   .btn-primary — amber filled, for the lock/confirm moment.
-   *   .btn-danger  — copper tint for destructive actions (still warm, not red-alert).
-   *
-   * All buttons share the same motion curve (cubic-bezier `ease-out-quart`
-   * style) so the UI feels like one instrument, not a patchwork.
+   * Four flavors share .btn:
+   *   .btn-ghost   — transparent, hairline border, default actions
+   *   .btn-tool    — denser, for toolbar icon+label buttons
+   *   .btn-primary — scarlet, the "confirm / lock" moment
+   *   .btn-danger  — tungsten orange for destructive (visually adjacent to
+   *                  scarlet but hue-shifted so the primary read is "hot,
+   *                  not hostile")
+   * Motion is unified: a single ease-out-quart curve at 140ms so every
+   * control feels like one instrument.
    */
   .btn {
     display: inline-flex;
@@ -271,7 +336,7 @@ html, body, #root {
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1;
-    border-radius: 6px;
+    border-radius: 8px;
     border: 1px solid transparent;
     transition:
       background-color 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
@@ -286,12 +351,12 @@ html, body, #root {
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .btn-ghost {
-    background: rgba(36, 33, 26, 0.7);
+    background: rgba(24, 24, 27, 0.7);
     border-color: var(--hairline);
     color: var(--ink-100);
   }
   .btn-ghost:hover:not(:disabled) {
-    background: rgba(50, 46, 37, 0.9);
+    background: rgba(36, 36, 40, 0.9);
     border-color: var(--hairline-strong);
     color: var(--ink-50);
   }
@@ -304,22 +369,33 @@ html, body, #root {
     font-size: 12.5px;
   }
   .btn-tool:hover:not(:disabled) {
-    background: rgba(50, 46, 37, 0.8);
+    background: rgba(255, 255, 255, 0.04);
     color: var(--ink-50);
   }
 
+  /*
+   * btn-primary — scarlet, filled. The gradient is intentionally shallow
+   * (400 → 500) so the button doesn't look glossy; it should read as a
+   * single flat warm signal with just enough top-edge lift to feel pressable.
+   * The glow ring is pushed to a second shadow layer so hover can amplify
+   * it without rebuilding the whole box-shadow stack.
+   */
   .btn-primary {
     background: linear-gradient(180deg, var(--sun-400) 0%, var(--sun-500) 100%);
     border-color: var(--sun-600);
-    color: var(--ink-950);
+    color: var(--ink-50);
     font-weight: 600;
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 0 0 1px var(--sun-600),
-      0 6px 18px -6px var(--glow-sun);
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      0 0 0 1px rgba(232, 74, 74, 0.4),
+      0 8px 22px -8px var(--glow-red);
   }
   .btn-primary:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--sun-300) 0%, var(--sun-400) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 0 0 1px rgba(255, 99, 99, 0.55),
+      0 10px 26px -8px var(--glow-red);
   }
 
   .btn-danger {
@@ -328,25 +404,24 @@ html, body, #root {
     color: var(--copper-400);
   }
   .btn-danger:hover:not(:disabled) {
-    background: rgba(229, 90, 46, 0.12);
+    background: rgba(255, 138, 92, 0.1);
     color: var(--copper-300);
   }
 
   /* ── Segmented switcher ──────────────────────────────────────────── */
   /*
-   * Holds the tool-mode buttons as a single unified control. The
-   * internal separators are 1px hairlines; the active button gets an
-   * amber glow + elevated treatment so the state reads at a glance.
-   *
-   * The markup pattern is: <div class="segmented"> <button class="segment"
-   * [data-active]> ... </button> ... </div>.
+   * Container holds the tool-mode buttons as a unified control. The
+   * active segment gets a scarlet tint ONLY in its text/border — the
+   * fill stays near-neutral so the toolbar doesn't turn into a red bar
+   * when a tool is selected. This is the key restraint move vs. the
+   * previous design which filled the active segment with amber.
    */
   .segmented {
     display: inline-flex;
     padding: 3px;
-    background: rgba(18, 16, 9, 0.7);
+    background: rgba(11, 11, 12, 0.7);
     border: 1px solid var(--hairline);
-    border-radius: 8px;
+    border-radius: 10px;
     gap: 2px;
     box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4);
   }
@@ -358,7 +433,7 @@ html, body, #root {
     font-size: 12.5px;
     font-weight: 500;
     line-height: 1;
-    border-radius: 5px;
+    border-radius: 7px;
     color: var(--ink-300);
     background: transparent;
     border: 1px solid transparent;
@@ -368,37 +443,47 @@ html, body, #root {
   }
   .segment:hover:not(:disabled):not([data-active="true"]) {
     color: var(--ink-100);
-    background: rgba(50, 46, 37, 0.5);
+    background: rgba(255, 255, 255, 0.035);
   }
+  /*
+   * Active segment — the considered move:
+   *   background is a soft neutral lift (not a scarlet fill)
+   *   text is ink-50 (pure white-ish) so it pops off the neutral lift
+   *   a 1px scarlet inset border marks the selection unambiguously
+   *   a low-alpha scarlet glow behind the segment ties it to the accent
+   * Result: the tool switcher reads "selection is here" without drowning
+   * the toolbar in red.
+   */
   .segment[data-active="true"] {
-    color: var(--ink-950);
-    background: linear-gradient(180deg, var(--sun-300) 0%, var(--sun-400) 100%);
-    border-color: var(--sun-500);
+    color: var(--ink-50);
+    background: linear-gradient(180deg, rgba(36, 36, 40, 0.95) 0%, rgba(24, 24, 27, 0.95) 100%);
+    border-color: rgba(255, 99, 99, 0.55);
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 1px 2px rgba(0, 0, 0, 0.4),
-      0 0 12px -2px var(--glow-sun);
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 0 0 1px rgba(255, 99, 99, 0.25),
+      0 6px 16px -6px var(--glow-red);
   }
   .segment:disabled { opacity: 0.35; cursor: not-allowed; }
 
   /* ── Inputs ──────────────────────────────────────────────────────── */
   .input {
     width: 100%;
-    background: rgba(18, 16, 9, 0.6);
+    background: rgba(11, 11, 12, 0.7);
     border: 1px solid var(--hairline);
-    border-radius: 6px;
-    padding: 6px 8px;
+    border-radius: 8px;
+    padding: 8px 10px;
     color: var(--ink-100);
-    font-size: 12.5px;
+    font-size: 13px;
     font-family: inherit;
     transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
   }
+  .input::placeholder { color: var(--ink-400); }
   .input:hover:not(:focus) { border-color: var(--hairline-strong); }
   .input:focus {
     outline: none;
     border-color: var(--sun-500);
-    background: rgba(26, 24, 18, 0.9);
-    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.12);
+    background: rgba(17, 17, 19, 0.95);
+    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.12);
   }
   .input-mono {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -408,19 +493,16 @@ html, body, #root {
   select.input {
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%239a9284' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%2395959c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
     background-repeat: no-repeat;
-    background-position: right 8px center;
-    padding-right: 24px;
+    background-position: right 10px center;
+    padding-right: 26px;
   }
 
   /* ── Custom range slider ─────────────────────────────────────────── */
   /*
-   * Used for tilt control. Native range is ugly and inconsistent across
-   * browsers; we restyle the track + thumb to match the instrument.
-   * Track is hairline-thin with an amber-filled portion indicating the
-   * current value (rendered via background-image gradient + CSS var
-   * `--val` set by inline style from React).
+   * Track + thumb restyle; the filled portion (left of the thumb) picks
+   * up the scarlet accent to tie it back to the primary signal.
    */
   .slider {
     -webkit-appearance: none;
@@ -434,14 +516,14 @@ html, body, #root {
     height: 4px;
     border-radius: 999px;
     background:
-      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 163, 184, 0.15) var(--val, 0%), rgba(148, 163, 184, 0.15) 100%);
+      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 148, 156, 0.18) var(--val, 0%), rgba(148, 148, 156, 0.18) 100%);
     border: 1px solid var(--hairline);
   }
   .slider::-moz-range-track {
     height: 4px;
     border-radius: 999px;
     background:
-      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 163, 184, 0.15) var(--val, 0%), rgba(148, 163, 184, 0.15) 100%);
+      linear-gradient(90deg, var(--sun-400) 0%, var(--sun-400) var(--val, 0%), rgba(148, 148, 156, 0.18) var(--val, 0%), rgba(148, 148, 156, 0.18) 100%);
     border: 1px solid var(--hairline);
   }
   .slider::-webkit-slider-thumb {
@@ -453,7 +535,7 @@ html, body, #root {
     background: var(--ink-50);
     border: 2px solid var(--sun-500);
     border-radius: 999px;
-    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15), 0 2px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
     transition: transform 100ms ease;
   }
   .slider::-moz-range-thumb {
@@ -462,7 +544,7 @@ html, body, #root {
     background: var(--ink-50);
     border: 2px solid var(--sun-500);
     border-radius: 999px;
-    box-shadow: 0 0 0 3px rgba(245, 181, 68, 0.15), 0 2px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
   }
   .slider:active::-webkit-slider-thumb { transform: scale(1.15); }
 
@@ -477,22 +559,21 @@ html, body, #root {
     font-weight: 500;
     line-height: 1.4;
     border: 1px solid var(--hairline);
-    background: rgba(18, 16, 9, 0.6);
+    background: rgba(11, 11, 12, 0.7);
     color: var(--ink-200);
   }
-  .chip-amber {
-    background: rgba(245, 181, 68, 0.1);
-    border-color: rgba(245, 181, 68, 0.35);
+  .chip-amber { /* kept name for API stability; now scarlet */
+    background: rgba(255, 99, 99, 0.12);
+    border-color: rgba(255, 99, 99, 0.38);
     color: var(--sun-300);
   }
   .chip-emerald {
-    background: rgba(52, 211, 153, 0.1);
-    border-color: rgba(52, 211, 153, 0.35);
-    color: #6ee7b7;
+    background: rgba(94, 234, 212, 0.1);
+    border-color: rgba(94, 234, 212, 0.35);
+    color: var(--mint-400);
   }
 
-  /* Tiny keyboard-shortcut indicator — used in the hint banner and
-     tooltips. Bright mono glyph on a sunken chip. */
+  /* kbd — keyboard-shortcut glyph chip. Mono, bright accent on sunken fill. */
   .kbd {
     display: inline-flex;
     align-items: center;
@@ -503,28 +584,48 @@ html, body, #root {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
     font-size: 10.5px;
     font-weight: 500;
-    color: var(--sun-300);
-    background: rgba(18, 16, 9, 0.8);
+    color: var(--ink-200);
+    background: rgba(11, 11, 12, 0.85);
     border: 1px solid var(--hairline-strong);
     border-bottom-width: 2px;
     border-radius: 4px;
     line-height: 1;
   }
 
-  /* ── Section & field (sidebar) ───────────────────────────────────── */
-  .section-title {
-    font-family: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
-    font-variation-settings: "opsz" 14, "wght" 600;
+  /*
+   * Technical label — the "FIG_01 / LIST_CONTENT" style seen on raycast.com.
+   * Mono, small caps-sized, dim ink tone, wide tracking. Communicates
+   * "this thing is a reference / numbered marker" without shouting.
+   */
+  .tech-label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
     font-size: 10.5px;
+    font-weight: 500;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--ink-300);
+    color: var(--ink-400);
+  }
+
+  /* ── Section & field (sidebar) ───────────────────────────────────── */
+  /*
+   * Retargeted from Bricolage Grotesque to JetBrains Mono uppercase — the
+   * section titles now read as technical markers (same family as the
+   * tech-label above) rather than editorial headings. The hairline
+   * trailing rule is preserved; it gives each section a measuring-tape
+   * feel that matches the command-console voice.
+   */
+  .section-title {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-weight: 500;
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-400);
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 10px;
   }
-  /* Horizontal hairline that fills the rest of the row after the title. */
   .section-title::after {
     content: "";
     flex: 1;
@@ -534,11 +635,12 @@ html, body, #root {
 
   .field-label {
     display: block;
-    font-size: 10.5px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--ink-300);
+    color: var(--ink-400);
     margin-bottom: 4px;
   }
 
@@ -549,13 +651,11 @@ html, body, #root {
     background: linear-gradient(180deg, transparent, var(--hairline-strong), transparent);
   }
 
-  /* ── Ambient sunburst glow ───────────────────────────────────────── */
+  /* ── Ambient scarlet glow ────────────────────────────────────────── */
   /*
-   * Used behind the Lock button when active, and behind selected
-   * elements. A soft radial amber bloom that makes the target feel
-   * "illuminated from within". Elements applying this expect a
-   * `position: relative` and use an ::after pseudo-element via the
-   * `.glows` class.
+   * Used behind primary-locked states and selected rows. A soft radial
+   * bloom that makes the target feel "illuminated from within". Elements
+   * that apply this need `position: relative`.
    */
   .glows { position: relative; }
   .glows::after {
@@ -563,10 +663,20 @@ html, body, #root {
     position: absolute;
     inset: -8px;
     border-radius: inherit;
-    background: radial-gradient(circle at center, var(--glow-sun), transparent 70%);
+    background: radial-gradient(circle at center, var(--glow-red), transparent 70%);
     opacity: 0.6;
     filter: blur(12px);
     z-index: -1;
     pointer-events: none;
   }
 }
+
+/*
+ * Pulse for the "pilot light" dot used on the hint banner and locked
+ * toolbar. Kept so Toolbar / App.tsx animate-pulse-sun still works.
+ */
+@keyframes pulse-sun {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 0.95; transform: scale(1.08); }
+}
+.animate-pulse-sun { animation: pulse-sun 2.8s ease-in-out infinite; }

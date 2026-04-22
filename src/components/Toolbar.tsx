@@ -38,72 +38,27 @@ import { useTranslation } from 'react-i18next';
 import type { ToolMode } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
 import LanguageToggle from './LanguageToggle';
+import { BrandMark } from './BrandMark';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
 }
 
-/**
- * Inline SVG brand mark: a stylized sunburst that reads as both "☀" and a
- * PV cell grid. Kept as a component so the Toolbar JSX stays clean, and
- * so it can be reused (favicon, PDF export header, etc.) without maintaining
- * multiple copies. Size is controllable via the `size` prop; the wordmark
- * uses size=22.
- */
-function SunburstMark({ size = 22 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-      className="shrink-0"
-    >
-      {/* Outer rays — long and short, alternating, evoke a draftsman's
-          compass rose more than a literal sun. Opacity gradient from top
-          (bright) to bottom (dim) mimics low-angle light. */}
-      <g stroke="url(#sun-grad)" strokeWidth="1.3" strokeLinecap="round">
-        <line x1="12" y1="1.6" x2="12" y2="4.4" />
-        <line x1="12" y1="19.6" x2="12" y2="22.4" />
-        <line x1="1.6" y1="12" x2="4.4" y2="12" />
-        <line x1="19.6" y1="12" x2="22.4" y2="12" />
-        <line x1="4.6" y1="4.6" x2="6.6" y2="6.6" />
-        <line x1="17.4" y1="17.4" x2="19.4" y2="19.4" />
-        <line x1="4.6" y1="19.4" x2="6.6" y2="17.4" />
-        <line x1="17.4" y1="6.6" x2="19.4" y2="4.6" />
-      </g>
-      {/* Core disc with a subtle inner highlight, painted as a radial gradient */}
-      <circle cx="12" cy="12" r="5.2" fill="url(#sun-core)" stroke="#e39a20" strokeWidth="0.9" />
-      {/* PV-cell grid crosshair inside the disc — echoes the panel-on-roof metaphor */}
-      <path
-        d="M12 7.5v9M7.5 12h9"
-        stroke="rgba(10,8,4,0.45)"
-        strokeWidth="0.7"
-        strokeLinecap="round"
-      />
-      <defs>
-        <linearGradient id="sun-grad" x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#ffcb5f" />
-          <stop offset="100%" stopColor="#c07a0e" />
-        </linearGradient>
-        <radialGradient id="sun-core" cx="0.35" cy="0.3" r="0.9">
-          <stop offset="0%" stopColor="#fff4d6" />
-          <stop offset="60%" stopColor="#f5b544" />
-          <stop offset="100%" stopColor="#c07a0e" />
-        </radialGradient>
-      </defs>
-    </svg>
-  );
-}
-
 // Mode definitions. `glyph` is an inline SVG (instead of emoji) so the
 // icon weight matches the typography and scales correctly on HiDPI. `key`
 // is the keyboard shortcut handled in App.tsx.
+//
+// `labelKey` is typed as the narrow union of valid toolbar.* translation
+// keys, so a typo here would be a compile-time error instead of a silent
+// "[missing key]" at runtime.
+type ToolbarModeKey =
+  | 'toolbar.modeRoof'
+  | 'toolbar.modePanels'
+  | 'toolbar.modeString'
+  | 'toolbar.modeDelete';
 const MODES: {
   mode: ToolMode;
-  labelKey: 'toolbar.modeRoof' | 'toolbar.modePanels' | 'toolbar.modeString' | 'toolbar.modeDelete';
+  labelKey: ToolbarModeKey;
   key: string;
   glyph: React.ReactNode;
 }[] = [
@@ -156,6 +111,7 @@ const MODES: {
 ];
 
 export default function Toolbar({ mapRef }: Props) {
+  const { t } = useTranslation();
   const toolMode = useProjectStore((s) => s.toolMode);
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const locked = useProjectStore((s) => s.project.mapState.locked);
@@ -178,8 +134,6 @@ export default function Toolbar({ mapRef }: Props) {
   const canRedo = useProjectStore((s) => s.canRedo);
   const undo = useProjectStore((s) => s.undo);
   const redo = useProjectStore((s) => s.redo);
-
-  const { t } = useTranslation();
 
   // Platform-appropriate chord label for the Undo/Redo button titles.
   // `navigator.platform` is read once at module load; the result doesn't
@@ -371,21 +325,26 @@ export default function Toolbar({ mapRef }: Props) {
   };
 
   return (
-    // The header is a single hairline-bordered bar with a soft gradient —
-    // the small vertical gradient reinforces "layer stacking" rather than
-    // a flat painted rectangle.
+    // The header is a single hairline-bordered bar with a subtle neutral
+    // gradient — the vertical gradient reinforces "layer stacking" rather
+    // than a flat painted rectangle. Palette shifted to the new near-black
+    // neutral scale so the bar reads as part of the Command Console chrome
+    // instead of the prior warm-metal look.
     <header
       className="h-14 shrink-0 flex items-center gap-3 px-4 text-ink-100 relative"
       style={{
-        background: 'linear-gradient(180deg, rgba(36,33,26,0.95) 0%, rgba(18,16,9,0.95) 100%)',
-        borderBottom: '1px solid var(--hairline-strong)',
-        boxShadow: '0 1px 0 rgba(0,0,0,0.4), 0 12px 24px -18px rgba(0,0,0,0.6)',
+        background: 'linear-gradient(180deg, rgba(24,24,27,0.95) 0%, rgba(11,11,12,0.95) 100%)',
+        borderBottom: '1px solid var(--hairline)',
+        boxShadow: '0 1px 0 rgba(0,0,0,0.5), 0 12px 24px -18px rgba(0,0,0,0.6)',
       }}
     >
-      {/* Wordmark — custom sunburst + "Solar Planner" in the display face.
-          The "/planner" trailing word rides in mono for a technical feel. */}
+      {/* Wordmark — shared BrandMark glyph + "Solar" in the display face.
+          The "/planner" trailing word rides in mono caps for technical
+          feel. Color on /planner comes from ink-300 (not the scarlet
+          accent) so the brand bar stays visually calm; scarlet is reserved
+          for interactive signals below (primary CTA, active tool). */}
       <div className="flex items-center gap-2.5 mr-1">
-        <SunburstMark size={22} />
+        <BrandMark size={22} />
         <div className="flex items-baseline gap-1 select-none">
           <span
             className="font-display text-[15.5px] font-semibold tracking-tight"
@@ -394,8 +353,8 @@ export default function Toolbar({ mapRef }: Props) {
             Solar
           </span>
           <span
-            className="font-mono text-[12px] tracking-tight"
-            style={{ color: 'var(--sun-300)' }}
+            className="font-mono text-[11px] uppercase tracking-[0.12em]"
+            style={{ color: 'var(--ink-300)' }}
           >
             /planner
           </span>

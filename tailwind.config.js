@@ -1,73 +1,80 @@
 /** @type {import('tailwindcss').Config} */
 // ─────────────────────────────────────────────────────────────────────────────
-// Tailwind config — extends the default theme with the "Precision Solar
-// Instrument" design tokens.
+// Tailwind config — extends the default theme with the "Command Console"
+// design tokens (Raycast-inspired).
 //
-// Why not ship everything in CSS variables only?
-//   We still do — see src/index.css for the canonical palette. The reason we
-//   mirror a subset into Tailwind's `theme.extend` is so components can write
-//   `font-display` / `font-mono` / `bg-ink-900` etc. without dropping into
-//   inline styles. Tailwind is our main styling surface in this project and
-//   the utility classes should feel native to the design system.
+// We mirror a subset of the CSS-variable palette (see src/index.css) here
+// because Tailwind is the main styling surface: components reach for
+// `bg-ink-900`, `text-sun-300`, `font-mono` rather than dropping into inline
+// styles. Variables stay canonical — change a hex there and remember to
+// mirror it here.
 //
-// The color names are deliberate:
-//   - `ink-*`       : the warm-charcoal base (NOT pure neutral — faint amber tint).
-//   - `sun-*`       : solar-amber primary accent. Saturated, not muted.
-//   - `copper-*`    : tungsten-orange secondary accent. Used sparingly for warmth.
-//   - `volt-*`      : electrical-cyan for wiring / string emphasis.
+// Color role recap:
+//   - `ink-*`      near-black neutral surface scale (faint 1° warmth, no
+//                  discernible hue — won't fight the scarlet accent)
+//   - `sun-*`      scarlet primary accent. Name retained from prior system
+//                  so existing `text-sun-300 / bg-sun-400` references
+//                  retarget cleanly. Semantically: *primary* now, not amber.
+//   - `copper-*`   warm tungsten — destructive / warning semantics
+//   - `volt-*`     electrical cyan — wiring / string accents
 // ─────────────────────────────────────────────────────────────────────────────
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       fontFamily: {
-        // These pick up the Google-Font-loaded stacks. Keep system-ui as the
-        // last fallback so the app remains legible if fonts fail to load
-        // (offline dev, locked-down corporate network, etc.).
-        display: ['"Bricolage Grotesque"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        // `display` previously pointed at Bricolage Grotesque. It now resolves
+        // to Geist; callers using `font-display` via utility classes pick up
+        // the new tight-tracked display treatment (see .font-display in CSS).
+        // Keeping the utility name means no component renames.
+        display: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         sans: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       colors: {
-        // Warm-charcoal base. Unlike Tailwind's `neutral-*` (which is perfectly
-        // gray), these carry a 3-5° hue shift toward amber so the UI reads as
-        // "instrument warm" rather than clinical gray. Generated from
-        // hsl(32, 8%, L%) with a lift at the deepest values.
+        // Near-black neutral scale. The prior amber-tinted scale (hsl 32, 8%)
+        // was retired because it fought the scarlet accent. These values
+        // hold a *trace* of warmth (~1°) so the UI doesn't read as clinical
+        // slate-gray, but sit well below the hue threshold where they'd
+        // start competing with the scarlet.
         ink: {
-          50:  '#f6f3ef',
-          100: '#e7e2da',
-          200: '#c8c1b5',
-          300: '#9a9284',
-          400: '#6c6557',
-          500: '#494337',
-          600: '#322e25',
-          700: '#24211a',
-          800: '#1a1812',
-          900: '#121009',
-          950: '#0a0804',
+          50:  '#f7f7f8',
+          100: '#e8e8ec',
+          200: '#c5c5cc',
+          300: '#95959c',
+          400: '#65656b',
+          500: '#3a3a3f',
+          600: '#242428',
+          700: '#18181b',
+          800: '#111113',
+          900: '#0b0b0c',
+          950: '#080808',
         },
-        // Solar-amber primary. Tuned warmer than Tailwind's amber-400 (#fbbf24)
-        // by dragging the hue from 46° to 42° and dropping saturation one step.
-        // Reads as "golden hour" rather than "highlighter".
+        // Scarlet — Raycast-style warm red. Calibrated against screenshots:
+        // a coral-leaning red (not fire-engine, not rose). 400 is the
+        // canonical accent, 300 is hover-bright, 500+ is pressed / gradient
+        // base. The `sun` name is retained to avoid a 50-file rename; read
+        // it as "primary accent" wherever it appears.
         sun: {
-          100: '#fff4d6',
-          200: '#ffe29a',
-          300: '#ffcb5f',
-          400: '#f5b544',   // primary accent
-          500: '#e39a20',
-          600: '#c07a0e',
-          700: '#8f580a',
-          800: '#5f3a07',
+          100: '#ffe1da',
+          200: '#ffb5a8',
+          300: '#ff8a79',
+          400: '#ff6363',   // primary accent
+          500: '#e84a4a',
+          600: '#c13636',
+          700: '#962828',
+          800: '#6b1c1c',
         },
-        // Tungsten copper — used sparingly for hover-warmth and destructive
-        // warnings that still need to feel crafted rather than alarmist-red.
+        // Tungsten — used sparingly for destructive-adjacent signals so
+        // scarlet stays *positive*. Hue-shifted from scarlet so they're
+        // adjacent-but-distinct.
         copper: {
-          300: '#ff9c6b',
-          400: '#ff7043',
-          500: '#e55a2e',
-          600: '#b94620',
+          300: '#ffb493',
+          400: '#ff8a5c',
+          500: '#e36d3d',
+          600: '#b9532a',
         },
-        // Electrical cyan — wiring, strings, "signal" accents.
+        // Electrical cyan — kept for wiring/strings "signal" semantics.
         volt: {
           300: '#7ee9ff',
           400: '#2fd0ef',
@@ -76,26 +83,35 @@ export default {
         },
       },
       boxShadow: {
-        // Hairline inset highlight + drop shadow combo. Gives floating panels
-        // a materials feel without resorting to heavy-handed drop shadows.
+        // Hairline inset highlight + drop shadow. Dialed back vs prior
+        // system: the new visual language leans flatter, so the drop
+        // shadow carries less weight and the inset highlight is subtler.
         instrument:
-          'inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 0 rgba(0,0,0,0.4), 0 8px 24px -12px rgba(0,0,0,0.6)',
-        glow: '0 0 0 1px rgba(245,181,68,0.35), 0 0 24px -4px rgba(245,181,68,0.35)',
+          'inset 0 1px 0 rgba(255,255,255,0.03), 0 1px 0 rgba(0,0,0,0.5), 0 12px 32px -14px rgba(0,0,0,0.7)',
+        // The scarlet glow ring used on primary CTAs.
+        glow: '0 0 0 1px rgba(255,99,99,0.4), 0 0 28px -4px rgba(255,99,99,0.35)',
       },
-      // Subtle animation primitives reused by multiple components.
       keyframes: {
         'pulse-sun': {
           '0%, 100%': { opacity: '0.55', transform: 'scale(1)' },
-          '50%':      { opacity: '0.95', transform: 'scale(1.05)' },
+          '50%':      { opacity: '0.95', transform: 'scale(1.08)' },
         },
         'shimmer': {
           '0%':   { backgroundPosition: '-200% 0' },
           '100%': { backgroundPosition: '200% 0' },
         },
+        // Slow scarlet bloom for hero background elements; used by the
+        // LoginPage atmospheric glow.
+        'drift': {
+          '0%':   { transform: 'translate3d(0,0,0) scale(1)', opacity: '0.7' },
+          '50%':  { transform: 'translate3d(-1%, 0.5%, 0) scale(1.03)', opacity: '0.85' },
+          '100%': { transform: 'translate3d(0,0,0) scale(1)', opacity: '0.7' },
+        },
       },
       animation: {
         'pulse-sun': 'pulse-sun 2.8s ease-in-out infinite',
         'shimmer':   'shimmer 3s linear infinite',
+        'drift':     'drift 14s ease-in-out infinite',
       },
     },
   },

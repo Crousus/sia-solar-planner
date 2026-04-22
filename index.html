@@ -8,25 +8,26 @@
     <title>Solar Planner · precision PV layout</title>
 
     <!--
-      Fonts for the "Precision Solar Instrument" aesthetic:
-        - Bricolage Grotesque: variable display face with optical sizing + grade axis.
-          Used for headings, the wordmark, and any moment that should feel crafted.
-          Picked over Space Grotesk/Inter specifically because it has a strong,
-          non-generic character (see https://fonts.google.com/specimen/Bricolage+Grotesque).
-        - JetBrains Mono: technical/numeric readouts (kWp, counts, tilt, keyboard hints).
-          Mono for numbers gives them weight; JBM has distinctive italics and tabular
-          figures which matter when stats tick during edits.
-        - Geist: clean modern body. Used for controls and prose. Quietly distinctive
-          without screaming "AI-slop Inter clone".
-      Preconnect first so the stylesheet request can start a TLS handshake in parallel
-      with the HTML parse. display=swap avoids invisible-text flash of the initial
-      locked screen (first contentful paint is the hint banner).
+      Fonts for the "Command Console" aesthetic (Raycast-inspired):
+        - Geist: the workhorse AND the display face. Body, labels, buttons,
+          nav at 400–600, and hero headlines at 700–800 with negative
+          tracking (see `.font-hero` in index.css). One unified family
+          keeps the chrome coherent.
+        - JetBrains Mono: technical/numeric readouts (kWp, counts, FIG_##
+          labels, keyboard hints). Kept because the app's data IS the
+          content and tabular mono figures do the heavy lifting.
+      An earlier iteration pulled in Instrument Serif italic for hero
+      headlines; dropped because the serif-italic read as ornamental
+      against the otherwise technical UI voice. Removing the extra
+      stylesheet also shaves a font request on first paint.
+      Preconnect so the TLS handshake overlaps HTML parse. display=swap
+      keeps first paint usable on cold connections.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
     />
   </head>
   <body>

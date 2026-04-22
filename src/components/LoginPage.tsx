@@ -1,50 +1,53 @@
 // ────────────────────────────────────────────────────────────────────────
-// LoginPage — sign in and sign up share one UI toggle.
+// LoginPage — sign in / sign up sharing one toggled form.
 //
-// Sign up also requires `name` per our users-collection rule; we prompt
-// for it only in the sign-up branch.
+// Sign up requires `name` per the users-collection rule; we prompt for it
+// only in the sign-up branch.
 //
-// Why no separate /signup route? The sign-up flow is short enough
-// that a mode toggle on the same page is simpler than a second route.
-// After signup we immediately sign in (PB's create endpoint returns
-// a record but not a token — we call authWithPassword afterwards).
+// After sign-up we immediately authWithPassword because PocketBase's create
+// endpoint returns a record but not a session token.
+//
+// Design notes:
+//   - Full redesign to the "Command Console" aesthetic: atmospheric
+//     near-black background with scarlet corner bloom, a centered
+//     hairline-bordered card, Instrument Serif italic hero headline, and
+//     FIG_## monospace trail labels. All visual primitives come from
+//     src/index.css (.surface, .input, .btn-primary, .page-atmosphere,
+//     .tech-label) so the page stays mostly markup.
+//   - Error messages surface in a hairline scarlet chip rather than raw
+//     red text — consistent with the chip/badge language used elsewhere.
+//   - The mode toggle is now a subtle link-in-caption on a single line,
+//     which matches the Raycast pattern of downplaying secondary actions
+//     so the primary CTA has uncontested weight.
 //
 // Error handling is intentionally generic: PocketBase returns rich
-// per-field validation errors (err.response.data) but surfacing them
-// inline would require a bespoke field-error map. For M2/1 we just
-// show the top-level message; richer UX can wait until we see real
-// failure modes from users.
+// per-field validation errors (err.response.data) but inline field errors
+// are a bigger UX investment. For M2/1 we show the top-level message.
 // ────────────────────────────────────────────────────────────────────────
 
 import { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import { maybeImportLocalStorage } from '../backend/migrateLocalStorage';
 
 type Mode = 'signin' | 'signup';
 
-// Shape of router-supplied state on a redirect from AuthGuard. Typed as
-// optional everywhere because direct navigations to /login (typed in the
-// address bar, no redirect) carry no state.
+// Shape of router-supplied state on a redirect from AuthGuard. Optional
+// everywhere because direct navigations to /login (typed in the address
+// bar, no redirect) carry no state.
 interface LocationState {
   from?: { pathname?: string };
 }
 
 export default function LoginPage() {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  // i18n: all user-visible strings in this form route through the
-  // `login` namespace in src/locales. Error text stays untranslated
-  // because it is passed through verbatim from PocketBase (see the
-  // `catch` block in submit()); wiring translations for PB's error
-  // messages is a separate task that needs a mapping layer.
-  const { t } = useTranslation();
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -72,22 +75,11 @@ export default function LoginPage() {
       // For both branches we end with a fresh password auth so the
       // authStore is populated identically — sign-up doesn't auto-auth.
       await pb.collection('users').authWithPassword(email, password);
-      // Task 15: one-shot auto-import of a pre-backend localStorage
-      // draft. Fires on BOTH sign-in and sign-up paths because a user
-      // might have tried the app offline (writing to localStorage)
-      // before creating an account, and then signed up — we still want
-      // to bring their draft forward. See migrateLocalStorage.ts for
-      // the full gating logic (non-empty local doc + no server
-      // projects). If an import happens, redirect into the new project
-      // instead of whatever `from` pointed at; otherwise preserve the
-      // existing behavior of honoring AuthGuard's intended target.
-      //
-      // The `.catch(() => null)` is deliberate: a failed import
-      // (network hiccup during the project create, a permission
-      // regression) must NOT block login. The user still gets to
-      // their intended destination; they can retry by refreshing,
-      // and the localStorage blob is preserved (see the module's
-      // post-success removeItem) so a later attempt can succeed.
+      // Task 15: one-shot auto-import of a pre-backend localStorage draft.
+      // Fires on BOTH sign-in and sign-up paths; see migrateLocalStorage
+      // for full gating logic. `.catch(() => null)` is deliberate: a failed
+      // import must NOT block login — the user still reaches `from` and
+      // the localStorage blob is preserved so a later attempt can succeed.
       const importedProjectId = await maybeImportLocalStorage().catch(
         () => null,
       );
@@ -102,92 +94,220 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-900 text-zinc-100">
-      <form onSubmit={submit} className="w-full max-w-sm space-y-3 p-6 bg-zinc-800 rounded-lg">
-        <h1 className="text-xl font-semibold">
-          {mode === 'signin' ? t('login.signIn') : t('login.signUp')}
-        </h1>
+    <div className="min-h-screen w-full flex items-center justify-center page-atmosphere text-ink-100 relative overflow-hidden">
+      {/*
+        Decorative corner markers — pure ornament, `aria-hidden`.
+        They echo the FIG_## labels on raycast.com and frame the hero as a
+        "blueprint" rather than a web form. Positioned at the viewport edges
+        so the content card doesn't carry their weight.
+      */}
+      <span
+        aria-hidden
+        className="tech-label absolute top-6 left-6 select-none"
+      >
+        FIG_00 · ACCESS TERMINAL
+      </span>
+      <span
+        aria-hidden
+        className="tech-label absolute top-6 right-6 select-none"
+      >
+        SOLAR / PLANNER · v0.1
+      </span>
+      <span
+        aria-hidden
+        className="tech-label absolute bottom-6 left-6 select-none opacity-70"
+      >
+        AUTH · {mode === 'signin' ? '01 SIGN-IN' : '02 REGISTER'}
+      </span>
+      <span
+        aria-hidden
+        className="tech-label absolute bottom-6 right-6 select-none opacity-70"
+      >
+        ↵ RETURN TO SUBMIT
+      </span>
 
-        {mode === 'signup' && (
+      {/*
+        The card is intentionally narrow (360px target) so the hero headline
+        reads as the dominant element. `.surface` carries the glass + hairline
+        look; additional rounding (14px) nudges it toward the Raycast card
+        radius. z-index lifts it above the atmospheric layer.
+      */}
+      <div className="relative z-10 w-full max-w-[380px] px-6">
+        {/* Hero wordmark — two lines, asymmetrical.
+             Line 1: italic Instrument Serif for "Solar" (the signature move).
+             Line 2: all-caps tight-tracked sans for "/planner" with a thin
+                     hairline on the left as a compositional anchor. */}
+        <div className="mb-8 select-none">
+          <div className="flex items-baseline gap-2">
+            <span
+              className="font-editorial text-[56px] leading-none tracking-tight"
+              style={{ color: 'var(--ink-50)' }}
+            >
+              Solar
+            </span>
+            {/* Scarlet dot — punctuation glyph. Tiny but tonally important:
+                it's the one overt color signal on the hero. */}
+            <span
+              className="inline-block rounded-full"
+              style={{
+                width: 10,
+                height: 10,
+                background: 'var(--sun-400)',
+                boxShadow: '0 0 14px 2px var(--glow-red)',
+              }}
+            />
+          </div>
+          <div className="mt-2 flex items-center gap-3">
+            <span
+              className="h-px w-8"
+              style={{ background: 'var(--hairline-strong)' }}
+            />
+            <span className="font-mono text-[11px] tracking-[0.2em] uppercase text-ink-300">
+              Planner · precision PV layout
+            </span>
+          </div>
+        </div>
+
+        <form onSubmit={submit} className="surface rounded-[14px] p-6 space-y-4">
+          {/* Mode header — the card's own small caption. The `mode` label
+              lives in mono caps so it reads as a state indicator, not a
+              heading. The heading itself is the Instrument Serif hero above. */}
+          <div className="flex items-center justify-between">
+            <span className="tech-label">
+              {mode === 'signin' ? t('login.signIn') : t('login.signUp')}
+            </span>
+            {/* Live status dot — mirrors the "system armed" vocabulary used
+                in the Toolbar's locked state. Pulses on idle so the card
+                feels alive; goes scarlet-steady while busy. */}
+            <span className="relative flex items-center justify-center" style={{ width: 10, height: 10 }}>
+              <span
+                className={`absolute inset-0 rounded-full ${busy ? '' : 'animate-pulse-sun'}`}
+                style={{ background: 'var(--sun-400)', filter: 'blur(5px)', opacity: busy ? 0.9 : 0.6 }}
+              />
+              <span
+                className="relative rounded-full"
+                style={{ width: 6, height: 6, background: 'var(--sun-300)' }}
+              />
+            </span>
+          </div>
+
+          {mode === 'signup' && (
+            <label className="block">
+              <span className="field-label">{t('login.nameLabel')}</span>
+              <input
+                className="input"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                autoComplete="name"
+                placeholder={t('login.namePlaceholder')}
+              />
+            </label>
+          )}
+
           <label className="block">
-            <span className="text-sm">{t('login.nameLabel')}</span>
+            <span className="field-label">{t('login.emailLabel')}</span>
             <input
-              className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              className="input"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
-              autoComplete="name"
+              autoComplete="email"
+              placeholder={t('login.emailPlaceholder')}
             />
           </label>
-        )}
 
-        <label className="block">
-          <span className="text-sm">{t('login.emailLabel')}</span>
-          <input
-            className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoComplete="email"
-          />
-        </label>
+          <label className="block">
+            <span className="field-label">{t('login.passwordLabel')}</span>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              // Hint password managers: current-password for sign-in,
+              // new-password for sign-up. Must be dynamic because the
+              // toggle swaps the semantic.
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+              minLength={8}
+              placeholder={
+                mode === 'signup'
+                  ? t('login.passwordPlaceholderNew')
+                  : t('login.passwordPlaceholderExisting')
+              }
+            />
+          </label>
 
-        <label className="block">
-          <span className="text-sm">{t('login.passwordLabel')}</span>
-          <input
-            className="w-full mt-1 px-3 py-2 bg-zinc-700 rounded"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            // Hint password managers to offer the right credential:
-            // current-password for sign-in, new-password for sign-up.
-            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-            minLength={8}
-          />
-        </label>
+          {/* Error — hairline scarlet-tinted chip to match the `.chip-amber`
+              (now scarlet-tinted) primitive used in chips elsewhere. Keeps
+              the whole UI speaking one color language. */}
+          {error && (
+            <div
+              role="alert"
+              className="rounded-lg px-3 py-2 text-[12.5px] leading-snug"
+              style={{
+                background: 'rgba(255, 99, 99, 0.08)',
+                border: '1px solid rgba(255, 99, 99, 0.35)',
+                color: 'var(--sun-200)',
+              }}
+            >
+              {error}
+            </div>
+          )}
 
-        {error && <p className="text-sm text-red-400">{error}</p>}
+          {/* Primary CTA — wide, scarlet. The kbd hint on the right reinforces
+              the "type and hit Enter" interaction the tech-label in the
+              bottom-right already references. */}
+          <button
+            type="submit"
+            className="btn btn-primary w-full justify-center"
+            style={{ padding: '10px 14px', fontSize: 13 }}
+            disabled={busy}
+          >
+            {busy ? (
+              <>
+                <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.25" />
+                  <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                <span>
+                  {mode === 'signin' ? t('login.signingIn') : t('login.creatingAccount')}
+                </span>
+              </>
+            ) : (
+              <>
+                <span>
+                  {mode === 'signin' ? t('login.signIn') : t('login.signUp')}
+                </span>
+                <span className="kbd ml-1" style={{ minWidth: 18, height: 16, fontSize: 9.5, color: 'var(--ink-50)', borderColor: 'rgba(255,255,255,0.3)', background: 'rgba(0,0,0,0.25)' }}>
+                  ↵
+                </span>
+              </>
+            )}
+          </button>
 
-        <button
-          type="submit"
-          className="w-full py-2 bg-blue-600 rounded hover:bg-blue-500 disabled:opacity-50"
-          disabled={busy}
-        >
-          {/*
-            Busy label is mode-specific so password managers / screen
-            readers announce the action in progress, not a bare ellipsis.
-          */}
-          {busy
-            ? mode === 'signin'
-              ? t('login.signingIn')
-              : t('login.creatingAccount')
-            : mode === 'signin'
-              ? t('login.signIn')
-              : t('login.signUp')}
-        </button>
-
-        <button
-          type="button"
-          className="w-full text-sm text-zinc-400 underline"
-          onClick={() => {
-            setMode(mode === 'signin' ? 'signup' : 'signin');
-            setError(null);
-          }}
-        >
-          {/*
-            Two translation keys joined by a space rather than one
-            interpolated string: keeps the prompt and the call-to-action
-            independently reorderable per locale (e.g. a translator may
-            want only the CTA or may move punctuation around).
-          */}
-          {mode === 'signin'
-            ? `${t('login.noAccount')} ${t('login.createOne')}`
-            : `${t('login.alreadyRegistered')} ${t('login.signInLink')}`}
-        </button>
-      </form>
+          {/* Mode toggle — understated, centered, link-ish. Kept text-only
+              on purpose: the primary CTA shouldn't have visual competition. */}
+          <div className="pt-1 text-center text-[12.5px]">
+            <span className="text-ink-400">
+              {mode === 'signin' ? t('login.noAccount') : t('login.alreadyRegistered')}
+            </span>{' '}
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === 'signin' ? 'signup' : 'signin');
+                setError(null);
+              }}
+              className="font-medium transition-colors"
+              style={{ color: 'var(--sun-300)' }}
+            >
+              {mode === 'signin' ? t('login.createOne') : t('login.signInLink')}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

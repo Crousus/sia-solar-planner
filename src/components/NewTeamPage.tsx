@@ -9,27 +9,33 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { Link, useNavigate } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
+import { PageShell } from './PageShell';
 
 export default function NewTeamPage() {
   const { t } = useTranslation();
   const user = useAuthUser();
   const navigate = useNavigate();
   const [name, setName] = useState('');
-  // `busy` doubles as a submit-button disabled flag and a "show ellipsis"
-  // signal. We keep it separate from `error` so a retry after a failed
-  // submit can clear the error while the busy spinner kicks in.
+  // `busy` doubles as a submit-button disabled flag and a "show spinner"
+  // signal. Separate from `error` so a retry after a failed submit can
+  // clear the error while the busy spinner kicks in.
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function signOut() {
+    pb.authStore.clear();
+    navigate('/login', { replace: true });
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    // Defensive: AuthGuard already blocks unauthenticated callers, but the
-    // type of useAuthUser allows null so we narrow here too. Without this
+    // Defensive: AuthGuard already blocks unauthenticated callers, but
+    // useAuthUser's type allows null so we narrow here too. Without this
     // guard `user.id` below would be a type error.
     if (!user) return;
     setBusy(true);
@@ -51,29 +57,88 @@ export default function NewTeamPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-900 text-zinc-100">
-      <div className="max-w-sm mx-auto p-6 space-y-3">
-        <h1 className="text-xl font-semibold">{t('team.newTeam')}</h1>
-        <form onSubmit={submit} className="space-y-3">
+    <PageShell
+      label="FIG_03 · NEW TEAM"
+      userEmail={user?.email}
+      onSignOut={signOut}
+      width="narrow"
+    >
+      <div className="mb-6 flex items-center gap-2">
+        <Link
+          to="/"
+          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+        >
+          {t('team.allTeams')}
+        </Link>
+      </div>
+
+      <div className="mb-8">
+        <span className="tech-label">CREATE</span>
+        <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
+          {t('team.newTeam')}
+        </h1>
+        <p className="mt-3 text-ink-300 text-[14px] max-w-sm">
+          {t('team.newTeamDesc')}
+        </p>
+      </div>
+
+      <form onSubmit={submit} className="surface rounded-[14px] p-6 space-y-4">
+        <label className="block">
+          <span className="field-label">{t('team.teamName')}</span>
           <input
-            className="w-full px-3 py-2 bg-zinc-800 rounded"
+            className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t('team.teamNamePlaceholder')}
             required
             minLength={1}
             maxLength={100}
+            autoFocus
           />
-          {error && <p className="text-red-400 text-sm">{error}</p>}
+        </label>
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-lg px-3 py-2 text-[12.5px]"
+            style={{
+              background: 'rgba(255, 99, 99, 0.08)',
+              border: '1px solid rgba(255, 99, 99, 0.35)',
+              color: 'var(--sun-200)',
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-2 pt-1">
           <button
             type="submit"
             disabled={busy}
-            className="w-full py-2 bg-blue-600 rounded disabled:opacity-50"
+            className="btn btn-primary flex-1 justify-center"
+            style={{ padding: '10px 14px', fontSize: 13 }}
           >
-            {busy ? t('team.creating') : t('team.createTeam')}
+            {busy ? (
+              <>
+                <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.25" />
+                  <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                <span>{t('team.creating')}</span>
+              </>
+            ) : (
+              <span>{t('team.createTeam')}</span>
+            )}
           </button>
-        </form>
-      </div>
-    </div>
+          <Link
+            to="/"
+            className="btn btn-ghost"
+            style={{ padding: '10px 14px', fontSize: 13 }}
+          >
+            {t('team.cancel')}
+          </Link>
+        </div>
+      </form>
+    </PageShell>
   );
 }
