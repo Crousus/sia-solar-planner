@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
 import type { Project } from '../types';
@@ -22,6 +23,7 @@ import { initialProject } from '../store/projectStore';
 import { useAuthUser } from './AppShell';
 
 export default function TeamView() {
+  const { t } = useTranslation();
   const { teamId } = useParams<{ teamId: string }>();
   const user = useAuthUser();
   const navigate = useNavigate();
@@ -47,9 +49,9 @@ export default function TeamView() {
         `team="${teamId}" && user="${user.id}"`
       ),
     ])
-      .then(([t, projs, me]) => {
+      .then(([teamRec, projs, me]) => {
         if (cancelled) return;
-        setTeam(t);
+        setTeam(teamRec);
         setProjects(projs);
         setMyRole(me.role);
       })
@@ -91,7 +93,7 @@ export default function TeamView() {
     // confirm() is the simplest acceptable UX for a destructive action
     // in a small internal tool. A modal would be over-engineering at
     // this stage; if usage grows we can swap for a styled dialog.
-    if (!confirm('Delete this project? This cannot be undone.')) return;
+    if (!confirm(t('team.deleteProjectConfirm'))) return;
     try {
       await pb.collection('projects').delete(projectId);
       // Optimistic local update — avoids re-fetching the entire list to
@@ -111,28 +113,28 @@ export default function TeamView() {
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold">{team.name}</h1>
         <nav className="text-sm space-x-3">
-          <Link to="/" className="underline">All teams</Link>
+          <Link to="/" className="underline">{t('team.allTeams')}</Link>
           {myRole === 'admin' && (
-            <Link to={`/teams/${team.id}/members`} className="underline">Members</Link>
+            <Link to={`/teams/${team.id}/members`} className="underline">{t('team.membersTitle')}</Link>
           )}
         </nav>
       </header>
 
       {projects.length === 0 ? (
-        <p className="text-zinc-400">No projects yet.</p>
+        <p className="text-zinc-400">{t('team.emptyProjectsTitle')}</p>
       ) : (
         <ul className="space-y-2">
           {projects.map((p) => (
             <li key={p.id} className="flex items-center gap-2 bg-zinc-800 rounded p-3">
               <Link to={`/p/${p.id}`} className="flex-1 hover:underline">
-                {p.name}
+                {p.name || t('team.untitledProject')}
               </Link>
               {myRole === 'admin' && (
                 <button
                   onClick={() => deleteProject(p.id)}
                   className="text-sm text-red-400 underline"
                 >
-                  Delete
+                  {t('team.deleteProject')}
                 </button>
               )}
             </li>
@@ -146,7 +148,7 @@ export default function TeamView() {
           disabled={creating}
           className="px-4 py-2 bg-blue-600 rounded disabled:opacity-50"
         >
-          {creating ? '…' : '+ New project'}
+          {creating ? t('team.creating') : `+ ${t('team.newProject')}`}
         </button>
       </div>
     </Shell>

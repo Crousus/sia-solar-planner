@@ -14,11 +14,13 @@
 
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 
 export default function TeamPicker() {
+  const { t } = useTranslation();
   const user = useAuthUser();
   const navigate = useNavigate();
   // null = still loading; [] = loaded but empty (drives the empty-state UI).
@@ -57,7 +59,7 @@ export default function TeamPicker() {
   return (
     <Shell>
       <header className="flex items-baseline justify-between mb-4">
-        <h1 className="text-xl font-semibold">Your teams</h1>
+        <h1 className="text-xl font-semibold">{t('team.yourTeams')}</h1>
         <div className="text-sm text-zinc-400">
           {user?.email}
           <button className="ml-3 underline" onClick={signOut}>Sign out</button>
@@ -66,18 +68,18 @@ export default function TeamPicker() {
 
       {teams.length === 0 ? (
         <p className="text-zinc-400">
-          You're not in any team yet.{' '}
-          <Link className="underline text-blue-400" to="/teams/new">Create one →</Link>
+          {t('team.noTeamsBody')}{' '}
+          <Link className="underline text-blue-400" to="/teams/new">{t('team.createFirstTeam')}</Link>
         </p>
       ) : (
         <ul className="space-y-2">
-          {teams.map((t) => (
-            <li key={t.id}>
+          {teams.map((team) => (
+            <li key={team.id}>
               <Link
-                to={`/teams/${t.id}`}
+                to={`/teams/${team.id}`}
                 className="block p-4 bg-zinc-800 rounded hover:bg-zinc-700"
               >
-                {t.name}
+                {team.name}
               </Link>
             </li>
           ))}
@@ -86,7 +88,7 @@ export default function TeamPicker() {
 
       <div className="mt-6">
         <Link to="/teams/new" className="px-4 py-2 bg-blue-600 rounded">
-          + New team
+          + {t('team.newTeam')}
         </Link>
       </div>
     </Shell>

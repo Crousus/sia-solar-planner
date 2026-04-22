@@ -16,6 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { TeamMemberRecord, UserRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
@@ -26,6 +27,7 @@ interface MemberWithUser {
 }
 
 export default function TeamMembers() {
+  const { t } = useTranslation();
   const { teamId } = useParams<{ teamId: string }>();
   const me = useAuthUser();
 
@@ -77,14 +79,14 @@ export default function TeamMembers() {
           .collection('users')
           .getFirstListItem<UserRecord>(`email="${inviteEmail.trim()}"`);
       } catch {
-        setError('No user with that email. Ask them to sign up first.');
+        setError(t('team.noUserWithEmail'));
         return;
       }
       // Step 2: client-side dedupe so we don't send a doomed-to-fail
       // create. The server's unique constraint on (team, user) would
       // also reject it, but a UI message is friendlier.
       if (rows?.some((r) => r.user.id === targetUser.id)) {
-        setError('That user is already in the team.');
+        setError(t('team.alreadyInTeam'));
         return;
       }
       await pb.collection('team_members').create<TeamMemberRecord>({
@@ -102,7 +104,7 @@ export default function TeamMembers() {
   }
 
   async function removeMember(memberId: string) {
-    if (!confirm('Remove this member from the team?')) return;
+    if (!confirm(t('team.removeMemberConfirm'))) return;
     await pb.collection('team_members').delete(memberId);
     await reload();
   }
@@ -113,8 +115,8 @@ export default function TeamMembers() {
   return (
     <Shell>
       <header className="flex items-baseline justify-between mb-4">
-        <h1 className="text-xl font-semibold">Members</h1>
-        <Link className="text-sm underline" to={`/teams/${teamId}`}>← Back to team</Link>
+        <h1 className="text-xl font-semibold">{t('team.membersTitle')}</h1>
+        <Link className="text-sm underline" to={`/teams/${teamId}`}>{t('team.backToTeam')}</Link>
       </header>
 
       <ul className="space-y-2 mb-6">
@@ -136,7 +138,7 @@ export default function TeamMembers() {
                 onClick={() => removeMember(member.id)}
                 className="text-sm text-red-400 underline"
               >
-                Remove
+                {t('team.removeMember')}
               </button>
             )}
           </li>
@@ -148,7 +150,7 @@ export default function TeamMembers() {
           type="email"
           value={inviteEmail}
           onChange={(e) => setInviteEmail(e.target.value)}
-          placeholder="Invite by email"
+          placeholder={t('team.inviteByEmail')}
           className="flex-1 px-3 py-2 bg-zinc-800 rounded"
           required
         />
@@ -157,7 +159,7 @@ export default function TeamMembers() {
           disabled={busy}
           className="px-4 py-2 bg-blue-600 rounded disabled:opacity-50"
         >
-          {busy ? '…' : 'Invite'}
+          {busy ? t('team.inviting') : t('team.invite')}
         </button>
       </form>
       {error && <p className="mt-2 text-red-400 text-sm">{error}</p>}

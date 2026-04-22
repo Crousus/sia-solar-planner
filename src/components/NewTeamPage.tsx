@@ -10,11 +10,13 @@
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 
 export default function NewTeamPage() {
+  const { t } = useTranslation();
   const user = useAuthUser();
   const navigate = useNavigate();
   const [name, setName] = useState('');
@@ -51,13 +53,13 @@ export default function NewTeamPage() {
   return (
     <div className="min-h-screen bg-zinc-900 text-zinc-100">
       <div className="max-w-sm mx-auto p-6 space-y-3">
-        <h1 className="text-xl font-semibold">New team</h1>
+        <h1 className="text-xl font-semibold">{t('team.newTeam')}</h1>
         <form onSubmit={submit} className="space-y-3">
           <input
             className="w-full px-3 py-2 bg-zinc-800 rounded"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Team name"
+            placeholder={t('team.teamNamePlaceholder')}
             required
             minLength={1}
             maxLength={100}
@@ -68,7 +70,7 @@ export default function NewTeamPage() {
             disabled={busy}
             className="w-full py-2 bg-blue-600 rounded disabled:opacity-50"
           >
-            {busy ? '…' : 'Create'}
+            {busy ? t('team.creating') : t('team.createTeam')}
           </button>
         </form>
       </div>
