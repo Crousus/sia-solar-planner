@@ -22,11 +22,13 @@
 // Behavior is unchanged — every control still maps 1:1 to a store action.
 // ────────────────────────────────────────────────────────────────────────────
 
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../store/projectStore';
 import { polygonArea, panelFitsOnRoof } from '../utils/geometry';
 import type { PanelType } from '../types';
 
 export default function Sidebar() {
+  const { t } = useTranslation();
   const project = useProjectStore((s) => s.project);
   const setProjectName = useProjectStore((s) => s.setProjectName);
   const updatePanelType = useProjectStore((s) => s.updatePanelType);
@@ -130,11 +132,7 @@ export default function Sidebar() {
       updatePanelType(changes);
       return;
     }
-    const ok = confirm(
-      `${invalidIds.length} placed panel${invalidIds.length === 1 ? '' : 's'} ` +
-        `${invalidIds.length === 1 ? 'no longer fits' : 'no longer fit'} under the new ` +
-        `dimensions (${w.toFixed(3)} × ${h.toFixed(3)} m). Delete ${invalidIds.length === 1 ? 'it' : 'them'} and proceed?`
-    );
+    const ok = confirm(t('sidebar.panelResizeConfirm', { count: invalidIds.length, w: w.toFixed(3), h: h.toFixed(3) }));
     if (!ok) return;
     // Order matters: delete invalid panels *before* resizing so the
     // deletions renumber strings under the old dimensions, then the
@@ -166,7 +164,7 @@ export default function Sidebar() {
         }}
       >
         <label className="block">
-          <span className="field-label">Project</span>
+          <span className="field-label">{t('sidebar.project')}</span>
           <input
             className="input font-display"
             style={{
@@ -198,11 +196,11 @@ export default function Sidebar() {
         </div>
         <div className="flex items-center gap-2 mt-3 text-[10.5px] font-mono text-ink-400">
           <span>
-            <span className="text-ink-200">{totalStrings}</span> string{totalStrings === 1 ? '' : 's'}
+            <span className="text-ink-200">{totalStrings}</span> {t('sidebar.stringUnit', { count: totalStrings })}
           </span>
           <span className="opacity-50">·</span>
           <span>
-            <span className="text-ink-200">{totalInverters}</span> inverter{totalInverters === 1 ? '' : 's'}
+            <span className="text-ink-200">{totalInverters}</span> {t('sidebar.inverterUnit', { count: totalInverters })}
           </span>
           <span className="opacity-50">·</span>
           <span>
@@ -220,10 +218,10 @@ export default function Sidebar() {
             most residential jobs where all panels are identical. */}
         <section>
           <h3 className="section-title">
-            <span>Panel Type</span>
+            <span>{t('sidebar.panelType')}</span>
           </h3>
           <div className="space-y-2.5">
-            <Field label="Model">
+            <Field label={t('sidebar.model')}>
               <input
                 className="input"
                 value={project.panelType.name}
@@ -233,7 +231,7 @@ export default function Sidebar() {
             {/* Dimensions on a single row — they're paired conceptually and
                 saving a row of vertical space matters in a compact sidebar. */}
             <div className="grid grid-cols-2 gap-2">
-              <Field label="Width (m)">
+              <Field label={t('sidebar.widthM')}>
                 <input
                   type="number"
                   step="0.001"
@@ -246,7 +244,7 @@ export default function Sidebar() {
                   onBlur={(e) => tryUpdatePanelType({ widthM: parseFloat(e.target.value) || 0 })}
                 />
               </Field>
-              <Field label="Height (m)">
+              <Field label={t('sidebar.heightM')}>
                 <input
                   type="number"
                   step="0.001"
@@ -257,7 +255,7 @@ export default function Sidebar() {
                 />
               </Field>
             </div>
-            <Field label="Rated power (Wp)">
+            <Field label={t('sidebar.ratedPower')}>
               <input
                 type="number"
                 className="input input-mono"
@@ -271,17 +269,17 @@ export default function Sidebar() {
         {/* ── Inverters ───────────────────────────────────────────── */}
         <section>
           <h3 className="section-title">
-            <span>Inverters</span>
+            <span>{t('sidebar.inverters')}</span>
           </h3>
           <button className="btn btn-ghost w-full justify-center" onClick={addInverter}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            <span>Add inverter</span>
+            <span>{t('sidebar.addInverter')}</span>
           </button>
           <div className="space-y-1 mt-2">
             {inverters.length === 0 && (
-              <p className="text-[11px] text-ink-400 italic px-1 pt-0.5">No inverters yet.</p>
+              <p className="text-[11px] text-ink-400 italic px-1 pt-0.5">{t('sidebar.noInverters')}</p>
             )}
             {inverters.map((inv) => {
               const isSelected = inv.id === selectedInverterId;
@@ -326,7 +324,7 @@ export default function Sidebar() {
                     className="btn btn-danger px-1.5"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`Delete ${inv.name}?`)) deleteInverter(inv.id);
+                      if (confirm(t('sidebar.deleteInverterConfirm', { name: inv.name }))) deleteInverter(inv.id);
                     }}
                     title="Delete inverter"
                   >
@@ -341,17 +339,17 @@ export default function Sidebar() {
         {/* ── Strings ─────────────────────────────────────────────── */}
         <section>
           <h3 className="section-title">
-            <span>Strings</span>
+            <span>{t('sidebar.strings')}</span>
           </h3>
           <button className="btn btn-ghost w-full justify-center" onClick={addString}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            <span>New string</span>
+            <span>{t('sidebar.newString')}</span>
           </button>
           <div className="space-y-2 mt-2">
             {strings.length === 0 && (
-              <p className="text-[11px] text-ink-400 italic px-1 pt-0.5">No strings yet.</p>
+              <p className="text-[11px] text-ink-400 italic px-1 pt-0.5">{t('sidebar.noStrings')}</p>
             )}
             {strings.map((str) => {
               // Live panel count per string — derived, not stored.
@@ -419,7 +417,7 @@ export default function Sidebar() {
                     <button
                       className="btn btn-danger px-1.5"
                       onClick={() => {
-                        if (confirm(`Delete ${str.label}? Panels will become unassigned.`)) {
+                        if (confirm(t('sidebar.deleteStringConfirm', { label: str.label }))) {
                           deleteString(str.id);
                         }
                       }}
@@ -435,7 +433,7 @@ export default function Sidebar() {
                     value={str.inverterId || ''}
                     onChange={(e) => setStringInverter(str.id, e.target.value || null)}
                   >
-                    <option value="">— No inverter —</option>
+                    <option value="">{t('sidebar.noInverterOption')}</option>
                     {inverters.map((inv) => (
                       <option key={inv.id} value={inv.id}>
                         {inv.name}
@@ -452,12 +450,12 @@ export default function Sidebar() {
         {selectedRoof && (
           <section>
             <h3 className="section-title">
-              <span>Roof</span>
+              <span>{t('sidebar.roof')}</span>
               <span
                 className="chip chip-amber font-mono"
                 style={{ fontSize: 10, textTransform: 'none', letterSpacing: 0 }}
               >
-                selected
+                {t('sidebar.selected')}
               </span>
             </h3>
             <div
@@ -472,7 +470,7 @@ export default function Sidebar() {
                 boxShadow: '0 8px 24px -14px rgba(0,0,0,0.8)',
               }}
             >
-              <Field label="Name">
+              <Field label={t('sidebar.name')}>
                 <input
                   className="input"
                   value={selectedRoof.name}
@@ -481,7 +479,7 @@ export default function Sidebar() {
               </Field>
               <div>
                 <div className="flex items-baseline justify-between mb-1">
-                  <span className="field-label" style={{ marginBottom: 0 }}>Tilt</span>
+                  <span className="field-label" style={{ marginBottom: 0 }}>{t('sidebar.tilt')}</span>
                   <span className="font-mono text-[13px]" style={{ color: 'var(--sun-300)' }}>
                     {selectedRoof.tiltDeg}°
                   </span>
@@ -512,8 +510,8 @@ export default function Sidebar() {
               <Field
                 label={
                   orientationTargetsGroup
-                    ? 'Orientation (active group)'
-                    : 'Orientation (roof default)'
+                    ? t('sidebar.orientationGroup')
+                    : t('sidebar.orientationRoof')
                 }
               >
                 {/* Portrait / landscape segmented toggle. Scope depends on
@@ -558,13 +556,13 @@ export default function Sidebar() {
                 className="btn btn-danger w-full justify-center"
                 style={{ marginTop: 4 }}
                 onClick={() => {
-                  if (confirm(`Delete ${selectedRoof.name}?`)) deleteRoof(selectedRoof.id);
+                  if (confirm(t('sidebar.deleteRoofConfirm', { name: selectedRoof.name }))) deleteRoof(selectedRoof.id);
                 }}
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <path d="M3 5H13M6 5V3H10V5M5 5L6 13H10L11 5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
                 </svg>
-                <span>Delete roof</span>
+                <span>{t('sidebar.deleteRoof')}</span>
               </button>
             </div>
           </section>
@@ -649,6 +647,7 @@ function RoofAreaInfo({
   roof: ReturnType<typeof useProjectStore.getState>['project']['roofs'][number];
   mpp: number;
 }) {
+  const { t } = useTranslation();
   const projectedAreaPx = polygonArea(roof.polygon);
   const projectedAreaM2 = projectedAreaPx * mpp * mpp;
   const cosT = Math.cos((roof.tiltDeg * Math.PI) / 180);
@@ -665,13 +664,13 @@ function RoofAreaInfo({
       }}
     >
       <div className="flex items-baseline justify-between">
-        <span className="text-ink-400 text-[10px] uppercase tracking-wider">Projected</span>
+        <span className="text-ink-400 text-[10px] uppercase tracking-wider">{t('sidebar.projected')}</span>
         <span className="text-ink-100">
           {projectedAreaM2.toFixed(1)}<span className="text-ink-400 text-[10px] ml-0.5">m²</span>
         </span>
       </div>
       <div className="flex items-baseline justify-between">
-        <span className="text-ink-400 text-[10px] uppercase tracking-wider">Sloped</span>
+        <span className="text-ink-400 text-[10px] uppercase tracking-wider">{t('sidebar.sloped')}</span>
         <span className="text-sun-300">
           {realAreaM2.toFixed(1)}<span className="text-ink-400 text-[10px] ml-0.5">m²</span>
         </span>
