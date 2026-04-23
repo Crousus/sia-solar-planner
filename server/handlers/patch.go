@@ -98,6 +98,13 @@ func RegisterRoutes(app *pocketbase.PocketBase, e *core.ServeEvent) {
 	e.Router.POST("/api/sp/patch", func(re *core.RequestEvent) error {
 		return handlePatch(app, re)
 	})
+	// /api/sp/set-customer owns the projects.customer relation field.
+	// Kept separate from /api/sp/patch because it doesn't participate in
+	// the doc+revision OCC protocol — linking a customer is a single-field
+	// update with no conflict-detection requirement. See set_customer.go.
+	e.Router.POST("/api/sp/set-customer", func(re *core.RequestEvent) error {
+		return handleSetCustomer(app, re)
+	})
 }
 
 // ── Request/response DTOs ──────────────────────────────────────────────
