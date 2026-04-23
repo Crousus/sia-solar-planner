@@ -37,6 +37,8 @@ import { migrateProject } from '../utils/projectSerializer';
 // at runtime, and the bundle cost is negligible (fast-json-patch is
 // small and already pulled in by syncClient anyway).
 import { applyProjectPatch, type Op } from '../backend/diff';
+import { pb } from '../backend/pb';
+import type { InverterModelRecord, PanelModelRecord } from '../backend/types';
 import {
   undoable,
   ACTION_POLICY,
@@ -56,6 +58,47 @@ import {
  * ~48 bits of entropy (base36, 8 chars) — plenty for a few thousand items.
  */
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+/**
+ * Build a PanelType runtime value from a `panel_models` catalog record.
+ *
+ * Exported so ProjectEditor (project load → overwrite doc.panelType) and
+ * NewProjectPage (bootstrap → embed the catalog entry into the initial
+ * doc) can share the conversion. Keeping this in the store module
+ * rather than a util lets the catalog fields stay close to the PanelType
+ * definition they populate.
+ *
+ * `name` is composed as "manufacturer model" to match how the PDF and
+ * sidebar already display the panel's display name. If either field is
+ * empty the joiner still renders — shouldn't happen in practice since
+ * both are required in the catalog record, but the resulting string is
+ * still usable.
+ */
+export function panelTypeFromCatalogRecord(m: PanelModelRecord): PanelType {
+  return {
+    // Use the record id as the panel type id. This keeps the sidebar
+    // header stable across catalog-linked projects and gives us a
+    // useful handle for comparing "same catalog entry or not" at render
+    // time (though the authoritative check lives on activePanelModelId).
+    id: m.id,
+    name: `${m.manufacturer} ${m.model}`.trim(),
+    widthM: m.widthM,
+    heightM: m.heightM,
+    wattPeak: m.wattPeak,
+    // Pass through all optional extended fields. Undefined in = undefined
+    // out, which keeps the persisted PanelType compact for legacy values
+    // and avoids writing nulls that the existing code didn't expect.
+    efficiencyPct: m.efficiencyPct,
+    weightKg: m.weightKg,
+    voc: m.voc,
+    isc: m.isc,
+    vmpp: m.vmpp,
+    impp: m.impp,
+    tempCoefficientPmax: m.tempCoefficientPmax,
+    warrantyYears: m.warrantyYears,
+    datasheetUrl: m.datasheetUrl,
+  };
+}
 
 /**
  * Sensible default panel. These numbers roughly match a common 400W
@@ -128,6 +171,38 @@ interface UIState {
    * only persists `project`.
    */
   splitCandidateRoofId: string | null;
+  // ── Catalog context for the currently-open project ────────────────
+  // All three are ephemeral (never persisted) and managed by
+  // ProjectEditor's mount/unmount lifecycle. They provide the Sidebar
+  // with the information it needs to:
+  //   (a) PATCH projects.panel_model on PB directly when the user picks
+  //       a new catalog entry (activePbProjectId + activePanelModelId)
+  //   (b) Render manufacturer/model metadata next to inverter names
+  //       (inverterModelCache)
+  // Putting these in the store — rather than passing via React context —
+  // keeps the dispatch path the same as every other sidebar action: a
+  // single store.fooAction() call with no prop drilling through
+  // ProjectEditor → App → Sidebar. They are intentionally NOT in the
+  // `project` slice because they're looked up from PB on every load
+  // and overridden from the catalog; persisting them to localStorage
+  // would risk stale data confusing the next session.
+
+  /** PB record id of the currently open project, or null when no project
+   *  is mounted. Set by ProjectEditor right after loadProject. The
+   *  sidebar uses it to target direct PB PATCHes (projects.panel_model)
+   *  instead of going through the /api/sp/patch doc diff flow — a top-
+   *  level relation field, not something that lives in `doc`. */
+  activePbProjectId: string | null;
+  /** Catalog panel_models id the current project is linked to, or null
+   *  for legacy projects that never got a link. Null is meaningful: it
+   *  toggles the sidebar between catalog-display mode and manual-edit
+   *  mode for panel dimensions. */
+  activePanelModelId: string | null;
+  /** Keyed by inverter_models record id. Populated on project load by
+   *  batch-fetching every inverterModelId referenced in doc.inverters.
+   *  Purely for display — Sidebar reads it to show "manufacturer model"
+   *  next to the inverter's name. Not part of the undo-able doc. */
+  inverterModelCache: Record<string, InverterModelRecord>;
 }
 
 /**
@@ -226,6 +301,59 @@ interface ProjectStore extends UIState, HistoryState {
    * full resync.
    */
   applyRemotePatch: (ops: Op[]) => void;
+
+  // ── Catalog context actions ────────────────────────────────────────
+  // All three are plain setters. The split between "setter" and the
+  // `setPanelModelFromCatalog` action below is deliberate: setters carry
+  // no side effects (they just write state), whereas
+  // setPanelModelFromCatalog ALSO fires a PB PATCH. Keeping them
+  // separate means test code can seed catalog context without accidentally
+  // triggering a network call.
+  setActivePbProjectId: (id: string | null) => void;
+  setActivePanelModelId: (id: string | null) => void;
+  setInverterModelCache: (cache: Record<string, InverterModelRecord>) => void;
+  /**
+   * User picked a new panel model from the catalog (either during the
+   * bootstrap flow or via Sidebar's Change button).
+   *
+   * Three things happen in order:
+   *   1. Derive a PanelType from the catalog record and replace
+   *      doc.panelType via the existing `updatePanelType` action. This
+   *      makes the panel's new dimensions / wattage visible immediately
+   *      on the canvas without waiting for a round-trip.
+   *   2. PATCH projects.panel_model on PB so the relation FK points to
+   *      the new catalog id. This is a direct PB call — NOT a doc
+   *      patch — because panel_model lives on the projects row, same
+   *      level as `name` and `customer`.
+   *   3. Update activePanelModelId so the sidebar re-renders in
+   *      catalog-display mode (showing manufacturer/model + a Change
+   *      button) rather than manual-edit mode.
+   *
+   * Does NOT enter the undo stack. Rationale: panel_model is a
+   * relation FK on the server row, not part of the opaque `doc` — the
+   * existing undo stack is doc-only, and wiring server-side relation
+   * changes into it would require patch reversal logic that's out of
+   * scope for this feature.
+   */
+  setPanelModelFromCatalog: (model: PanelModelRecord) => Promise<void>;
+  /**
+   * User linked or unlinked an inverter's catalog model (via Sidebar's
+   * InverterModelPicker). Updates doc.inverters[i].inverterModelId AND
+   * the inverterModelCache. DOES enter the undo stack because the
+   * inverterModelId field lives inside doc, which is fully sync'd and
+   * undo'able via the normal patch flow.
+   *
+   * `record` is nullable for the unlink case — pass null to remove the
+   * link, non-null to add/change it. We take the record (not just the
+   * id) so the cache can be updated atomically with the doc change;
+   * otherwise the sidebar would briefly show "link set, but no
+   * metadata" until the next fetch.
+   */
+  linkInverterModel: (
+    inverterId: string,
+    modelId: string | null,
+    record: InverterModelRecord | null,
+  ) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -248,6 +376,12 @@ export const useProjectStore = create<ProjectStore>()(
       // Background is visible by default — hiding it is the less common
       // workflow (mainly for clean screenshots and cluttered layouts).
       showBackground: true,
+      // Catalog context — all null/empty on startup. ProjectEditor fills
+      // these in after loadProject and clears them on unmount. See the
+      // UIState declaration above for rationale.
+      activePbProjectId: null,
+      activePanelModelId: null,
+      inverterModelCache: {},
 
       // ── Undo/redo history state ─────────────────────────────────────────
       // These fields are owned by the `undoable` middleware, but they live
@@ -1288,6 +1422,92 @@ export const useProjectStore = create<ProjectStore>()(
           false,
           'applyRemotePatch',
         ),
+
+      // ── Catalog context (hardware catalog feature) ─────────────────
+      // Plain setters for the ProjectEditor lifecycle. See the UIState
+      // comment block for why these are in the store rather than context.
+      setActivePbProjectId: (id) =>
+        set({ activePbProjectId: id }, false, 'setActivePbProjectId'),
+      setActivePanelModelId: (id) =>
+        set({ activePanelModelId: id }, false, 'setActivePanelModelId'),
+      setInverterModelCache: (cache) =>
+        set({ inverterModelCache: cache }, false, 'setInverterModelCache'),
+
+      // Swap the project's panel_model to a new catalog entry.
+      //
+      // Order of operations matters:
+      //   1. We update `doc.panelType` FIRST (via updatePanelType) so
+      //      the on-canvas panel rectangles re-render immediately. The
+      //      PB call is async; waiting for it before touching the
+      //      store would feel laggy.
+      //   2. We PATCH projects.panel_model second. If it fails (network
+      //      hiccup, 404, etc.), the local doc is already updated —
+      //      that's acceptable: the panelType value itself is correct
+      //      data. The FK will reconcile on next load via
+      //      expand=panel_model. We re-throw so the caller (Sidebar)
+      //      can surface the error if desired.
+      //   3. We update activePanelModelId LAST so the sidebar flips to
+      //      catalog-display mode only after the PATCH succeeds. If
+      //      step 2 throws before this, the sidebar stays in its
+      //      previous mode — less confusing than showing a "linked to
+      //      catalog" state that didn't actually persist.
+      //
+      // Why not push through the sync patch flow: panel_model is a PB
+      // relation column on the projects ROW, NOT a field inside
+      // `doc.*`. The /api/sp/patch endpoint is JSON-Patch over the
+      // opaque doc blob — it has no notion of the surrounding row
+      // fields. Same reason customers.setCustomer did a direct PATCH.
+      setPanelModelFromCatalog: async (model) => {
+        const newPanelType: PanelType = panelTypeFromCatalogRecord(model);
+        // Step 1: local-first update. Uses the existing updatePanelType
+        // action so the record-path middleware handles coalescing and
+        // history correctly. The user can still Ctrl-Z the panel swap
+        // — the FK PATCH below is a separate, non-undo-able step.
+        get().updatePanelType(newPanelType);
+        const projectId = get().activePbProjectId;
+        if (projectId) {
+          // Step 2: FK PATCH. We don't await the network call in a way
+          // that blocks the UI — the await just sequences the step-3
+          // state update and error propagation.
+          await pb.collection('projects').update(projectId, {
+            panel_model: model.id,
+          });
+        }
+        // Step 3: flip sidebar into catalog-display mode.
+        set({ activePanelModelId: model.id }, false, 'setActivePanelModelId');
+      },
+
+      // Link (or unlink) an inverter's catalog model. Flows through the
+      // record path so Ctrl-Z reverts the linkage — but only the doc
+      // field. The cache is a UI-side concern; we update it in the same
+      // set() call so the sidebar's follow-up render sees consistent
+      // state, and we do NOT try to "undo" the cache entry. Worst case
+      // after a Ctrl-Z: the cache has a record for an id the inverter
+      // no longer uses, which is benign (no UI reads that key).
+      linkInverterModel: (inverterId, modelId, record) => {
+        // Coalesce by inverter id — if the user rapidly cycles through
+        // dropdown picks, the run collapses into a single undo step.
+        setCoalesceKey(set as any, 'linkInverterModel', inverterId);
+        set(
+          (s) => {
+            const nextInverters = s.project.inverters.map((i) =>
+              i.id === inverterId ? { ...i, inverterModelId: modelId } : i,
+            );
+            // Build a new cache object. Adding only when record is
+            // present — don't delete existing entries on unlink; they
+            // might still be valid targets for OTHER inverters.
+            const nextCache = record
+              ? { ...s.inverterModelCache, [record.id]: record }
+              : s.inverterModelCache;
+            return {
+              project: { ...s.project, inverters: nextInverters },
+              inverterModelCache: nextCache,
+            };
+          },
+          false,
+          'linkInverterModel',
+        );
+      },
 
       // ── Undo / Redo ─────────────────────────────────────────────────────
       // Thin wrappers around the pure `applyUndo` / `applyRedo` helpers in

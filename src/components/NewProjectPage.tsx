@@ -25,12 +25,13 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
-import type { ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
+import type { PanelModelRecord, ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
 import type { Project } from '../types';
-import { initialProject } from '../store/projectStore';
+import { initialProject, panelTypeFromCatalogRecord } from '../store/projectStore';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 import ProjectMetaForm from './ProjectMetaForm';
+import PanelModelPicker from './PanelModelPicker';
 
 export default function NewProjectPage() {
   const { t } = useTranslation();
@@ -47,6 +48,13 @@ export default function NewProjectPage() {
   const [team, setTeam] = useState<TeamRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Panel model selection — required before submit. We store both id AND
+  // record because (a) the id goes into projects.panel_model (FK), and
+  // (b) the record's dimensions/wattage get baked into doc.panelType via
+  // panelTypeFromCatalogRecord so the editor has a sensible default on
+  // first open (rather than the hard-coded "Generic 400W" fallback).
+  const [panelModelId, setPanelModelId] = useState<string | null>(null);
+  const [panelModelRecord, setPanelModelRecord] = useState<PanelModelRecord | null>(null);
 
   useEffect(() => {
     if (!teamId || !user) return;
@@ -88,6 +96,12 @@ export default function NewProjectPage() {
 
   async function handleSubmit({ name, meta, customerId }: { name: string; meta: Project['meta']; customerId: string | null }) {
     if (!teamId) return;
+    // Extra-disabled on the form already blocks this, but belt-and-braces
+    // so a programmatic submit (e.g. Enter key edge case) can't bypass.
+    if (!panelModelId || !panelModelRecord) {
+      setError(t('panelModel.mustSelect'));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -96,13 +110,20 @@ export default function NewProjectPage() {
       // client expect, plus the user's metadata. Spread order matters:
       // initialProject's own `name` (and future meta, if any) must be
       // overridden by the user's values, not the other way around.
+      //
+      // We ALSO inject the chosen panel model into doc.panelType here.
+      // Two reasons:
+      //   (1) When a collaborator opens the project without the
+      //       panel_model expand populated for any reason, the doc's
+      //       panelType is still accurate — not the hard-coded
+      //       "Generic 400W" default.
+      //   (2) The sync diff baseline starts with the right values, so
+      //       there's no spurious outbound patch on the very first
+      //       edit to reconcile panelType.
       const doc: Project = {
         ...initialProject,
         name,
-        // Only include meta if the user provided at least one field —
-        // ProjectMetaForm already strips empty strings, but an all-
-        // empty-string submission still produces {} which we'd rather
-        // not persist (see the Project.meta type comment).
+        panelType: panelTypeFromCatalogRecord(panelModelRecord),
         ...(meta && Object.keys(meta).length > 0 ? { meta } : {}),
       };
       const created = await pb.collection('projects').create<ProjectRecord>({
@@ -110,9 +131,11 @@ export default function NewProjectPage() {
         name,
         doc,
         revision: 0,
-        // Only include customer when set — empty string would still pass
-        // the optional relation check but a conditional omission is cleaner.
         ...(customerId ? { customer: customerId } : {}),
+        // Always include the panel_model FK — it's required to create a
+        // project in this flow, and omitting it would strand the new
+        // record without a catalog link from the start.
+        panel_model: panelModelId,
       });
       navigate(`/p/${created.id}`);
     } catch (err: unknown) {
@@ -156,6 +179,23 @@ export default function NewProjectPage() {
         error={error}
         submitLabel={t('projectMeta.createProject')}
         submitBusyLabel={t('projectMeta.creating')}
+        // Panel model selection — required. The picker handles its own
+        // empty-catalog affordance (link to /catalog), so we don't need
+        // a second empty-state here. We block submit via extraDisabled
+        // until the user has picked something.
+        extraDisabled={!panelModelId}
+        extra={
+          <div className="block">
+            <span className="field-label">{t('panelModel.sectionLabel')}</span>
+            <PanelModelPicker
+              value={panelModelId}
+              onChange={(id, record) => {
+                setPanelModelId(id);
+                setPanelModelRecord(record);
+              }}
+            />
+          </div>
+        }
       />
     </PageShell>
   );

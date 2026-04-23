@@ -113,6 +113,11 @@ export type ActionName =
   | 'addInverter'
   | 'renameInverter'
   | 'deleteInverter'
+  // `linkInverterModel` mutates doc.inverters[i].inverterModelId, which
+  // lives inside the opaque project doc — the normal undo-able surface.
+  // Recorded so Ctrl-Z reverts a mistaken catalog link to the previous
+  // inverterModelId, including the null→id case.
+  | 'linkInverterModel'
   // ── Bypass (UI + mapState) ─────────────────────────────────────────
   | 'lockMap'
   | 'unlockMap'
@@ -124,6 +129,14 @@ export type ActionName =
   | 'setActivePanelGroup'
   | 'setSplitCandidateRoof'
   | 'toggleBackground'
+  // Catalog context setters — pure UI-state writes (activePbProjectId,
+  // activePanelModelId, inverterModelCache). setPanelModelFromCatalog
+  // also performs a PB PATCH but its store write is still a plain setter
+  // for activePanelModelId; bypass because these never touch `project`.
+  | 'setActivePbProjectId'
+  | 'setActivePanelModelId'
+  | 'setInverterModelCache'
+  | 'setPanelModelFromCatalog'
   // ── Special (history management) ───────────────────────────────────
   | 'resetProject'
   | 'loadProject'
@@ -174,6 +187,7 @@ export const ACTION_POLICY: Record<ActionName, Policy> = {
   addInverter:             { kind: 'record' },
   renameInverter:          { kind: 'record' },
   deleteInverter:          { kind: 'record' },
+  linkInverterModel:       { kind: 'record' },
 
   // ── Bypass (UI + mapState) ─────────────────────────────────────────
   lockMap:                 { kind: 'bypass' },
@@ -186,6 +200,10 @@ export const ACTION_POLICY: Record<ActionName, Policy> = {
   setActivePanelGroup:     { kind: 'bypass' },
   setSplitCandidateRoof:   { kind: 'bypass' },
   toggleBackground:        { kind: 'bypass' },
+  setActivePbProjectId:    { kind: 'bypass' },
+  setActivePanelModelId:   { kind: 'bypass' },
+  setInverterModelCache:   { kind: 'bypass' },
+  setPanelModelFromCatalog: { kind: 'bypass' },
 
   // ── Special ────────────────────────────────────────────────────────
   resetProject:            { kind: 'clear-history' },
