@@ -22,11 +22,11 @@ migrate((app) => {
   const customers = new Collection({
     type: 'base',
     name: 'customers',
-    listRule:   "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id",
-    viewRule:   "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id",
-    createRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id",
-    updateRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id",
-    deleteRule: "@request.auth.id != '' && @collection.team_members.team = team && @collection.team_members.user = @request.auth.id && @collection.team_members.role = 'admin'",
+    listRule:   "@request.auth.id != '' && @collection.team_members.team ?= team && @collection.team_members.user ?= @request.auth.id",
+    viewRule:   "@request.auth.id != '' && @collection.team_members.team ?= team && @collection.team_members.user ?= @request.auth.id",
+    createRule: "@request.auth.id != '' && @collection.team_members.team ?= team && @collection.team_members.user ?= @request.auth.id",
+    updateRule: "@request.auth.id != '' && @collection.team_members.team ?= team && @collection.team_members.user ?= @request.auth.id",
+    deleteRule: "@request.auth.id != '' && @collection.team_members.team ?= team && @collection.team_members.user ?= @request.auth.id && @collection.team_members.role ?= 'admin'",
     fields: [
       { name: 'team',        type: 'relation', required: true,  collectionId: teams.id, cascadeDelete: true, maxSelect: 1 },
       { name: 'name',        type: 'text',     required: true,  min: 1, max: 200 },
