@@ -73,6 +73,14 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   const capturedHeight = useProjectStore((s) =>
     s.project.mapState.locked ? s.project.mapState.capturedHeight : undefined,
   );
+  // Seed value for the Konva stage's initial rotation on lock. Written by
+  // lockMap when the user rotated the Leaflet preview before pressing
+  // Lock Map — see types/index.ts MapStateLocked.initialRotationDeg. Only
+  // consumed by useViewport's lock-transition effect; live rotation is
+  // owned by the viewport after that.
+  const initialRotationDeg = useProjectStore((s) =>
+    s.project.mapState.locked ? s.project.mapState.initialRotationDeg : undefined,
+  );
   // User-controlled visibility of the captured satellite backdrop. We
   // intentionally hide only the <KonvaImage>, not the image *data* — the
   // bgImage HTMLImageElement stays loaded so toggling back on is instant
@@ -87,7 +95,7 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   const overlayActive = locked;
 
   // ── Viewport (pan/zoom/rotation/size/space-held) ─────────────────────
-  const viewport = useViewport({ stageRef, containerRef, locked });
+  const viewport = useViewport({ stageRef, containerRef, locked, initialRotationDeg });
 
   // ── Drawing controller (tool-mode state machine) ─────────────────────
   const drawing = useDrawingController({
@@ -249,7 +257,12 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
             */}
             <PanelLayer cursor={drawing.cursor} stageActive={overlayActive} renderPass="base" />
             <StringLayer />
-            <PanelLayer cursor={drawing.cursor} stageActive={overlayActive} renderPass="labels" />
+            <PanelLayer
+              cursor={drawing.cursor}
+              stageActive={overlayActive}
+              renderPass="labels"
+              stageRotation={viewport.stageRotation}
+            />
           </Group>
         </Layer>
       </Stage>

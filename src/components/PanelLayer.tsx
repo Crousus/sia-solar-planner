@@ -34,9 +34,19 @@ interface Props {
   cursor: Point | null;   // live cursor from KonvaOverlay (for ghost position)
   stageActive: boolean;   // only show ghost when overlay is intercepting events
   renderPass?: 'base' | 'labels';
+  // Current stage rotation in degrees. Used by the labels pass to keep
+  // string-index numbers upright regardless of how the view (or roof) is
+  // rotated. Only the labels pass consumes this, so other render passes
+  // can omit it without re-rendering on every rotate tick.
+  stageRotation?: number;
 }
 
-export default function PanelLayer({ cursor, stageActive, renderPass = 'base' }: Props) {
+export default function PanelLayer({
+  cursor,
+  stageActive,
+  renderPass = 'base',
+  stageRotation = 0,
+}: Props) {
   const project = useProjectStore((s) => s.project);
   const toolMode = useProjectStore((s) => s.toolMode);
   const selectedRoofId = useProjectStore((s) => s.selectedRoofId);
@@ -339,18 +349,30 @@ export default function PanelLayer({ cursor, stageActive, renderPass = 'base' }:
               shadowBlur={2}
               shadowOpacity={0.4}
             />
-            <Text
-              x={-w / 2}
-              y={-h / 2}
-              width={w}
-              height={h}
-              align="center"
-              verticalAlign="middle"
-              text={String(panel.indexInString)}
-              fontSize={Math.min(w, h) * 0.35}
-              fontStyle="bold"
-              fill="#fff"
-            />
+            {/*
+              Counter-rotate the numeral so it always reads upright in
+              screen space. The parent panel Group is rotated by the roof's
+              primary-axis angle (angleDeg), and the whole Stage is rotated
+              by stageRotation. Cancelling both here keeps string numbers
+              legible when the roof is skewed and when the user rotates the
+              view. Rotation happens around the panel center (local 0,0),
+              which is where the dot and text are centered — so the text
+              stays in place while its orientation is corrected.
+            */}
+            <Group rotation={-(angleDeg + stageRotation)}>
+              <Text
+                x={-w / 2}
+                y={-h / 2}
+                width={w}
+                height={h}
+                align="center"
+                verticalAlign="middle"
+                text={String(panel.indexInString)}
+                fontSize={Math.min(w, h) * 0.35}
+                fontStyle="bold"
+                fill="#fff"
+              />
+            </Group>
           </Group>
         )}
       </Group>

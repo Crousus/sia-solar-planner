@@ -18,8 +18,6 @@ import type { TFunction } from 'i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
-import type { Project } from '../types';
-import { initialProject } from '../store/projectStore';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 
@@ -33,9 +31,6 @@ export default function TeamView() {
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
   const [myRole, setMyRole] = useState<'admin' | 'member' | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // `creating` gates the New Project button so a slow server doesn't let
-  // a double-click create two empty projects.
-  const [creating, setCreating] = useState(false);
 
   async function signOut() {
     // Same pattern as TeamPicker — clear auth then navigate proactively
@@ -67,35 +62,11 @@ export default function TeamView() {
     return () => { cancelled = true; };
   }, [teamId, user]);
 
-  async function createProject() {
-    if (!teamId) return;
-    setCreating(true);
-    try {
-      // The server stores the entire Project document as opaque JSON in
-      // the `doc` column. Seeding with a valid initial Project (rather
-      // than an empty {}) means the editor can render immediately
-      // without a "needs setup" branch — and the diff/patch path always
-      // operates on a well-formed document.
-      //
-      // We import the SAME `initialProject` the store uses on first load
-      // (Task 9), so a server-created row and a local-only project start
-      // from byte-identical shapes. Avoids subtle drift bugs where a
-      // "fresh from server" project differs from a "fresh in editor"
-      // one — important once diff-based sync is on.
-      const doc: Project = initialProject;
-      const created = await pb.collection('projects').create<ProjectRecord>({
-        team: teamId,
-        name: t('team.untitledProject'),
-        doc,
-        revision: 0,
-      });
-      navigate(`/p/${created.id}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed.');
-    } finally {
-      setCreating(false);
-    }
-  }
+  // Project creation moved to /teams/:teamId/projects/new — see
+  // NewProjectPage. That page captures name + optional client + address
+  // + notes before creating the record, so we don't need any inline
+  // create logic here anymore. The "New project" button below is a
+  // plain <Link> to that route.
 
   async function deleteProject(projectId: string) {
     // confirm() is the simplest acceptable UX for a destructive action
@@ -122,6 +93,7 @@ export default function TeamView() {
       label="FIG_02 · PROJECTS"
       userEmail={user?.email}
       onSignOut={signOut}
+      width="wide"
     >
       {error && (
         <div
@@ -160,18 +132,18 @@ export default function TeamView() {
             <div className="flex items-center gap-2 mb-3">
               <Link
                 to="/"
-                className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+                className="font-mono text-[12.5px] text-ink-400 hover:text-ink-200 transition-colors"
               >
                 {t('team.allTeams')}
               </Link>
-              <span className="font-mono text-[11px] text-ink-500">/</span>
-              <span className="font-mono text-[11px] text-ink-300 tabular-nums">
+              <span className="font-mono text-[12.5px] text-ink-500">/</span>
+              <span className="font-mono text-[12.5px] text-ink-300 tabular-nums">
                 {team!.id.slice(0, 10)}
               </span>
             </div>
             <div className="flex items-end justify-between gap-4">
               <div className="min-w-0">
-                <span className="tech-label">TEAM</span>
+                <span className="tech-label" style={{ fontSize: 12 }}>TEAM</span>
                 <h1
                   // `break-words` instead of truncate — a team name is
                   // brand-like; hiding characters with an ellipsis erodes
@@ -181,7 +153,7 @@ export default function TeamView() {
                 >
                   {team!.name}
                 </h1>
-                <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-ink-400">
+                <div className="mt-2.5 flex items-center gap-3 font-mono text-[13px] text-ink-400">
                   <span>
                     <span className="text-ink-200 tabular-nums">
                       {projects!.length}
@@ -189,7 +161,7 @@ export default function TeamView() {
                     {t('team.projectUnit', { count: projects!.length })}
                   </span>
                   {/* role badge — mono caps, low key */}
-                  <span className="chip chip-amber" style={{ fontSize: 10 }}>
+                  <span className="chip chip-amber" style={{ fontSize: 12 }}>
                     {myRole}
                   </span>
                   {myRole === 'admin' && (
@@ -203,29 +175,16 @@ export default function TeamView() {
                 </div>
               </div>
 
-              <button
-                onClick={createProject}
-                disabled={creating}
+              <Link
+                to={`/teams/${team!.id}/projects/new`}
                 className="btn btn-primary shrink-0"
-                style={{ padding: '9px 14px', fontSize: 12.5 }}
+                style={{ padding: '11px 18px', fontSize: 14 }}
               >
-                {creating ? (
-                  <>
-                    <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.25" />
-                      <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                    </svg>
-                    <span>{t('team.creating')}</span>
-                  </>
-                ) : (
-                  <>
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                    </svg>
-                    <span>{t('team.newProject')}</span>
-                  </>
-                )}
-              </button>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+                <span>{t('team.newProject')}</span>
+              </Link>
             </div>
           </header>
 
@@ -241,22 +200,21 @@ export default function TeamView() {
                     'radial-gradient(ellipse 50% 50% at 50% 0%, rgba(255,99,99,0.12), transparent 70%)',
                 }}
               />
-              <span className="tech-label relative">EMPTY · 00 PROJECTS</span>
-              <h2 className="relative mt-3 font-editorial text-[32px] text-ink-50 leading-none">
+              <span className="tech-label relative" style={{ fontSize: 12 }}>EMPTY · 00 PROJECTS</span>
+              <h2 className="relative mt-3 font-editorial text-[34px] text-ink-50 leading-none">
                 {t('team.emptyProjectsTitle')}
               </h2>
-              <p className="relative mt-3 text-ink-300 text-[14px] max-w-sm mx-auto">
+              <p className="relative mt-3 text-ink-300 text-[15px] max-w-sm mx-auto">
                 {t('team.emptyProjectsBody')}
               </p>
               <div className="relative mt-6">
-                <button
-                  onClick={createProject}
-                  disabled={creating}
+                <Link
+                  to={`/teams/${team!.id}/projects/new`}
                   className="btn btn-primary"
-                  style={{ padding: '10px 16px', fontSize: 13 }}
+                  style={{ padding: '12px 20px', fontSize: 14 }}
                 >
-                  {creating ? t('team.creating') : `${t('team.newProject')} →`}
-                </button>
+                  {`${t('team.newProject')} →`}
+                </Link>
               </div>
             </div>
           ) : (
@@ -267,65 +225,131 @@ export default function TeamView() {
                 // this page; factoring out a util would be premature.
                 const updated = new Date(p.updated);
                 const stamp = relativeTime(updated, t);
+                // Derive list-row metadata from the opaque `doc` JSON.
+                // The server already shipped the full doc down (getFullList
+                // above), so reading meta/mapState here costs nothing
+                // extra — we're just using more of what we already have.
+                const meta = p.doc?.meta;
+                const client = meta?.client?.trim();
+                const addressLabel = meta?.address?.formatted;
+                // Only locked projects have a captured backdrop — the
+                // base64 dataURL lives on mapState when `locked === true`.
+                // Narrowed here so TS understands capturedImage exists.
+                const thumb =
+                  p.doc?.mapState?.locked === true
+                    ? p.doc.mapState.capturedImage
+                    : null;
                 return (
                   <li key={p.id}>
                     <div
-                      className="surface-row group relative flex items-center gap-4 rounded-xl px-4 py-3.5 border"
+                      className="surface-row group relative flex items-stretch gap-4 rounded-xl p-4 border"
                       style={{ borderColor: 'var(--hairline)' }}
                     >
-                      {/* Numeric index keeps the directory feel */}
+                      {/* Numeric index — vertically centered against the
+                          taller row so it reads as a list counter rather
+                          than an inline label. */}
                       <span
-                        className="font-mono text-[11px] text-ink-400 tabular-nums shrink-0 w-6"
+                        className="font-mono text-[13px] text-ink-400 tabular-nums shrink-0 w-8 self-center"
                         style={{ letterSpacing: '0.05em' }}
                       >
                         {String(i + 1).padStart(2, '0')}
                       </span>
-                      {/* Document-glyph avatar in the row slot — signals
-                          "project" vs. team's initials avatar on the parent. */}
-                      <span
-                        aria-hidden
-                        className="shrink-0 grid place-items-center rounded-lg"
+
+                      {/*
+                        Thumbnail slot. Two modes:
+                        (1) Locked → render the captured satellite image.
+                            The doc carries it as a base64 dataURL, which
+                            <img src> accepts directly. `object-cover`
+                            crops to the aspect ratio of the slot; we
+                            keep the image full-quality on disk (we never
+                            downscale) because this is the only preview
+                            the user sees outside the editor.
+                        (2) Unlocked → a compact placeholder with the
+                            document glyph, echoing the pre-thumbnail
+                            design. Signals "no imagery captured yet"
+                            without needing a text label.
+                        Note: we intentionally DO NOT lazy-load or
+                        defer-decode these. The list is short (tens at
+                        most), the dataURLs are already in memory, and
+                        loading="lazy" would only add flicker on scroll.
+                      */}
+                      <div
+                        className="shrink-0 overflow-hidden rounded-lg grid place-items-center"
                         style={{
-                          width: 32,
-                          height: 32,
+                          width: 128,
+                          height: 84,
                           background: 'linear-gradient(135deg, #171013 0%, #0b0809 100%)',
                           border: '1px solid var(--hairline-strong)',
-                          color: 'var(--sun-300)',
                         }}
+                        aria-hidden
                       >
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                          <path
-                            d="M4 2.5a1 1 0 0 1 1-1h4.5L13 5v8.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11Z"
-                            stroke="currentColor"
-                            strokeWidth="1.2"
-                            strokeLinejoin="round"
+                        {thumb ? (
+                          <img
+                            src={thumb}
+                            alt=""
+                            className="block w-full h-full object-cover"
+                            draggable={false}
                           />
-                          <path d="M9 1.5V5h4" stroke="currentColor" strokeWidth="1.2" />
-                        </svg>
-                      </span>
+                        ) : (
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            style={{ color: 'var(--sun-300)', opacity: 0.7 }}
+                          >
+                            <path
+                              d="M4 2.5a1 1 0 0 1 1-1h4.5L13 5v8.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11Z"
+                              stroke="currentColor"
+                              strokeWidth="1.2"
+                              strokeLinejoin="round"
+                            />
+                            <path d="M9 1.5V5h4" stroke="currentColor" strokeWidth="1.2" />
+                          </svg>
+                        )}
+                      </div>
+
                       <Link
                         to={`/p/${p.id}`}
-                        className="flex-1 min-w-0 before:absolute before:inset-0 before:rounded-xl"
+                        // `::before` spans the full row so the entire
+                        // tile is clickable; individual spans inside
+                        // remain selectable text when not clicking.
+                        className="flex-1 min-w-0 flex flex-col justify-center gap-1 before:absolute before:inset-0 before:rounded-xl"
                       >
-                        <span className="block truncate font-medium text-ink-100">
+                        <span className="block truncate font-medium text-[16px] text-ink-100">
                           {p.name || t('team.untitledProject')}
                         </span>
-                        <span className="mt-0.5 block font-mono text-[10.5px] text-ink-400">
+                        {/* Second line: client · address. Both optional.
+                            Rendered on ONE line with a bullet separator
+                            when both are present; collapses cleanly to
+                            just one of them when the other is missing.
+                            Hidden entirely when neither is set so the
+                            row doesn't reserve vertical space for nothing. */}
+                        {(client || addressLabel) && (
+                          <span className="block truncate text-[13.5px] text-ink-300">
+                            {client && <span>{client}</span>}
+                            {client && addressLabel && (
+                              <span className="mx-1.5 text-ink-500">·</span>
+                            )}
+                            {addressLabel && <span>{addressLabel}</span>}
+                          </span>
+                        )}
+                        <span className="block font-mono text-[12px] text-ink-400">
                           {t('team.revUpdated', { rev: String(p.revision ?? 0), stamp })}
                         </span>
                       </Link>
                       {myRole === 'admin' && (
                         <button
                           onClick={() => deleteProject(p.id)}
-                          className="btn btn-danger relative shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                          className="btn btn-danger relative shrink-0 self-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
                           title="Delete project"
-                          style={{ padding: '4px 8px' }}
+                          style={{ padding: '6px 11px', fontSize: 13 }}
                         >
                           {t('team.deleteProject')}
                         </button>
                       )}
                       <span
-                        className="text-ink-400 transition-all relative group-hover:translate-x-0.5 group-hover:text-sun-300"
+                        className="text-ink-400 text-[18px] transition-all relative self-center group-hover:translate-x-0.5 group-hover:text-sun-300"
                         aria-hidden
                       >
                         →

@@ -24,10 +24,10 @@
 //   a custom ambient glow ring that's easier to express inline with style.
 // ────────────────────────────────────────────────────────────────────────────
 
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useProjectStore } from '../store/projectStore';
 import { metersPerPixel } from '../utils/calibration';
-import { exportPdf } from '../utils/pdfExport';
+import { exportPdf, prefetchPdfExport } from '../utils/pdfExport';
 import {
   serializeProject,
   deserializeProject,
@@ -44,6 +44,13 @@ import { getActiveProjectTeamId } from './ProjectEditor';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
+  /**
+   * Pre-lock Leaflet preview rotation in degrees (clockwise). Owned by
+   * App so the MapView can apply the CSS transform and the Toolbar can
+   * forward the value into lockMap. Unused once `locked === true` — App
+   * resets it on lock transitions.
+   */
+  preLockRotation: number;
 }
 
 // Mode definitions. `glyph` is an inline SVG (instead of emoji) so the
@@ -112,9 +119,13 @@ const MODES: {
   },
 ];
 
-export default function Toolbar({ mapRef }: Props) {
+export default function Toolbar({ mapRef, preLockRotation }: Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // The editor is always mounted under /p/:projectId, so projectId is
+  // defined here. Read via the router rather than the store because
+  // the store's `project` blob doesn't carry the record id.
+  const { projectId } = useParams<{ projectId: string }>();
   const toolMode = useProjectStore((s) => s.toolMode);
   const setToolMode = useProjectStore((s) => s.setToolMode);
   const locked = useProjectStore((s) => s.project.mapState.locked);
@@ -192,6 +203,18 @@ export default function Toolbar({ mapRef }: Props) {
       return;
     }
     setIsLocking(true);
+    // If the user rotated the Leaflet preview (see MapView's rotator
+    // wrapper), temporarily strip the CSS transform BEFORE html2canvas so
+    // the capture is axis-aligned — the wrapper only affects screen
+    // layout, and rotating the bitmap baked into capturedImage would
+    // complicate every downstream consumer (mpp math, dimension labels,
+    // roof-edge snap). Instead we preserve the rotation as an INITIAL
+    // stageRotation seed (lockMap arg below) and let Konva apply it.
+    // Restore after capture even though MapView is about to unmount —
+    // defensive in case the lock errors out mid-flight.
+    const rotateWrapper = document.querySelector<HTMLElement>('[data-map-rotate-wrapper]');
+    const savedTransform = rotateWrapper?.style.transform;
+    if (rotateWrapper) rotateWrapper.style.transform = 'none';
     try {
       const canvas = await html2canvas(mapEl, {
         useCORS: true,
@@ -208,11 +231,18 @@ export default function Toolbar({ mapRef }: Props) {
         capturedImage: dataUrl,
         capturedWidth: mapEl.clientWidth,
         capturedHeight: mapEl.clientHeight,
+        initialRotationDeg: preLockRotation || undefined,
       });
     } catch (err) {
       console.error('Failed to capture satellite view', err);
       alert('Failed to capture the satellite view — see console for details.');
     } finally {
+      // Restore the preview rotation on failure (MapView is still mounted
+      // in the error path). On success this runs after MapView unmounts —
+      // querySelector would miss the element and the assignment no-ops.
+      if (rotateWrapper && savedTransform !== undefined) {
+        rotateWrapper.style.transform = savedTransform;
+      }
       // Always clear the flag so a single error doesn't permanently brick
       // the Lock button until reload.
       setIsLocking(false);
@@ -484,6 +514,33 @@ export default function Toolbar({ mapRef }: Props) {
             logically belongs with other project-state context rather
             than trailing the destructive Reset button. */}
         <LanguageToggle />
+        {/* Project settings — gear icon, navigates to /p/:id/settings
+            where the user can edit the name / client / address / notes
+            captured on bootstrap. Placed here (next to the language
+            toggle and sync indicator) because it belongs with the
+            "project-level configuration" cluster, not the drawing tools
+            on the left. Disabled if projectId isn't available for any
+            reason (should never happen in practice — the editor route
+            always has the param). */}
+        <button
+          className="btn btn-tool"
+          onClick={() => projectId && navigate(`/p/${projectId}/settings`)}
+          disabled={!projectId}
+          title={t('team.settings')}
+          aria-label={t('team.settings')}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            {/* Inline gear / cog. 8-tooth, centered ring. Sized to
+                match the surrounding 13-14px tool icons. */}
+            <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.3" />
+            <path
+              d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M3.4 12.6l1.3-1.3M11.3 4.7l1.3-1.3"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
         <SyncStatusIndicator />
         <div className="divider-v mx-1" />
         <button
@@ -520,7 +577,17 @@ export default function Toolbar({ mapRef }: Props) {
 
         <div className="divider-v mx-1" />
 
-        <button className="btn btn-ghost" onClick={handleExport} title="Export A4 landscape PDF">
+        <button
+          className="btn btn-ghost"
+          onClick={handleExport}
+          // Warm the lazy export chunk on intent (hover or keyboard focus)
+          // so the @react-pdf/renderer bundle is already in cache by the
+          // time the user actually clicks. Idempotent — no harm if the
+          // user hovers, leaves, hovers again.
+          onMouseEnter={prefetchPdfExport}
+          onFocus={prefetchPdfExport}
+          title="Export A4 landscape PDF"
+        >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
             <path
               d="M8 2v8m0 0l-3-3m3 3l3-3M3 12v2h10v-2"

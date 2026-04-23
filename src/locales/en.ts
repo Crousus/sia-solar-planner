@@ -129,6 +129,7 @@ const en = {
     noUserWithEmail: 'No user with that email. Ask them to sign up first.',
     alreadyInTeam: 'That user is already in the team.',
     untitledProject: 'Untitled Project',
+    settings: 'Settings',
     justNow: 'just now',
     minutesAgo: '{{count}}m ago',
     hoursAgo: '{{count}}h ago',
@@ -136,6 +137,70 @@ const en = {
     revUpdated: 'rev {{rev}} · updated {{stamp}}',
     loading: 'Loading…',
     signOut: 'Sign out',
+  },
+  pdf: {
+    // Small-caps kicker above the project name in the page header.
+    // Branding-style label that anchors the sheet as a "solar plan"
+    // independent of the project name.
+    kicker: 'SOLAR PLAN',
+    // Inline labels for the metadata line under the project name.
+    // Placed inline ("Client: X · Address: Y") rather than stacked so the
+    // header stays compact — `metaSep` is the separator glyph between
+    // them so locales can pick a comma, middle dot, or em-dash to match
+    // local typographic conventions.
+    metaClient: 'Client',
+    metaAddress: 'Address',
+    metaSep: ' · ',
+    notesLabel: 'Notes',
+    strings: 'Strings',
+    // Subtitle under the "Strings" caption — describes the panel type once
+    // for the table instead of repeating it on every row. `{{w}}`/`{{h}}`
+    // are already pre-stringified by the caller.
+    panelInfo: '{{name}} · {{w}}×{{h}} m · {{wp}} Wp',
+    colString: 'String',
+    colColor: 'Color',
+    colPanels: 'Panels',
+    colWp: 'Wp',
+    colInverter: 'Inverter',
+    // Bottom stat-tile labels (small caps). One label per tile, the value
+    // is composed numerically by the caller. Kept separate from the units
+    // so the unit can be styled smaller next to the big number.
+    statPanels: 'PANELS',
+    statPower: 'POWER',
+    statScale: 'SCALE',
+    unitKwp: 'kWp',
+    unitMpp: 'm/px',
+    /** Tertiary line under the scale stat — `{{z}}` is the zoom level. */
+    scaleZoom: 'zoom {{z}}',
+  },
+  projectMeta: {
+    bootstrapKicker: 'CREATE',
+    bootstrapTitle: 'New project',
+    bootstrapDesc: 'Give this plan a name and — if you have them — the site address and client details. You can skip the extras and fill them in later.',
+    settingsKicker: 'EDIT',
+    settingsTitle: 'Project settings',
+    backToEditor: 'Back to editor',
+    name: 'Project name',
+    namePlaceholder: 'e.g. Müller residence, roof study',
+    client: 'Client',
+    clientPlaceholder: 'Name of the customer (optional)',
+    address: 'Site address',
+    addressPlaceholder: 'Start typing an address…',
+    clearAddress: 'Clear address',
+    addressLookupFailed: "Couldn't search addresses — you can still submit without one.",
+    selectAddressToPreview: 'Select an address to preview the site',
+    street: 'Street',
+    housenumber: 'No.',
+    postcode: 'ZIP',
+    city: 'City',
+    notes: 'Notes',
+    notesPlaceholder: 'Anything worth remembering about this project (optional)',
+    createProject: 'Create project',
+    creating: 'Creating…',
+    saveChanges: 'Save changes',
+    saving: 'Saving…',
+    cancel: 'Cancel',
+    conflictRetry: 'Another change landed while you were editing. Reload the page and try again.',
   },
 } as const;
 

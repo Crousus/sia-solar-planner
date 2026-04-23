@@ -41,6 +41,17 @@ export default function App() {
   const toolMode = useProjectStore((s) => s.toolMode);
   const splitCandidateRoofId = useProjectStore((s) => s.splitCandidateRoofId);
 
+  // Pre-lock Leaflet rotation (degrees, clockwise). Ephemeral and only
+  // meaningful while !locked. Lives in App (not MapView) because Toolbar
+  // reads it at lock time to forward into lockMap — hoisting avoids a
+  // ref/portal dance between sibling components. Reset whenever the map
+  // transitions back to unlocked so re-opening the Leaflet view after an
+  // unlock always starts at 0° rather than inheriting a stale value.
+  const [preLockRotation, setPreLockRotation] = useState(0);
+  useEffect(() => {
+    if (locked) setPreLockRotation(0);
+  }, [locked]);
+
   const handleMapReady = useCallback((m: L.Map) => {
     mapRef.current = m;
     forceRerender((n) => n + 1);
@@ -109,7 +120,7 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--ink-950)' }}>
-      <Toolbar mapRef={mapRef} />
+      <Toolbar mapRef={mapRef} preLockRotation={preLockRotation} />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar />
         {/*
@@ -135,7 +146,92 @@ export default function App() {
             unlock remounts MapView, which calls onMapReady again and
             refreshes the ref before the next Lock Map press.
           */}
-          {!locked && <MapView onMapReady={handleMapReady} />}
+          {!locked && <MapView onMapReady={handleMapReady} rotation={preLockRotation} />}
+          {/*
+            Pre-lock rotation control. Lets the user align the imagery
+            (e.g. a building's ridge to the horizontal) before locking,
+            so the Konva stage opens in that frame. Purely visual at this
+            stage — Leaflet itself stays axis-aligned; Toolbar.handleLock
+            captures the map axis-aligned and forwards the rotation as
+            `initialRotationDeg` into lockMap.
+
+            Positioned bottom-right so it doesn't collide with Leaflet's
+            built-in top-left zoom control or the top-center hint banner.
+            The slider + buttons use only inline styles (no new CSS
+            primitives) because this is a one-off widget that lives for
+            the pre-lock phase only. z-[600] matches the hint banner so
+            both float consistently above the Konva overlay.
+          */}
+          {!locked && (
+            <div
+              className="surface absolute bottom-4 right-4 z-[600] rounded-full px-3 py-2 flex items-center gap-2"
+              style={{ fontSize: 12 }}
+              title="Rotate the preview before locking. The captured imagery stays axis-aligned; the rotation is applied to the editor view post-lock."
+            >
+              <span style={{ color: 'var(--ink-300)' }}>Rotate</span>
+              <button
+                type="button"
+                onClick={() => setPreLockRotation((r) => r - 15)}
+                style={{
+                  color: 'var(--ink-100)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: 'rgba(255,255,255,0.06)',
+                }}
+                aria-label="Rotate -15°"
+              >
+                −15°
+              </button>
+              <input
+                type="range"
+                min={-180}
+                max={180}
+                step={1}
+                value={preLockRotation}
+                onChange={(e) => setPreLockRotation(Number(e.target.value))}
+                style={{ width: 140 }}
+                aria-label="Pre-lock rotation"
+              />
+              <button
+                type="button"
+                onClick={() => setPreLockRotation((r) => r + 15)}
+                style={{
+                  color: 'var(--ink-100)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: 'rgba(255,255,255,0.06)',
+                }}
+                aria-label="Rotate +15°"
+              >
+                +15°
+              </button>
+              <span
+                style={{
+                  color: 'var(--sun-300)',
+                  fontVariantNumeric: 'tabular-nums',
+                  minWidth: 40,
+                  textAlign: 'right',
+                }}
+              >
+                {preLockRotation.toFixed(0)}°
+              </span>
+              <button
+                type="button"
+                onClick={() => setPreLockRotation(0)}
+                disabled={preLockRotation === 0}
+                style={{
+                  color: 'var(--ink-300)',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: 'transparent',
+                  opacity: preLockRotation === 0 ? 0.4 : 1,
+                }}
+                aria-label="Reset rotation"
+              >
+                Reset
+              </button>
+            </div>
+          )}
           <KonvaOverlay containerRef={canvasContainerRef} mapRef={mapRef} />
           {/*
             Hint banner — shown only before the map is locked. High z-index

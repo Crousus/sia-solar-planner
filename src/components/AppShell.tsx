@@ -36,6 +36,8 @@ import NewTeamPage from './NewTeamPage';
 import TeamView from './TeamView';
 import TeamMembers from './TeamMembers';
 import ProjectEditor from './ProjectEditor';
+import NewProjectPage from './NewProjectPage';
+import ProjectSettingsPage from './ProjectSettingsPage';
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -71,12 +73,27 @@ export default function AppShell() {
         <Route path="/teams/:teamId" element={<AuthGuard><TeamView /></AuthGuard>} />
         <Route path="/teams/:teamId/members" element={<AuthGuard><TeamMembers /></AuthGuard>} />
         {/*
+          Project bootstrap — captures initial metadata (name, client,
+          address, notes) before creating the record. Replaces the old
+          direct "create empty then navigate" flow on TeamView. Sits
+          under the team's URL namespace so breadcrumb + auth gating
+          match the surrounding pages.
+        */}
+        <Route path="/teams/:teamId/projects/new" element={<AuthGuard><NewProjectPage /></AuthGuard>} />
+        {/*
           Project editor (Task 9). The dynamic segment is the PB record id
           of the project row. ProjectEditor handles fetch/loadProject on
           mount and resetProject on unmount; the underlying <App/> stays
           server-agnostic.
         */}
         <Route path="/p/:projectId" element={<AuthGuard><ProjectEditor /></AuthGuard>} />
+        {/*
+          Settings page for a project — name, client, address, notes.
+          Lives at /p/:id/settings so breadcrumbs read naturally
+          ("← back to editor"). Doesn't mount the editor; patches the
+          project doc directly via /api/sp/patch.
+        */}
+        <Route path="/p/:projectId/settings" element={<AuthGuard><ProjectSettingsPage /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   );

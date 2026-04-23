@@ -156,6 +156,11 @@ interface ProjectStore extends UIState, HistoryState {
     capturedImage: string;
     capturedWidth: number;
     capturedHeight: number;
+    /** Optional: initial stage rotation in degrees (clockwise). Used when
+     *  the user rotated the Leaflet preview prior to locking, so the
+     *  locked Konva view matches what they saw in the preview. Omitted
+     *  or 0 → no rotation. See MapStateLocked.initialRotationDeg. */
+    initialRotationDeg?: number;
   }) => void;
   unlockMap: () => void;
   addRoof: (polygon: Point[]) => string;
@@ -307,7 +312,7 @@ export const useProjectStore = create<ProjectStore>()(
       // Why a single args object? The signature grew past 4 scalars once
       // we added the image triple, and positional calls were becoming
       // error-prone (easy to swap width/height). See ADR-007.
-      lockMap: ({ centerLat, centerLng, zoom, mpp, capturedImage, capturedWidth, capturedHeight }) =>
+      lockMap: ({ centerLat, centerLng, zoom, mpp, capturedImage, capturedWidth, capturedHeight, initialRotationDeg }) =>
         set(
           (s) => ({
             project: {
@@ -321,6 +326,10 @@ export const useProjectStore = create<ProjectStore>()(
                 capturedImage,
                 capturedWidth,
                 capturedHeight,
+                // Only write when non-zero: keeps saved projects clean for the
+                // common case (no pre-lock rotation). Absent ↔ 0 at read time
+                // via the `?? 0` in useViewport.
+                ...(initialRotationDeg ? { initialRotationDeg } : {}),
               },
             },
           }),

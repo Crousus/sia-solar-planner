@@ -157,8 +157,73 @@ export interface MapStateLocked extends MapStateShared {
   capturedWidth: number;
   /** Height of the captured image in canvas pixels (world-frame height). */
   capturedHeight: number;
+  /**
+   * Initial Konva-stage rotation (degrees, clockwise) applied when the
+   * captured image is first painted post-lock. Written by `lockMap` when
+   * the user rotated the Leaflet preview before locking (see App's
+   * `preLockRotation` + MapView's CSS-transform rotation). Absent = 0.
+   *
+   * Persisted so reopening a saved project restores the user's chosen
+   * orientation. Live stage rotation (middle-mouse drag, RotationDock)
+   * is intentionally NOT written back here — that stays session-local;
+   * only the at-lock-time value is considered "the project's frame".
+   */
+  initialRotationDeg?: number;
 }
 export type MapState = MapStateUnlocked | MapStateLocked;
+
+/**
+ * Geocoded address. A project's address is either fully structured (user
+ * picked an autocomplete suggestion) or absent. We don't store partial /
+ * free-form strings: downstream consumers (map auto-center, future map-
+ * preview) depend on `lat`/`lon` being present. Half-states would force
+ * every caller to null-check coords again, which the type already solved.
+ *
+ * `formatted` is the human-readable label Photon returned as the display
+ * value (e.g. "Marienplatz 8, 80331 Munich, Germany"). We render this
+ * directly rather than re-composing from the structured parts, because
+ * Photon's label ordering is locale-aware and we'd lose that if we
+ * rebuilt the string ourselves.
+ */
+export interface ProjectAddress {
+  formatted: string;
+  /**
+   * Best-effort structured components from Photon. Any may be absent
+   * on initial pick (Photon doesn't always produce every field) and
+   * any may be user-edited after the pick via the form's structured
+   * inputs — so "matches the geocode" is NOT an invariant we can
+   * depend on. What IS invariant is `lat`/`lon` below: those stay
+   * anchored to the original geocode regardless of text edits.
+   */
+  street?: string;
+  housenumber?: string;
+  city?: string;
+  postcode?: string;
+  country?: string;
+  /** WGS84 coordinates — the ONLY fields consumers can rely on. */
+  lat: number;
+  lon: number;
+}
+
+/**
+ * Project-level metadata captured at bootstrap time (and editable via
+ * the settings page). Kept in a sub-object rather than sprinkled at the
+ * top level of `Project` so:
+ *   - The editor blob (roofs/panels/strings/etc.) stays conceptually
+ *     separate from admin/meta info — useful for JSON export/import,
+ *     where a future exporter might strip `meta` for sharing.
+ *   - Adding more metadata later (contact email, install date, …) has
+ *     an obvious home with no further type surgery.
+ *
+ * All fields are optional so existing projects (created before this
+ * feature landed) load without migration — `meta` is simply absent on
+ * their doc.
+ */
+export interface ProjectMeta {
+  client?: string;
+  address?: ProjectAddress;
+  notes?: string;
+}
 
 /**
  * Full project — the root persistent object. Serialized to localStorage by
@@ -170,6 +235,12 @@ export type MapState = MapStateUnlocked | MapStateLocked;
  */
 export interface Project {
   name: string;
+  /**
+   * Optional metadata sub-object. Absent on docs created before the
+   * bootstrap flow existed — consumers MUST treat `meta` as possibly
+   * undefined rather than assume an empty object.
+   */
+  meta?: ProjectMeta;
   panelType: PanelType;
   roofs: Roof[];
   panels: Panel[];

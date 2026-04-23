@@ -12,11 +12,11 @@
     "test:integration": "RUN_INTEGRATION=1 vitest run src/backend/sync.integration.test.ts"
   },
   "dependencies": {
+    "@react-pdf/renderer": "^4.5.1",
     "fast-json-patch": "^3.1.1",
     "html2canvas": "^1.4.1",
     "i18next": "^26.0.6",
     "i18next-browser-languagedetector": "^8.2.1",
-    "jspdf": "^2.5.1",
     "konva": "^9.3.16",
     "leaflet": "^1.9.4",
     "pocketbase": "^0.26.8",

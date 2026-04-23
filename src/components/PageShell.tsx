@@ -48,40 +48,60 @@ export function PageShell({
 }: Props) {
   // Max-width tokens map to a three-step scale. Keeping them explicit here
   // rather than exposing raw Tailwind classes means the pages can't drift
-  // to arbitrary widths and the layout stays coherent.
+  // to arbitrary widths and the layout stays coherent. We keep both the
+  // Tailwind class (for the <main>) and the raw pixel value (for the nav
+  // pill) in sync via `maxWidthPx` — the nav should grow to the same
+  // column width the page content uses, so the two align visually and
+  // the Sign-out button ends up above the content edge, not floating
+  // in a narrower bar.
+  const maxWidthPx = width === 'narrow' ? 480 : width === 'wide' ? 960 : 640;
   const maxWidth =
     width === 'narrow' ? 'max-w-[480px]'
     : width === 'wide' ? 'max-w-[960px]'
     : 'max-w-[640px]';
 
   return (
-    <div className="min-h-screen w-full page-atmosphere text-ink-100 relative overflow-x-hidden">
+    // Height pinning vs scroll:
+    //   #root is `height: 100%; overflow: hidden` (see index.css — that
+    //   rule exists so the editor's fullscreen canvas can't ever create
+    //   page-level scroll). For the shell to own its own scroll axis,
+    //   ITS height must be capped to the viewport — otherwise tall
+    //   content pushes the shell past #root and just gets clipped.
+    //
+    //   `h-full` pins the shell to 100% of #root (which itself is 100vh),
+    //   and `overflow-y-auto` lets overflowing content scroll INSIDE the
+    //   shell. Previously we used `min-h-screen`, which allowed the shell
+    //   to grow past the viewport — that's why long pages (like the
+    //   project bootstrap form + map preview) couldn't scroll.
+    //   `overflow-x-hidden` is kept to prevent horizontal bounce from
+    //   the decorative gradients bleeding past the viewport edge.
+    <div className="h-full w-full page-atmosphere text-ink-100 relative overflow-x-hidden overflow-y-auto">
       {/* ── Top nav pill ─────────────────────────────────────────────
           A floating hairline-bordered bar, raycast.com-style. Contains
           the brand mark (links to /) on the left, and the user's email
           + sign-out on the right. Fixed width, centered, sits above the
           page content with some vertical margin. */}
       <nav
-        className="surface mx-auto mt-5 mb-10 rounded-full flex items-center justify-between gap-4 pl-3 pr-2 py-1.5"
-        style={{ maxWidth: 680, width: 'calc(100% - 32px)' }}
+        className="surface mx-auto mt-6 mb-12 rounded-full flex items-center justify-between gap-4 pl-4 pr-3 py-2"
+        style={{ maxWidth: maxWidthPx, width: 'calc(100% - 32px)' }}
       >
         <Link
           to="/"
-          className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-white/[0.04] transition-colors"
+          className="flex items-center gap-2.5 pl-1 pr-3 py-1 rounded-full hover:bg-white/[0.04] transition-colors"
         >
-          <BrandMark size={20} />
-          <span className="font-display text-[14px] font-semibold text-ink-50 leading-none">
+          <BrandMark size={24} />
+          <span className="font-display text-[16px] font-semibold text-ink-50 leading-none">
             Solar
           </span>
-          <span className="font-mono text-[11px] text-ink-400 leading-none">
+          <span className="font-mono text-[13px] text-ink-400 leading-none">
             /planner
           </span>
         </Link>
 
         {userEmail && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span
-              className="hidden sm:inline font-mono text-[11px] text-ink-400 tabular-nums"
+              className="hidden sm:inline font-mono text-[13px] text-ink-400 tabular-nums"
               title={userEmail}
             >
               {userEmail}
@@ -89,8 +109,8 @@ export function PageShell({
             {onSignOut && (
               <button
                 onClick={onSignOut}
-                className="btn btn-ghost text-[12px]"
-                style={{ padding: '6px 10px' }}
+                className="btn btn-ghost text-[13px]"
+                style={{ padding: '7px 13px' }}
               >
                 Sign out
               </button>
@@ -99,21 +119,27 @@ export function PageShell({
         )}
       </nav>
 
-      {/* ── Corner tech-label ────────────────────────────────────────
-          Top-left marker. Echoes the FIG_## labels on raycast.com —
-          purely ornamental. Hidden on narrow viewports to avoid
-          competing with content. */}
+      {/* ── Corner tech-labels ───────────────────────────────────────
+          Top-left figure marker + bottom-right version stamp. Ornamental
+          only. `position: fixed` (not absolute) so they stay pinned to
+          the viewport edge while the shell's main column scrolls — an
+          absolute label on a scrolling container would ride up with
+          the content, which looks broken on pages longer than the
+          viewport. Hidden on narrow viewports to avoid competing with
+          content. */}
       {label && (
         <span
           aria-hidden
-          className="tech-label hidden md:block absolute top-7 left-6 select-none"
+          className="tech-label hidden md:block fixed top-8 left-7 select-none pointer-events-none z-10"
+          style={{ fontSize: 13 }}
         >
           {label}
         </span>
       )}
       <span
         aria-hidden
-        className="tech-label hidden md:block absolute bottom-6 right-6 select-none opacity-70"
+        className="tech-label hidden md:block fixed bottom-7 right-7 select-none pointer-events-none opacity-70 z-10"
+        style={{ fontSize: 13 }}
       >
         SOLAR / PLANNER · v0.1
       </span>

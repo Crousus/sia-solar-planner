@@ -50,6 +50,16 @@ interface UseViewportParams {
   containerRef: RefObject<HTMLDivElement | null>;
   /** Locking state gates wheel events and pan/rotate starts. Unlocked, Leaflet owns input. */
   locked: boolean;
+  /**
+   * Initial stage rotation (degrees) to apply when `locked` first becomes
+   * true. Sourced from `mapState.initialRotationDeg`, written by lockMap
+   * when the user rotated the Leaflet preview before locking. Changes
+   * after the lock transition are ignored — this is a one-shot seed, not
+   * a live binding (live rotation is owned by the user via middle-mouse
+   * drag / the RotationDock). A fresh unlock → re-lock cycle picks up
+   * the next seed value.
+   */
+  initialRotationDeg?: number;
 }
 
 export interface UseViewportResult {
@@ -91,6 +101,7 @@ export function useViewport({
   stageRef,
   containerRef,
   locked,
+  initialRotationDeg,
 }: UseViewportParams): UseViewportResult {
   // ── Overlay dimensions via ResizeObserver ────────────────────────────
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -111,12 +122,24 @@ export function useViewport({
 
   // Reset pan/zoom/rotation when (un)locking so the first view after re-lock
   // isn't mysteriously altered from a previous session.
+  //
+  // On lock → true we also SEED stageRotation from `initialRotationDeg`
+  // (written by lockMap when the user rotated the Leaflet preview). This
+  // is a one-shot seed: subsequent renders with the same locked=true don't
+  // clobber live user rotation via middle-mouse / RotationDock. The
+  // `initialRotationDeg` dep is intentionally omitted from the array —
+  // we only want to apply the seed at the lock transition, not on every
+  // value change (the value is stable per lock anyway, but being explicit
+  // about "edge-triggered, not level-triggered" avoids a future footgun).
   useEffect(() => {
     if (!locked) {
       setStageScale(1);
       setStagePos({ x: 0, y: 0 });
       setStageRotation(0);
+    } else {
+      setStageRotation(initialRotationDeg ?? 0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locked]);
 
   // ── Drag refs (pan via right-click/space, rotate via middle-click) ───

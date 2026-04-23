@@ -49,21 +49,73 @@ function MapBinder({ onMapReady }: { onMapReady: (m: L.Map) => void }) {
 
 interface Props {
   onMapReady: (map: L.Map) => void;
+  /**
+   * Pre-lock visual rotation in degrees (clockwise). Applied as a CSS
+   * transform to a wrapper around the Leaflet map so the user can
+   * preview how their frame will sit once locked. Leaflet itself has no
+   * knowledge of this rotation — its internal coordinate system stays
+   * axis-aligned, so pan/zoom math remains correct; the rotation is
+   * purely a screen-space visualization. On lock, Toolbar.handleLock
+   * strips the transform before html2canvas so the captured PNG is
+   * axis-aligned, and passes the rotation into lockMap as
+   * `initialRotationDeg`, which useViewport applies to the Konva stage.
+   */
+  rotation?: number;
 }
 
-export default function MapView({ onMapReady }: Props) {
+export default function MapView({ onMapReady, rotation = 0 }: Props) {
   const center = useProjectStore((s) => s.project.mapState);
+  // Read the project-level address (set via the bootstrap / settings
+  // form) so we can auto-center on it when the map hasn't been locked
+  // yet. Cheap selector — `meta` is a small object and changes rarely.
+  const address = useProjectStore((s) => s.project.meta?.address);
 
   // Initial viewport is captured once in a ref — Leaflet's MapContainer
   // reads center/zoom only on first mount, and we don't want subsequent
   // changes to re-create the map (it would blow away the view).
-  const initial = useRef<{ lat: number; lng: number; zoom: number }>({
-    lat: center.centerLat,
-    lng: center.centerLng,
-    zoom: center.zoom,
-  });
+  //
+  // Priority when the map is UNLOCKED:
+  //   1. If the project has a geocoded address, fly there at zoom 19.
+  //      This is the bootstrap-driven case: the user typed an address
+  //      on the new-project page and expects the map to already be
+  //      over that building. Zoom 19 matches the default "ready to
+  //      draw" zoom level we use elsewhere.
+  //   2. Otherwise use whatever mapState held (either a user-panned
+  //      position from a previous session, or the factory default).
+  //
+  // We intentionally do NOT overwrite the center when `locked === true`:
+  //   - MapView only renders in the unlocked state (see the App.tsx
+  //     check), so that branch is never reached. Mentioning it here
+  //     just so future readers understand the full design: if we
+  //     started honoring address post-lock we'd risk yanking the user
+  //     out of their in-progress drawing.
+  //
+  // We do NOT mutate mapState to persist this override. Two reasons:
+  //   - The user hasn't actually panned — writing centerLat/centerLng
+  //     back would show up as an unsolicited outbound patch on the
+  //     sync client's next diff.
+  //   - The address IS already persisted in meta; keeping mapState as
+  //     the user's manual pan history keeps those concerns separated.
+  const initial = useRef<{ lat: number; lng: number; zoom: number }>(
+    address && !center.locked
+      ? { lat: address.lat, lng: address.lon, zoom: 19 }
+      : { lat: center.centerLat, lng: center.centerLng, zoom: center.zoom }
+  );
 
   return (
+    <div
+      // `data-map-rotate-wrapper` is the hook Toolbar.handleLock uses to
+      // temporarily strip the transform before html2canvas. The wrapper
+      // fills its parent and transforms only the visual — the parent
+      // `<main>` has overflow-hidden so rotated corners clip cleanly.
+      data-map-rotate-wrapper
+      style={{
+        width: '100%',
+        height: '100%',
+        transform: `rotate(${rotation}deg)`,
+        transformOrigin: 'center center',
+      }}
+    >
     <MapContainer
       center={[initial.current.lat, initial.current.lng]}
       zoom={initial.current.zoom}
@@ -98,5 +150,6 @@ export default function MapView({ onMapReady }: Props) {
       )}
       <MapBinder onMapReady={onMapReady} />
     </MapContainer>
+    </div>
   );
 }
