@@ -23,8 +23,10 @@ import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { CustomerRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
+import type { ProjectAddress } from '../types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import AddressAutocomplete from './AddressAutocomplete';
 
 interface CustomerFormState {
   name: string;
@@ -70,6 +72,11 @@ export default function CustomersPage() {
   // editingId: null = no form shown, 'new' = create form, string = edit form for that id
   const [editingId, setEditingId] = useState<'new' | string | null>(null);
   const [form, setForm] = useState<CustomerFormState>(emptyForm());
+  // addressPick tracks the last autocomplete selection. We don't store
+  // lat/lon on customers, so this is only used to drive the autocomplete
+  // widget's "committed value" display — the actual address data lives
+  // in the flat form fields (street, housenumber, etc.) as editable text.
+  const [addressPick, setAddressPick] = useState<ProjectAddress | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -111,23 +118,52 @@ export default function CustomersPage() {
   function startCreate() {
     setEditingId('new');
     setForm(emptyForm());
+    setAddressPick(undefined);
     setFormError(null);
   }
 
   function startEdit(c: CustomerRecord) {
     setEditingId(c.id);
     setForm(recordToForm(c));
+    // We don't store lat/lon, so we can't reconstruct a full ProjectAddress
+    // from the record. Start with no committed pick — the user can use the
+    // autocomplete to replace the address, or edit the sub-fields directly.
+    setAddressPick(undefined);
     setFormError(null);
   }
 
   function cancelEdit() {
     setEditingId(null);
+    setAddressPick(undefined);
     setFormError(null);
   }
 
+  // When the user picks from the address autocomplete, populate all flat
+  // address fields so they remain editable after the pick.
+  function handleAddressPick(addr: ProjectAddress | undefined) {
+    setAddressPick(addr);
+    if (addr) {
+      setForm((f) => ({
+        ...f,
+        street:      addr.street      ?? '',
+        housenumber: addr.housenumber ?? '',
+        city:        addr.city        ?? '',
+        postcode:    addr.postcode    ?? '',
+        country:     addr.country     ?? '',
+      }));
+    }
+  }
+
+  const ADDRESS_FIELDS = new Set<keyof CustomerFormState>(['street', 'housenumber', 'city', 'postcode', 'country']);
+
   function field(key: keyof CustomerFormState) {
-    return (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    return (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setForm((f) => ({ ...f, [key]: e.target.value }));
+      // Any manual edit to an address sub-field means the autocomplete's
+      // committed pick is no longer accurate — clear it so the widget
+      // resets to empty rather than showing a stale formatted label.
+      if (ADDRESS_FIELDS.has(key)) setAddressPick(undefined);
+    };
   }
 
   async function handleSave(e: React.FormEvent) {
@@ -276,25 +312,40 @@ export default function CustomersPage() {
                   <span className="field-label">{t('customer.email')}</span>
                   <input className="input" type="email" value={form.email} onChange={field('email')} placeholder={t('customer.emailPlaceholder')} maxLength={200} />
                 </label>
-                <label className="col-span-2 block">
-                  <span className="field-label">{t('customer.street')} / {t('customer.housenumber')}</span>
-                  <div className="flex gap-2">
-                    <input className="input flex-1" value={form.street} onChange={field('street')} maxLength={200} />
-                    <input className="input w-20" value={form.housenumber} onChange={field('housenumber')} maxLength={20} />
+                <div className="col-span-2 block">
+                  <span className="field-label">{t('projectMeta.address')}</span>
+                  {/*
+                    Autocomplete fills the sub-fields below on pick.
+                    The widget shows the formatted label of the last committed
+                    pick; once the user edits any sub-field directly, addressPick
+                    is cleared and the widget resets to empty so there's no
+                    stale label floating above hand-edited fields.
+                  */}
+                  <AddressAutocomplete value={addressPick} onChange={handleAddressPick} />
+                  {/* Sub-fields in a 4-col grid matching ProjectMetaForm's address layout. */}
+                  <div className="mt-2 grid grid-cols-4 gap-2">
+                    <label className="col-span-3 block">
+                      <span className="field-label">{t('customer.street')}</span>
+                      <input className="input" value={form.street} onChange={field('street')} maxLength={200} />
+                    </label>
+                    <label className="col-span-1 block">
+                      <span className="field-label">{t('customer.housenumber')}</span>
+                      <input className="input" value={form.housenumber} onChange={field('housenumber')} maxLength={20} />
+                    </label>
+                    <label className="col-span-1 block">
+                      <span className="field-label">{t('customer.postcode')}</span>
+                      <input className="input" value={form.postcode} onChange={field('postcode')} maxLength={20} />
+                    </label>
+                    <label className="col-span-3 block">
+                      <span className="field-label">{t('customer.city')}</span>
+                      <input className="input" value={form.city} onChange={field('city')} maxLength={100} />
+                    </label>
+                    <label className="col-span-4 block">
+                      <span className="field-label">{t('customer.country')}</span>
+                      <input className="input" value={form.country} onChange={field('country')} maxLength={100} />
+                    </label>
                   </div>
-                </label>
-                <label className="block">
-                  <span className="field-label">{t('customer.postcode')}</span>
-                  <input className="input" value={form.postcode} onChange={field('postcode')} maxLength={20} />
-                </label>
-                <label className="block">
-                  <span className="field-label">{t('customer.city')}</span>
-                  <input className="input" value={form.city} onChange={field('city')} maxLength={100} />
-                </label>
-                <label className="col-span-2 block">
-                  <span className="field-label">{t('customer.country')}</span>
-                  <input className="input" value={form.country} onChange={field('country')} maxLength={100} />
-                </label>
+                </div>
                 <label className="col-span-2 block">
                   <span className="field-label">{t('customer.notes')}</span>
                   <textarea className="input" value={form.notes} onChange={field('notes')} placeholder={t('customer.notesPlaceholder')} maxLength={2000} rows={3} style={{ resize: 'vertical', minHeight: 72 }} />
