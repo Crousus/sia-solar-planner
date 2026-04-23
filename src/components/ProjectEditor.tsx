@@ -29,8 +29,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
-import type { ProjectRecord } from '../backend/types';
-import { useProjectStore } from '../store/projectStore';
+import type { InverterModelRecord, ProjectRecord } from '../backend/types';
+import { panelTypeFromCatalogRecord, useProjectStore } from '../store/projectStore';
 import { createSyncClient, type SyncClient } from '../backend/syncClient';
 import App from '../App';
 import ConflictModal from './ConflictModal';
@@ -86,13 +86,83 @@ export default function ProjectEditor() {
     // state with this page's late-arriving doc.
     let cancelled = false;
     pb.collection('projects')
-      .getOne<ProjectRecord>(projectId)
-      .then((record) => {
+      .getOne<ProjectRecord>(projectId, {
+        // Expand panel_model so we can override doc.panelType with the
+        // catalog record's live values (see block below). Customer is
+        // expanded too so downstream consumers (e.g. settings page)
+        // don't need a separate fetch.
+        expand: 'panel_model,customer',
+      })
+      .then(async (record) => {
         if (cancelled) return;
+        // ── Live reference: catalog → doc.panelType ──────────────────
+        // If this project is linked to a panel_models catalog entry,
+        // replace whatever doc.panelType had with a fresh PanelType
+        // derived from the catalog record. This is the core of the
+        // "live reference" semantic: any edit to the catalog entry
+        // takes effect on all linked projects on next load.
+        //
+        // Legacy projects (panel_model is empty string) skip this step
+        // and continue using whatever panelType was embedded in the doc
+        // — matches the backwards-compat promise.
+        //
+        // We mutate record.doc IN PLACE rather than building a new
+        // object because loadProject takes the doc by reference and
+        // any downstream sync machinery will diff against it. Writing
+        // the catalog value before loadProject ensures the diff
+        // baseline already has the catalog values, so catalog-sourced
+        // panel data isn't treated as an "edit" waiting to be flushed.
+        if (record.expand?.panel_model) {
+          record.doc.panelType = panelTypeFromCatalogRecord(record.expand.panel_model);
+        }
+
+        const store = useProjectStore.getState();
         // We use getState() rather than a hook subscription because
         // loadProject is an action we just want to fire once — no need
         // to re-render this component when other store fields change.
-        useProjectStore.getState().loadProject(record.doc);
+        store.loadProject(record.doc);
+
+        // Wire up the catalog context so Sidebar + model pickers can
+        // read/write them. Order: project id → model id → inverter
+        // cache. The cache fetch is async; we set the rest synchronously
+        // so Sidebar doesn't briefly show "no catalog info" during the
+        // round-trip.
+        store.setActivePbProjectId(record.id);
+        store.setActivePanelModelId(record.panel_model || null);
+
+        // Batch-fetch all inverter model records referenced in the doc.
+        // The inverters array is usually small (≤5), but batching
+        // through one filter query (via `id ?= "..." || id ?= "..."`)
+        // still avoids N individual fetches. Deduped before the query so
+        // two inverters sharing a model don't fetch twice.
+        const modelIds = Array.from(
+          new Set(
+            record.doc.inverters
+              .map((i) => i.inverterModelId)
+              .filter((id): id is string => !!id),
+          ),
+        );
+        if (modelIds.length > 0) {
+          try {
+            // Use `?=` (array contains) style via OR; PB filter DSL
+            // doesn't have an `in` operator so we OR per-id. For the
+            // tens-of-inverters scale we care about, the string is
+            // short and PB handles it fine.
+            const filter = modelIds.map((id) => `id="${id}"`).join(' || ');
+            const recs = await pb.collection('inverter_models').getFullList<InverterModelRecord>({ filter });
+            if (!cancelled) {
+              const cache: Record<string, InverterModelRecord> = {};
+              for (const r of recs) cache[r.id] = r;
+              store.setInverterModelCache(cache);
+            }
+          } catch {
+            // Cache miss on any id simply means the sidebar shows the
+            // inverter's user-editable name with no manufacturer
+            // metadata — degraded but functional. Swallow to avoid
+            // blocking the editor mount on a catalog fetch.
+          }
+        }
+
         // Set before setLoaded so Toolbar can read it on first render.
         activeProjectTeamId = record.team;
         setLoaded(true);
@@ -138,7 +208,16 @@ export default function ProjectEditor() {
       activeProjectTeamId = null;
       // Clear the store on unmount so the next project load starts clean.
       // See header comment for why this matters across project navigation.
-      useProjectStore.getState().resetProject();
+      const store = useProjectStore.getState();
+      store.resetProject();
+      // Clear catalog context — resetProject only wipes the `project`
+      // slice; the catalog fields are UI-state outside that slice and
+      // would otherwise leak into the next project mount (e.g. the
+      // previous project's panel_model id ghosting through the sidebar
+      // for a frame).
+      store.setActivePbProjectId(null);
+      store.setActivePanelModelId(null);
+      store.setInverterModelCache({});
     };
   }, [projectId, navigate]);
 

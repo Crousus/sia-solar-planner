@@ -75,6 +75,10 @@ function serverRecord(doc: Project, revision = 1): ProjectRecord {
     doc,
     revision,
     customer: '',
+    // panel_model required by the record type since the catalog
+    // feature added it; tests don't exercise catalog behavior so an
+    // empty string (same convention as customer above) is fine.
+    panel_model: '',
   };
 }
 

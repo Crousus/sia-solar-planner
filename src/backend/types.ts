@@ -48,9 +48,72 @@ export interface ProjectRecord extends BaseRecord {
   // customer relation — empty string when not linked, customer ID when linked.
   // When fetched with expand: 'customer', the record lives at expand?.customer.
   customer: string;
+  // panel_model relation — empty string for legacy projects that pre-date
+  // the catalog (or that never got linked). When linked, this is the
+  // `panel_models` record id; a fetch with expand=panel_model populates
+  // expand?.panel_model with the full record. ProjectEditor then uses
+  // that to overwrite doc.panelType on load, giving us "live reference"
+  // semantics — catalog edits propagate to projects on next open.
+  panel_model: string;
   expand?: {
     customer?: CustomerRecord;
+    panel_model?: PanelModelRecord;
   };
+}
+
+/**
+ * A PV panel model in the global catalog (`panel_models` collection).
+ *
+ * Global = not team-scoped. The catalog is shared across the whole app;
+ * any signed-in user can browse it from /catalog. Write rules live on
+ * the server (see pb_migrations) — typically any authenticated user can
+ * create/edit, with the expectation that teams will curate their own
+ * entries rather than stepping on each other.
+ *
+ * `deleted` is a soft-delete flag, used only when a catalog entry is
+ * still referenced by a project — hard-deleting would leave a dangling
+ * FK. Soft-deleted records are filtered out of the picker dropdowns.
+ */
+export interface PanelModelRecord extends BaseRecord {
+  manufacturer: string;
+  model: string;
+  widthM: number;
+  heightM: number;
+  wattPeak: number;
+  efficiencyPct?: number;
+  weightKg?: number;
+  voc?: number;
+  isc?: number;
+  vmpp?: number;
+  impp?: number;
+  tempCoefficientPmax?: number;
+  warrantyYears?: number;
+  datasheetUrl?: string;
+  deleted: boolean;
+}
+
+/**
+ * An inverter model in the global catalog (`inverter_models` collection).
+ *
+ * Same global-scoping and deleted-flag conventions as PanelModelRecord.
+ * Note however that projects reference inverter models by id inside the
+ * opaque `doc` JSON (Inverter.inverterModelId), NOT via a PocketBase
+ * relation field — so there's no server-side FK to enforce. Deletes
+ * are always hard in the UI since a dangling reference inside doc is
+ * benign (the picker simply won't resolve it and the inverter falls
+ * back to its user-editable name).
+ */
+export interface InverterModelRecord extends BaseRecord {
+  manufacturer: string;
+  model: string;
+  maxAcPowerW: number;
+  maxDcPowerW?: number;
+  efficiencyPct?: number;
+  phases?: number;
+  maxStrings?: number;
+  maxInputVoltageV?: number;
+  datasheetUrl?: string;
+  deleted: boolean;
 }
 
 export interface CustomerRecord extends BaseRecord {

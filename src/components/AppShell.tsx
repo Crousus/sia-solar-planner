@@ -39,6 +39,7 @@ import ProjectEditor from './ProjectEditor';
 import NewProjectPage from './NewProjectPage';
 import ProjectSettingsPage from './ProjectSettingsPage';
 import CustomersPage from './CustomersPage';
+import CatalogPage from './CatalogPage';
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -96,6 +97,12 @@ export default function AppShell() {
         */}
         <Route path="/p/:projectId/settings" element={<AuthGuard><ProjectSettingsPage /></AuthGuard>} />
         <Route path="/teams/:teamId/customers" element={<AuthGuard><CustomersPage /></AuthGuard>} />
+        {/*
+          Hardware catalog — global (not team-scoped). Panel and inverter
+          models live in shared collections so any team can link to them.
+          Kept at a top-level path for that reason.
+        */}
+        <Route path="/catalog" element={<AuthGuard><CatalogPage /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   );

@@ -188,6 +188,16 @@ export default function TeamView() {
                   >
                     {t('team.customers')}
                   </Link>
+                  {/* Hardware catalog link — global, not team-scoped,
+                      so the URL has no team segment. Placed next to
+                      customers so both "adjacent" DBs (customer &
+                      hardware) live together in the nav. */}
+                  <Link
+                    to="/catalog"
+                    className="hover:text-ink-200 transition-colors"
+                  >
+                    {t('team.catalog')}
+                  </Link>
                 </div>
               </div>
 

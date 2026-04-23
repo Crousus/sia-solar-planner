@@ -22,10 +22,13 @@
 // Behavior is unchanged — every control still maps 1:1 to a store action.
 // ────────────────────────────────────────────────────────────────────────────
 
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../store/projectStore';
 import { polygonArea, panelFitsOnRoof } from '../utils/geometry';
 import type { PanelType } from '../types';
+import PanelModelPicker from './PanelModelPicker';
+import InverterModelPicker from './InverterModelPicker';
 
 export default function Sidebar() {
   const { t } = useTranslation();
@@ -51,6 +54,21 @@ export default function Sidebar() {
   const activeStringId = useProjectStore((s) => s.activeStringId);
   const setActiveString = useProjectStore((s) => s.setActiveString);
   const setToolMode = useProjectStore((s) => s.setToolMode);
+
+  // ── Catalog context ────────────────────────────────────────────────
+  // Wired up by ProjectEditor on mount. We read them here so the panel-
+  // type and inverter-row sections can render catalog-aware UI.
+  const activePanelModelId = useProjectStore((s) => s.activePanelModelId);
+  const setPanelModelFromCatalog = useProjectStore((s) => s.setPanelModelFromCatalog);
+  const inverterModelCache = useProjectStore((s) => s.inverterModelCache);
+  const linkInverterModel = useProjectStore((s) => s.linkInverterModel);
+  // Inline-picker toggles. Kept as local state (rather than in the
+  // store) because they're pure presentation — the store shouldn't know
+  // whether a dropdown is open. `null` means "closed"; string id means
+  // "open for that inverter". The panel-model toggle is a plain boolean
+  // since there's only one panel picker at a time.
+  const [panelPickerOpen, setPanelPickerOpen] = useState(false);
+  const [inverterPickerOpenFor, setInverterPickerOpenFor] = useState<string | null>(null);
 
   const selectedRoofId = useProjectStore((s) => s.selectedRoofId);
   const updateRoof = useProjectStore((s) => s.updateRoof);
@@ -214,56 +232,141 @@ export default function Sidebar() {
       <div className="px-4 py-4 space-y-6">
 
         {/* ── Panel type ──────────────────────────────────────────── */}
-        {/* Single panel type per project — simpler than a library and matches
-            most residential jobs where all panels are identical. */}
+        {/*
+           Two display modes driven by `activePanelModelId`:
+            (a) Catalog-linked (id present): show a read-only summary
+                card with manufacturer/model/Wp + a Change button that
+                reveals an inline picker. Datasheet link surfaces as "↗"
+                when present. Editing the underlying dimensions here
+                would desynchronize from the catalog on next load
+                (live reference overwrites them), so we don't offer
+                inline edit — the user has to either change the
+                catalog entry itself from /catalog or pick a different
+                model.
+            (b) Legacy (no link): keep the original manual inputs so
+                pre-catalog projects continue to work. A small "Link to
+                catalog" affordance lets the user opt into catalog
+                tracking at any point — picking triggers
+                setPanelModelFromCatalog which both patches panel_model
+                on PB and updates doc.panelType.
+        */}
         <section>
           <h3 className="section-title">
             <span>{t('sidebar.panelType')}</span>
           </h3>
-          <div className="space-y-2.5">
-            <Field label={t('sidebar.model')}>
-              <input
-                className="input"
-                value={project.panelType.name}
-                onChange={(e) => updatePanelType({ name: e.target.value })}
-              />
-            </Field>
-            {/* Dimensions on a single row — they're paired conceptually and
-                saving a row of vertical space matters in a compact sidebar. */}
-            <div className="grid grid-cols-2 gap-2">
-              <Field label={t('sidebar.widthM')}>
-                <input
-                  type="number"
-                  step="0.001"
-                  className="input input-mono"
-                  value={project.panelType.widthM}
-                  // onBlur (not onChange) so mid-type values like "1." don't
-                  // fire validation prompts on each keystroke. Commits only
-                  // when focus leaves the field.
-                  onChange={(e) => updatePanelType({ widthM: parseFloat(e.target.value) || 0 })}
-                  onBlur={(e) => tryUpdatePanelType({ widthM: parseFloat(e.target.value) || 0 })}
+          {activePanelModelId ? (
+            <div
+              className="rounded-lg p-3 space-y-2"
+              style={{
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--hairline)',
+              }}
+            >
+              <div className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] text-ink-100 truncate">{project.panelType.name}</div>
+                  <div className="font-mono text-[11px] text-ink-400">
+                    {`${project.panelType.wattPeak} Wp · ${project.panelType.widthM}×${project.panelType.heightM} m`}
+                    {project.panelType.efficiencyPct ? ` · ${project.panelType.efficiencyPct}%` : ''}
+                  </div>
+                </div>
+                {project.panelType.datasheetUrl && (
+                  <a
+                    href={project.panelType.datasheetUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-ink-300 hover:text-sun-300 shrink-0"
+                    title={t('panelModel.openDatasheet')}
+                    aria-label={t('panelModel.openDatasheet')}
+                  >
+                    ↗
+                  </a>
+                )}
+              </div>
+              <button
+                className="btn btn-ghost w-full justify-center"
+                onClick={() => setPanelPickerOpen((v) => !v)}
+                style={{ padding: '6px 8px', fontSize: 12 }}
+              >
+                {panelPickerOpen ? t('panelModel.closePicker') : t('panelModel.change')}
+              </button>
+              {panelPickerOpen && (
+                <PanelModelPicker
+                  value={activePanelModelId}
+                  onChange={(_id, record) => {
+                    // Fire-and-forget: the async PATCH is handled inside
+                    // the store action. If it fails, the local doc is
+                    // already updated — the FK will reconcile on next
+                    // load via expand. We could surface errors here but
+                    // haven't wired an error slot in the sidebar yet.
+                    void setPanelModelFromCatalog(record);
+                    setPanelPickerOpen(false);
+                  }}
                 />
-              </Field>
-              <Field label={t('sidebar.heightM')}>
-                <input
-                  type="number"
-                  step="0.001"
-                  className="input input-mono"
-                  value={project.panelType.heightM}
-                  onChange={(e) => updatePanelType({ heightM: parseFloat(e.target.value) || 0 })}
-                  onBlur={(e) => tryUpdatePanelType({ heightM: parseFloat(e.target.value) || 0 })}
-                />
-              </Field>
+              )}
             </div>
-            <Field label={t('sidebar.ratedPower')}>
-              <input
-                type="number"
-                className="input input-mono"
-                value={project.panelType.wattPeak}
-                onChange={(e) => updatePanelType({ wattPeak: parseInt(e.target.value) || 0 })}
-              />
-            </Field>
-          </div>
+          ) : (
+            <div className="space-y-2.5">
+              <Field label={t('sidebar.model')}>
+                <input
+                  className="input"
+                  value={project.panelType.name}
+                  onChange={(e) => updatePanelType({ name: e.target.value })}
+                />
+              </Field>
+              {/* Dimensions on a single row — paired conceptually. */}
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={t('sidebar.widthM')}>
+                  <input
+                    type="number"
+                    step="0.001"
+                    className="input input-mono"
+                    value={project.panelType.widthM}
+                    onChange={(e) => updatePanelType({ widthM: parseFloat(e.target.value) || 0 })}
+                    onBlur={(e) => tryUpdatePanelType({ widthM: parseFloat(e.target.value) || 0 })}
+                  />
+                </Field>
+                <Field label={t('sidebar.heightM')}>
+                  <input
+                    type="number"
+                    step="0.001"
+                    className="input input-mono"
+                    value={project.panelType.heightM}
+                    onChange={(e) => updatePanelType({ heightM: parseFloat(e.target.value) || 0 })}
+                    onBlur={(e) => tryUpdatePanelType({ heightM: parseFloat(e.target.value) || 0 })}
+                  />
+                </Field>
+              </div>
+              <Field label={t('sidebar.ratedPower')}>
+                <input
+                  type="number"
+                  className="input input-mono"
+                  value={project.panelType.wattPeak}
+                  onChange={(e) => updatePanelType({ wattPeak: parseInt(e.target.value) || 0 })}
+                />
+              </Field>
+              {/* Affordance to opt-in to catalog tracking. Intentionally
+                  tertiary (ghost button, smaller) so it doesn't pull
+                  focus from the ordinary manual-edit flow for legacy
+                  projects. */}
+              <button
+                className="btn btn-ghost w-full justify-center"
+                onClick={() => setPanelPickerOpen((v) => !v)}
+                style={{ padding: '6px 8px', fontSize: 11, opacity: 0.75 }}
+              >
+                {panelPickerOpen ? t('panelModel.closePicker') : t('panelModel.linkToCatalog')}
+              </button>
+              {panelPickerOpen && (
+                <PanelModelPicker
+                  value={null}
+                  onChange={(_id, record) => {
+                    void setPanelModelFromCatalog(record);
+                    setPanelPickerOpen(false);
+                  }}
+                />
+              )}
+            </div>
+          )}
         </section>
 
         {/* ── Inverters ───────────────────────────────────────────── */}
@@ -283,53 +386,110 @@ export default function Sidebar() {
             )}
             {inverters.map((inv) => {
               const isSelected = inv.id === selectedInverterId;
+              // Resolve the linked catalog model (if any) for display.
+              // Two possible states:
+              //   - inv.inverterModelId set AND cache hit → show mfr/model
+              //   - inv.inverterModelId set but cache miss → treat as
+              //     unlinked-for-display (the underlying id is still
+              //     stored and will re-resolve when the catalog record
+              //     loads, but the sidebar can't show metadata for
+              //     something it doesn't have cached)
+              const linkedModel = inv.inverterModelId
+                ? inverterModelCache[inv.inverterModelId]
+                : undefined;
+              const pickerOpen = inverterPickerOpenFor === inv.id;
               return (
                 <div
                   key={inv.id}
-                  className="flex gap-2 items-center p-1.5 rounded-md cursor-pointer transition-colors"
+                  className="rounded-md cursor-pointer transition-colors"
                   style={{
                     background: isSelected ? 'rgba(245,181,68,0.08)' : 'transparent',
                     border: `1px solid ${isSelected ? 'rgba(245,181,68,0.25)' : 'transparent'}`,
                   }}
                   onClick={() => setSelectedInverter(isSelected ? null : inv.id)}
                 >
-                  {/* Custom radio indicator — looks better than native
-                      <input type=radio> in our dark theme, and clicking
-                      the whole row (not just the knob) toggles selection. */}
+                  <div className="flex gap-2 items-center p-1.5">
+                    {/* Custom radio indicator — same as before. */}
+                    <div
+                      className="w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 transition-all"
+                      style={{
+                        border: `1.5px solid ${isSelected ? 'var(--sun-400)' : 'var(--ink-500)'}`,
+                        background: isSelected ? 'rgba(245,181,68,0.1)' : 'transparent',
+                      }}
+                    >
+                      {isSelected && (
+                        <div
+                          className="w-1.5 h-1.5 rounded-full"
+                          style={{ background: 'var(--sun-400)', boxShadow: '0 0 6px var(--glow-sun)' }}
+                        />
+                      )}
+                    </div>
+                    <input
+                      className="input flex-1"
+                      style={{ padding: '3px 6px', fontSize: 12 }}
+                      value={inv.name}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        renameInverter(inv.id, e.target.value);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <button
+                      className="btn btn-danger px-1.5"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(t('sidebar.deleteInverterConfirm', { name: inv.name }))) deleteInverter(inv.id);
+                      }}
+                      title="Delete inverter"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {/* Second line — catalog model info + change affordance.
+                      Stops propagation on all clicks so interacting with
+                      the picker doesn't toggle the inverter's selected
+                      state (which the outer row click handles). */}
                   <div
-                    className="w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 transition-all"
-                    style={{
-                      border: `1.5px solid ${isSelected ? 'var(--sun-400)' : 'var(--ink-500)'}`,
-                      background: isSelected ? 'rgba(245,181,68,0.1)' : 'transparent',
-                    }}
+                    className="px-1.5 pb-1.5 flex items-center gap-2"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    {isSelected && (
-                      <div
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ background: 'var(--sun-400)', boxShadow: '0 0 6px var(--glow-sun)' }}
-                      />
+                    {linkedModel ? (
+                      <>
+                        <span className="font-mono text-[10.5px] text-ink-400 truncate flex-1">
+                          {`${linkedModel.manufacturer} ${linkedModel.model}`}
+                        </span>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '2px 6px', fontSize: 10 }}
+                          onClick={() => setInverterPickerOpenFor(pickerOpen ? null : inv.id)}
+                        >
+                          {pickerOpen ? t('inverterModel.closePicker') : t('inverterModel.change')}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="btn btn-ghost flex-1 justify-center"
+                        style={{ padding: '2px 6px', fontSize: 10, opacity: 0.75 }}
+                        onClick={() => setInverterPickerOpenFor(pickerOpen ? null : inv.id)}
+                      >
+                        {pickerOpen ? t('inverterModel.closePicker') : t('inverterModel.linkModel')}
+                      </button>
                     )}
                   </div>
-                  <input
-                    className="input flex-1"
-                    style={{ padding: '3px 6px', fontSize: 12 }}
-                    value={inv.name}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      renameInverter(inv.id, e.target.value);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                  <button
-                    className="btn btn-danger px-1.5"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(t('sidebar.deleteInverterConfirm', { name: inv.name }))) deleteInverter(inv.id);
-                    }}
-                    title="Delete inverter"
-                  >
-                    ×
-                  </button>
+                  {pickerOpen && (
+                    <div
+                      className="px-1.5 pb-1.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <InverterModelPicker
+                        value={inv.inverterModelId ?? null}
+                        onChange={(id, record) => {
+                          linkInverterModel(inv.id, id, record);
+                          setInverterPickerOpenFor(null);
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}

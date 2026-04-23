@@ -100,6 +100,17 @@ interface Props {
   submitLabel: string;
   /** Active-state label while `busy` is true ("Creating…" / "Saving…"). */
   submitBusyLabel: string;
+  /** Optional extra slot rendered just above the submit row — used by
+   *  NewProjectPage to inject the PanelModelPicker without needing to
+   *  reimplement the form. Kept generic (ReactNode) so future callers
+   *  can add any field without further plumbing. Not wired into the
+   *  canSubmit check — callers that need the extra field to block
+   *  submission should pass `extraDisabled` alongside. */
+  extra?: React.ReactNode;
+  /** When true, the submit button is disabled regardless of internal
+   *  validation. Used together with `extra` to enforce required fields
+   *  outside the form's knowledge (e.g. "you must pick a panel model"). */
+  extraDisabled?: boolean;
 }
 
 export default function ProjectMetaForm({
@@ -111,6 +122,8 @@ export default function ProjectMetaForm({
   error,
   submitLabel,
   submitBusyLabel,
+  extra,
+  extraDisabled = false,
 }: Props) {
   const { t } = useTranslation();
 
@@ -127,7 +140,10 @@ export default function ProjectMetaForm({
 
   // Submit is disabled when name is empty (post-trim) — the only hard
   // requirement. Optional fields never block.
-  const canSubmit = useMemo(() => name.trim().length > 0 && !busy, [name, busy]);
+  const canSubmit = useMemo(
+    () => name.trim().length > 0 && !busy && !extraDisabled,
+    [name, busy, extraDisabled],
+  );
 
   // Map preview uses a stable initial center when no address is picked
   // so the Leaflet container has a valid viewport on mount — we hide
@@ -301,6 +317,11 @@ export default function ProjectMetaForm({
           style={{ resize: 'vertical', minHeight: 72 }}
         />
       </label>
+
+      {/* Parent-supplied extra field(s). Rendered after notes, before
+          the error banner, so it sits right above the submit row where
+          a "required field" error naturally draws the eye. */}
+      {extra}
 
       {error && (
         <div

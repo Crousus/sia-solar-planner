@@ -30,6 +30,27 @@ export interface PanelType {
   widthM: number;   // real-world short side, meters
   heightM: number;  // real-world long side, meters
   wattPeak: number; // nameplate watts, used for kWp totals in sidebar + PDF
+  // ── Optional extended fields (present when sourced from the catalog) ──
+  //
+  // These are populated ONLY when the project's `panelType` was hydrated
+  // from a `panel_models` catalog record via the expand=panel_model path
+  // in ProjectEditor. Legacy projects (manually-entered panelType, no
+  // catalog FK) will have all of these undefined.
+  //
+  // Kept on PanelType (rather than carried as a separate record in the
+  // store) so every read path — sidebar display, PDF export, anything
+  // that already destructures panelType — picks them up for free. If we
+  // split them into a side-channel record, every consumer would have to
+  // opt in to showing the richer info.
+  efficiencyPct?: number;
+  weightKg?: number;
+  voc?: number;
+  isc?: number;
+  vmpp?: number;
+  impp?: number;
+  tempCoefficientPmax?: number;
+  warrantyYears?: number;
+  datasheetUrl?: string;
 }
 
 /**
@@ -100,6 +121,19 @@ export interface PvString {
 export interface Inverter {
   id: string;
   name: string;                     // "Inverter A" etc.; user-editable
+  /**
+   * Optional FK into the `inverter_models` catalog.
+   *
+   * App-enforced only — there is NO server-side relation field for this
+   * (inverters live inside the opaque `doc` JSON, not on a dedicated
+   * table row). If the referenced model is deleted from the catalog,
+   * this id becomes a dangling reference; UI code that resolves it
+   * (Sidebar, via `inverterModelCache` in the store) MUST tolerate a
+   * cache miss by falling back to the user-editable `name` alone.
+   *
+   * Null / undefined means "not linked" — a legacy, name-only inverter.
+   */
+  inverterModelId?: string | null;
 }
 
 /**
