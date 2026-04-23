@@ -69,21 +69,33 @@ export default function ProjectSettingsPage() {
     navigate('/login', { replace: true });
   }
 
-  async function handleSubmit({ name, meta }: { name: string; meta: Project['meta'] }) {
+  async function handleSubmit({ name, meta, customerId }: { name: string; meta: Project['meta']; customerId: string | null }) {
     if (!record) return;
     setBusy(true);
     setError(null);
     try {
-      // Build the target doc. Only name + meta differ from the server's
-      // current view; every other field is carried through as-is so the
-      // diff is minimal (ideally 1-2 ops).
+      // 1. Update customer relation if it changed. This is a separate
+      //    server-side field (not part of the doc blob) so it gets its
+      //    own endpoint call, independent of the doc patch below.
+      const currentCustomer = record.customer || null;
+      if (customerId !== currentCustomer) {
+        await pb.send('/api/sp/set-customer', {
+          method: 'POST',
+          body: { projectId: record.id, customerId: customerId ?? '' },
+        });
+      }
+
+      // 2. Build the target doc. Preserve any legacy meta.client that may
+      //    exist on old projects (the form no longer writes it, but we
+      //    carry it through so the diff doesn't emit a spurious remove op).
       const nextDoc: Project = { ...record.doc, name };
-      if (meta && Object.keys(meta).length > 0) {
-        nextDoc.meta = meta;
+      const mergedMeta: Project['meta'] = {};
+      if (record.doc.meta?.client) mergedMeta.client = record.doc.meta.client;
+      if (meta?.address) mergedMeta.address = meta.address;
+      if (meta?.notes) mergedMeta.notes = meta.notes;
+      if (Object.keys(mergedMeta).length > 0) {
+        nextDoc.meta = mergedMeta;
       } else {
-        // User cleared every optional field → remove `meta` entirely
-        // (rather than persisting {}), consistent with our data-model
-        // rule that meta is either absent or non-empty.
         delete nextDoc.meta;
       }
 
@@ -178,9 +190,11 @@ export default function ProjectSettingsPage() {
         </div>
       ) : (
         <ProjectMetaForm
+          teamId={record.team}
           initialValue={{
             name: record.doc.name ?? '',
             meta: record.doc.meta ?? {},
+            customerId: record.customer || null,
           }}
           onSubmit={handleSubmit}
           cancelHref={`/p/${record.id}`}

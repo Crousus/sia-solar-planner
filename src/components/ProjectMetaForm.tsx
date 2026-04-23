@@ -25,6 +25,7 @@ import { Link } from 'react-router-dom';
 import L from 'leaflet';
 import type { ProjectMeta, ProjectAddress } from '../types';
 import AddressAutocomplete from './AddressAutocomplete';
+import CustomerPicker from './CustomerPicker';
 
 // Leaflet's default marker icon relies on CSS-relative image URLs that
 // don't survive Vite's asset pipeline without a shim. Rather than wiring
@@ -75,9 +76,12 @@ function PreviewFollower({ lat, lon }: { lat: number; lon: number }) {
 export interface ProjectMetaFormValue {
   name: string;
   meta: ProjectMeta;
+  customerId: string | null;
 }
 
 interface Props {
+  /** Team ID — passed to CustomerPicker so it can scope the customer list. */
+  teamId: string;
   /** Initial values for the form. For new projects, pass name='' and
    *  meta={}; for settings, pass the existing record values. */
   initialValue: ProjectMetaFormValue;
@@ -99,6 +103,7 @@ interface Props {
 }
 
 export default function ProjectMetaForm({
+  teamId,
   initialValue,
   onSubmit,
   cancelHref,
@@ -114,7 +119,7 @@ export default function ProjectMetaForm({
   // and makes targeted updates (e.g. onChange on a single input) not
   // re-render fields that didn't change.
   const [name, setName] = useState(initialValue.name);
-  const [client, setClient] = useState(initialValue.meta.client ?? '');
+  const [customerId, setCustomerId] = useState<string | null>(initialValue.customerId ?? null);
   const [address, setAddress] = useState<ProjectAddress | undefined>(
     initialValue.meta.address
   );
@@ -138,16 +143,16 @@ export default function ProjectMetaForm({
     e.preventDefault();
     if (!canSubmit) return;
     // Strip empty-string optional fields so we never persist "" for
-    // `client`/`notes` — keeps patches / diffs minimal and avoids a
-    // difference between "never entered" and "entered then cleared".
+    // `notes` — keeps patches / diffs minimal and avoids a difference
+    // between "never entered" and "entered then cleared". The client
+    // name lives on the customer relation now (see customerId below),
+    // no longer on meta.client.
     const meta: ProjectMeta = {};
-    const cTrim = client.trim();
-    if (cTrim) meta.client = cTrim;
     if (address) meta.address = address;
     const nTrim = notes.trim();
     if (nTrim) meta.notes = nTrim;
 
-    await onSubmit({ name: name.trim(), meta });
+    await onSubmit({ name: name.trim(), meta, customerId });
   }
 
   return (
@@ -166,16 +171,10 @@ export default function ProjectMetaForm({
         />
       </label>
 
-      <label className="block">
-        <span className="field-label">{t('projectMeta.client')}</span>
-        <input
-          className="input"
-          value={client}
-          onChange={(e) => setClient(e.target.value)}
-          placeholder={t('projectMeta.clientPlaceholder')}
-          maxLength={120}
-        />
-      </label>
+      <div className="block">
+        <span className="field-label">{t('customer.label')}</span>
+        <CustomerPicker teamId={teamId} value={customerId} onChange={setCustomerId} />
+      </div>
 
       <div className="block">
         <span className="field-label">{t('projectMeta.address')}</span>

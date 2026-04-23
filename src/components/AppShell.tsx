@@ -38,6 +38,7 @@ import TeamMembers from './TeamMembers';
 import ProjectEditor from './ProjectEditor';
 import NewProjectPage from './NewProjectPage';
 import ProjectSettingsPage from './ProjectSettingsPage';
+import CustomersPage from './CustomersPage';
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -94,6 +95,7 @@ export default function AppShell() {
           project doc directly via /api/sp/patch.
         */}
         <Route path="/p/:projectId/settings" element={<AuthGuard><ProjectSettingsPage /></AuthGuard>} />
+        <Route path="/teams/:teamId/customers" element={<AuthGuard><CustomersPage /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   );

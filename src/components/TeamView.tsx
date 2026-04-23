@@ -17,7 +17,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
-import type { ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
+import type { ProjectRecord, TeamRecord, TeamMemberRecord, CustomerRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 
@@ -30,6 +30,8 @@ export default function TeamView() {
   const [team, setTeam] = useState<TeamRecord | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
   const [myRole, setMyRole] = useState<'admin' | 'member' | null>(null);
+  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
+  const [customerFilter, setCustomerFilter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function signOut() {
@@ -47,16 +49,24 @@ export default function TeamView() {
       pb.collection('projects').getFullList<ProjectRecord>({
         filter: `team="${teamId}"`,
         sort: '-updated',
+        // Expand the customer relation so the project row can display the
+        // customer name without a separate fetch per row.
+        expand: 'customer',
       }),
       pb.collection('team_members').getFirstListItem<TeamMemberRecord>(
         `team="${teamId}" && user="${user.id}"`
       ),
+      pb.collection('customers').getFullList<CustomerRecord>({
+        filter: `team="${teamId}"`,
+        sort: 'name',
+      }),
     ])
-      .then(([teamRec, projs, me]) => {
+      .then(([teamRec, projs, me, custs]) => {
         if (cancelled) return;
         setTeam(teamRec);
         setProjects(projs);
         setMyRole(me.role);
+        setCustomers(custs);
       })
       .catch((err) => { if (!cancelled) setError(err.message); });
     return () => { cancelled = true; };
@@ -172,6 +182,12 @@ export default function TeamView() {
                       {t('team.manageMembers')}
                     </Link>
                   )}
+                  <Link
+                    to={`/teams/${team!.id}/customers`}
+                    className="hover:text-ink-200 transition-colors"
+                  >
+                    {t('team.customers')}
+                  </Link>
                 </div>
               </div>
 
@@ -187,6 +203,22 @@ export default function TeamView() {
               </Link>
             </div>
           </header>
+
+          {customers.length > 0 && (
+            <div className="mb-4 flex items-center gap-2">
+              <select
+                className="input"
+                value={customerFilter ?? ''}
+                onChange={(e) => setCustomerFilter(e.target.value || null)}
+                style={{ maxWidth: 240, padding: '6px 10px', fontSize: 13 }}
+              >
+                <option value="">{t('customer.allCustomers')}</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {projects!.length === 0 ? (
             <div
@@ -219,7 +251,10 @@ export default function TeamView() {
             </div>
           ) : (
             <ul className="space-y-2">
-              {projects!.map((p, i) => {
+              {(customerFilter
+                ? projects!.filter((p) => p.customer === customerFilter)
+                : projects!
+              ).map((p, i) => {
                 // Human-readable relative time for the updated stamp.
                 // Kept inline because it's the only date formatting on
                 // this page; factoring out a util would be premature.
@@ -230,7 +265,9 @@ export default function TeamView() {
                 // above), so reading meta/mapState here costs nothing
                 // extra — we're just using more of what we already have.
                 const meta = p.doc?.meta;
-                const client = meta?.client?.trim();
+                // Prefer the expanded customer name; fall back to legacy
+                // meta.client for projects created before the customer DB.
+                const client = p.expand?.customer?.name ?? meta?.client?.trim();
                 const addressLabel = meta?.address?.formatted;
                 // Only locked projects have a captured backdrop — the
                 // base64 dataURL lives on mapState when `locked === true`.

@@ -74,6 +74,7 @@ function serverRecord(doc: Project, revision = 1): ProjectRecord {
     name: doc.name,
     doc,
     revision,
+    customer: '',
   };
 }
 

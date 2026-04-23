@@ -86,7 +86,7 @@ export default function NewProjectPage() {
     navigate('/login', { replace: true });
   }
 
-  async function handleSubmit({ name, meta }: { name: string; meta: Project['meta'] }) {
+  async function handleSubmit({ name, meta, customerId }: { name: string; meta: Project['meta']; customerId: string | null }) {
     if (!teamId) return;
     setBusy(true);
     setError(null);
@@ -110,6 +110,9 @@ export default function NewProjectPage() {
         name,
         doc,
         revision: 0,
+        // Only include customer when set — empty string would still pass
+        // the optional relation check but a conditional omission is cleaner.
+        ...(customerId ? { customer: customerId } : {}),
       });
       navigate(`/p/${created.id}`);
     } catch (err: unknown) {
@@ -145,7 +148,8 @@ export default function NewProjectPage() {
       </div>
 
       <ProjectMetaForm
-        initialValue={{ name: '', meta: {} }}
+        teamId={teamId ?? ''}
+        initialValue={{ name: '', meta: {}, customerId: null }}
         onSubmit={handleSubmit}
         cancelHref={teamId ? `/teams/${teamId}` : '/'}
         busy={busy}
