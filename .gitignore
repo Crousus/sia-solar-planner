@@ -12,3 +12,8 @@ server/pb_data/
 # Downloaded PocketBase binary (installed locally by the server's README)
 server/pocketbase
 ocr-service/.env
+# Superpowers plugin runtime files (local brainstorm sessions, server pids)
+.superpowers/
+# Python bytecode
+__pycache__/
+*.pyc

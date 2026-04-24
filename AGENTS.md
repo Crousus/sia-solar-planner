@@ -13,7 +13,9 @@ Guide for AI coding agents working on this repo.
 5. Places individual panels on roofs — they snap to a grid aligned with the roof's long edge and stay inside the polygon
 6. Creates strings, drags a lasso to assign panels; panels are auto-numbered to indicate wiring direction
 7. Assigns strings to inverters
-8. Exports an A4 landscape PDF with the plan + string-to-inverter table
+8. Switches to the **Block Diagram** view (sidebar toggle) to draw an electrical single-line diagram
+9. The diagram bootstraps automatically from existing roof/inverter data; the user connects nodes and adds switches, fuses, batteries, FRE controller, grid output
+10. Exports an A4 landscape PDF with two pages: roof plan + block diagram
 
 Local-first editor backed by PocketBase for auth, team projects, and realtime sync. See `docs/superpowers/specs/2026-04-21-backend-sync-design.md` for the design rationale and `docs/superpowers/plans/2026-04-21-backend-sync.md` for the implementation plan.
 
@@ -30,6 +32,7 @@ Local-first editor backed by PocketBase for auth, team projects, and realtime sy
 | i18n | `i18next` + `react-i18next` + `i18next-browser-languagedetector` | en/de; locale keys are type-checked against `en.ts` at compile time |
 | Styling | Tailwind CSS + a little inline `<style>` | No component library |
 | PDF | `@react-pdf/renderer` | React-component based; server-renders to PDF blob; replaced jspdf+html2canvas |
+| Diagram canvas | `@xyflow/react` v12 | Node-edge graph for the electrical block diagram view; controlled nodes/edges via Zustand |
 | Geocoding | Photon API | Open-source, no key; used for address autocomplete in `AddressAutocomplete.tsx` |
 | Backend client | `pocketbase` JS SDK | Singleton in `src/backend/pb.ts`; auth persisted to localStorage |
 
@@ -154,14 +157,18 @@ We use ADRs to document significant architectural decisions, requirements, and t
 src/
 ├── main.tsx                     # React root — renders <AppShell/>, imports i18n
 ├── App.tsx                      # The canvas editor shell (keyboard shortcuts, hint banner)
-│                                #   rendered by ProjectEditor at /p/:id
+│                                #   rendered by ProjectEditor at /p/:id; owns the
+│                                #   `activeView` ('roof' | 'diagram') local state and
+│                                #   conditionally renders MapView/KonvaOverlay vs DiagramView
 ├── index.css                    # Tailwind directives + konva-overlay classes
 ├── i18n.ts                      # i18next init (LanguageDetector, en+de resources)
 │
 ├── types/index.ts               # ALL shared domain types:
 │                                #   Point, Rect, PanelType, Roof, Panel, PvString,
 │                                #   Inverter, MapState (discriminated union), ProjectMeta,
-│                                #   ProjectAddress, Project, ToolMode, STRING_COLORS
+│                                #   ProjectAddress, Project, ToolMode, STRING_COLORS,
+│                                #   DiagramNodeType, DiagramNodeData, DiagramNode,
+│                                #   DiagramEdge, DiagramMeta, Diagram
 │
 ├── store/
 │   ├── projectStore.ts          # Zustand store: project state + all mutations +
@@ -196,9 +203,11 @@ src/
 │   └── pdfExport.tsx            # Legacy export shim (transitional; main PDF is SolarPlanDoc)
 │
 ├── pdf/
-│   ├── SolarPlanDoc.tsx         # @react-pdf/renderer document: left rail (meta/stats) +
-│   │                            #   right pane (plan image) + full-width strings table
-│   └── composeStageImage.ts     # Rasterises the Konva Stage to a PNG dataURL for the PDF
+│   ├── SolarPlanDoc.tsx         # @react-pdf/renderer document: page 1 = left rail (meta/stats) +
+│   │                            #   right pane (plan image) + full-width strings table;
+│   │                            #   page 2 = block diagram (A4 landscape PNG via html2canvas)
+│   └── composeStageImage.ts     # Rasterises the Konva Stage to a PNG dataURL (page 1) and
+│                                #   captures the diagram view via html2canvas (page 2)
 │
 ├── locales/
 │   ├── en.ts                    # English translation strings (source of truth for type-checking)
@@ -232,8 +241,29 @@ src/
     ├── PanelModelPicker.tsx     # Dropdown/search for panel models (used in Sidebar)
     ├── InverterModelPicker.tsx  # Dropdown/search for inverter models (used in Sidebar)
     │
+    ├── DiagramView.tsx          # Top-level block diagram view: A4 container (1122×794 px,
+│                                #   data-diagram-view attr for html2canvas capture),
+│                                #   mounts DiagramCanvas + DiagramToolbar + DiagramMetaTable,
+│                                #   triggers bootstrapDiagram() on first open
+    ├── diagram/
+│   ├── DiagramCanvas.tsx        # <ReactFlow> controlled canvas; wires store nodes/edges;
+│   │                            #   applyNodeChanges, applyEdgeChanges, addEdge;
+│   │                            #   deleteKeyCode=['Delete','Backspace']
+│   ├── DiagramToolbar.tsx       # "Add node" buttons for manually-added node types
+│   ├── DiagramMetaTable.tsx     # 7-column editable table (#1e293b header); persists to diagram.meta
+│   └── nodes/
+│       ├── BaseNode.tsx         # Shared rounded-rect shell: colored header, 4 handles,
+│       │                        #   contentEditable label via useReactFlow().updateNodeData()
+│       ├── SolarGeneratorNode.tsx   # amber #f59e0b
+│       ├── InverterNode.tsx         # blue #3b82f6
+│       ├── SwitchNode.tsx           # slate #64748b
+│       ├── FuseNode.tsx             # red #ef4444
+│       ├── BatteryNode.tsx          # emerald #10b981
+│       ├── FreNode.tsx              # violet #8b5cf6
+│       └── GridOutputNode.tsx       # sky #0ea5e9
     ├── Toolbar.tsx              # Top bar: lock, tool modes, undo/redo, export, save/load
-    ├── Sidebar.tsx              # Panel type, inverters (with catalog link), strings, roof props
+    ├── Sidebar.tsx              # Panel type, inverters (with catalog link), strings, roof props;
+│                                #   hosts the Roof Plan / Block Diagram toggle above PROJEKT
     ├── MapView.tsx              # react-leaflet + MapLockSync + pre-lock rotation preview
     ├── CompassWidget.tsx        # North-arrow overlay; rotates with stage rotation
     ├── RotationDock.tsx         # Middle-mouse rotation control + reset button
@@ -294,7 +324,7 @@ syncClient detects diff            ← debounced, runs after each store mutation
 ```
 
 Three kinds of state:
-- **Persistent** (`project`): roofs, panels, strings, inverters, panelType, mapState, meta
+- **Persistent** (`project`): roofs, panels, strings, inverters, panelType, mapState, meta, diagram
 - **Ephemeral** (`toolMode`, `selectedRoofId`, `activeStringId`, …): not persisted (see `partialize` in the store)
 - **History** (`past`, `future`, `canUndo`, `canRedo`): undo/redo stacks; NOT persisted (in-memory only)
 
@@ -355,6 +385,18 @@ Groups are relevant for:
 1. For each segment between two consecutive string panels, check every OTHER (non-member) panel on the same roof for "near the line" proximity.
 2. If a non-member panel is found on the segment, detour the line perpendicular to the segment direction, clearing the panel's bounding box.
 3. Try both perpendicular sides and pick the one that minimises crossings with already-committed sub-segments ("best-effort cross-free routing").
+
+### Block diagram
+
+The **Block Diagram** view is a second canvas inside the same project editor, toggled by a Roof Plan / Block Diagram button pair in the sidebar. `App.tsx` holds `activeView: 'roof' | 'diagram'` as local state; setting it to `'diagram'` unmounts the Konva/map layer and mounts `DiagramView`.
+
+**React Flow integration**: `@xyflow/react` v12 is used for the canvas. Node state and edge state are stored in `project.diagram` (Zustand) as plain `DiagramNode[]` / `DiagramEdge[]` that match React Flow's native shapes exactly — no transformation layer. The store exposes `setDiagramNodes`, `setDiagramEdges`, `addDiagramNode`, `updateDiagramMeta`, `bootstrapDiagram`; all registered as `bypass` in `ACTION_POLICY` (diagram actions do not enter the undo stack).
+
+**Node types**: Seven custom node types, each a thin wrapper around `BaseNode.tsx`. React Flow v12 requires the pattern `NodeProps<Node<DiagramNodeData, 'solarGenerator'>>` — NOT the v11 `NodeProps<DiagramNodeData>`. Every node file defines a local type alias before the component to stay compile-clean.
+
+**Bootstrap**: `bootstrapDiagram()` is idempotent — it exits immediately if `project.diagram` already exists. On first open it creates one `solarGenerator` node per Roof (top third of canvas) and one `inverter` node per Inverter (middle third). No edges are created automatically. `DiagramView` calls `useEffect(() => { bootstrapDiagram(); }, [bootstrapDiagram])` so bootstrap runs once per mount when needed.
+
+**PDF capture**: `DiagramView` renders inside a `<div data-diagram-view>` fixed at 1122 × 794 px (A4 landscape at 96 dpi). `captureDiagramView(el)` in `composeStageImage.ts` passes that element to `html2canvas`; the resulting PNG is passed as `diagramImage` to `SolarPlanDoc.tsx` which emits it as a second `<Page>`. The selector `document.querySelector('[data-diagram-view]')` in `pdfExport.tsx` resolves only when the diagram view is mounted — PDF exports triggered from the roof plan view capture `undefined` and skip the second page.
 
 ### i18n
 
@@ -457,7 +499,12 @@ No server-side schema change needed — the `doc` column on `projects` is opaque
 4. Make sure `Escape` resets it (handled in `useDrawingController.ts` keydown handler — add a reset branch there)
 
 ### New PDF section
-The PDF is a `@react-pdf/renderer` document in `src/pdf/SolarPlanDoc.tsx`. Add new sections as React components using `<View>`, `<Text>`, `<Image>` from `@react-pdf/renderer`. The document is A4 landscape (841.89 × 595.28 pt). Do NOT add sections to the legacy `utils/pdfExport.tsx`.
+The PDF is a `@react-pdf/renderer` document in `src/pdf/SolarPlanDoc.tsx`. The document already has two pages:
+
+1. **Roof plan page** (A4 landscape): left rail (meta/stats) + right pane (captured Konva Stage PNG) + full-width strings table.
+2. **Block diagram page** (A4 landscape): a single `<Image>` that fills the page with the html2canvas capture of `[data-diagram-view]`.
+
+Add new sections as React components using `<View>`, `<Text>`, `<Image>` from `@react-pdf/renderer`. The document is A4 landscape (841.89 × 595.28 pt). Do NOT add sections to the legacy `utils/pdfExport.tsx`.
 
 ### New user-visible string
 1. Add the key under the correct namespace in `src/locales/en.ts`
@@ -508,6 +555,8 @@ The TypeScript augmentation in `i18n.ts` means a missing key in `en.ts` is a com
 - `setCoalesceKey` must be called **immediately before** its matching `set()` call. A stale pending key from a prior (different) action can leak into the next record-path set if the pair gets separated by an intervening `bypass` call
 - Panel soft-delete / catalog `deleted` flag: soft-deleted `panel_models` rows are filtered out of picker dropdowns but a project already linked to a soft-deleted model will still show that model via the `expand.panel_model` path. Don't hard-delete a catalog entry if projects reference it — use the soft-delete flag
 - `go build ./...` does **not** update the `./pocketbase` binary — always `go build -o pocketbase .` in `server/` (see memory)
+- **React Flow v12 node prop types changed**: use `NodeProps<Node<DiagramNodeData, 'solarGenerator'>>`, NOT `NodeProps<DiagramNodeData>`. Also `DiagramNodeData` (and any custom node data type) must satisfy `Record<string, unknown>` — add `[key: string]: unknown` to the interface. See `src/components/diagram/nodes/` for the canonical pattern
+- **Diagram PDF page only appears when `DiagramView` is mounted**: `pdfExport.tsx` queries `document.querySelector('[data-diagram-view]')` at export time. If the user exports while on the roof plan view, the diagram element isn't in the DOM and the second page is silently skipped — this is intentional (we can't capture a view that hasn't rendered)
 
 ## Where to start reading
 
