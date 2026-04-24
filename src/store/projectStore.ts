@@ -25,6 +25,11 @@ import type {
   PanelType,
   ToolMode,
   Point,
+  Diagram,
+  DiagramNode,
+  DiagramNodeData,
+  DiagramEdge,
+  DiagramMeta,
 } from '../types';
 import { STRING_COLORS } from '../types';
 import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
@@ -97,6 +102,61 @@ export function panelTypeFromCatalogRecord(m: PanelModelRecord): PanelType {
     tempCoefficientPmax: m.tempCoefficientPmax,
     warrantyYears: m.warrantyYears,
     datasheetUrl: m.datasheetUrl,
+  };
+}
+
+/**
+ * Produce a starter Diagram from existing roof/panel/inverter data.
+ *
+ * Called on first open of the diagram view when project.diagram is absent.
+ * Bootstrap creates a solar generator node for each roof (labeled with roof
+ * name + module count + kWp), an inverter node for each inverter, but no
+ * edges — the user must wire those manually. Meta fields are pre-populated
+ * from project and panel type.
+ */
+function buildBootstrapDiagram(
+  roofs: Roof[],
+  panels: Panel[],
+  inverters: Inverter[],
+  panelType: PanelType,
+  projectName: string,
+): Diagram {
+  // Compute total system size in kWp.
+  const totalKwp = (panels.length * panelType.wattPeak) / 1000;
+
+  // Create a solar generator node for each roof. Label includes roof name,
+  // panel count on that roof, and the roof's contribution to total kWp.
+  const generatorNodes: DiagramNode[] = roofs.map((roof, i) => {
+    const count = panels.filter(p => p.roofId === roof.id).length;
+    const kwp = (count * panelType.wattPeak) / 1000;
+    return {
+      id: `sg-${roof.id}`,
+      type: 'solarGenerator',
+      position: { x: 80 + i * 240, y: 60 },
+      data: {
+        label: roof.name,
+        sublabel: `${count} Module · ${kwp.toFixed(1)} kWp`,
+      },
+    };
+  });
+
+  // Create an inverter node for each inverter.
+  const inverterNodes: DiagramNode[] = inverters.map((inv, i) => ({
+    id: `inv-${inv.id}`,
+    type: 'inverter',
+    position: { x: 80 + i * 240, y: 300 },
+    data: { label: inv.name, sublabel: '' },
+  }));
+
+  return {
+    nodes: [...generatorNodes, ...inverterNodes],
+    edges: [],
+    meta: {
+      client: projectName,
+      module: panelType.name,
+      systemSize: `${totalKwp.toFixed(2)} kWp`,
+      date: new Date().toISOString().split('T')[0],
+    },
   };
 }
 
@@ -354,6 +414,15 @@ interface ProjectStore extends UIState, HistoryState {
     modelId: string | null,
     record: InverterModelRecord | null,
   ) => void;
+
+  // ── Electrical block diagram actions ────────────────────────────────────
+  // None of these actions enter the undo stack — they are diagram view-only
+  // mutations and don't affect the core project (roofs/panels/strings).
+  bootstrapDiagram: () => void;
+  setDiagramNodes: (nodes: DiagramNode[]) => void;
+  setDiagramEdges: (edges: DiagramEdge[]) => void;
+  updateDiagramMeta: (patch: Partial<DiagramMeta>) => void;
+  addDiagramNode: (node: DiagramNode) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -1310,6 +1379,64 @@ export const useProjectStore = create<ProjectStore>()(
         false,
         'toggleBackground',
       ),
+
+      // ── Electrical block diagram actions ────────────────────────────────
+      // All diagram mutations are simple set() calls (no undo history).
+      bootstrapDiagram: () =>
+        set((s) => {
+          // Safety check: never overwrite an existing diagram.
+          if (s.project.diagram) return s;
+          return {
+            project: {
+              ...s.project,
+              diagram: buildBootstrapDiagram(
+                s.project.roofs,
+                s.project.panels,
+                s.project.inverters,
+                s.project.panelType,
+                s.project.name,
+              ),
+            },
+          };
+        }),
+
+      setDiagramNodes: (nodes) =>
+        set((s) => ({
+          project: {
+            ...s.project,
+            diagram: { ...s.project.diagram!, nodes },
+          },
+        })),
+
+      setDiagramEdges: (edges) =>
+        set((s) => ({
+          project: {
+            ...s.project,
+            diagram: { ...s.project.diagram!, edges },
+          },
+        })),
+
+      updateDiagramMeta: (patch) =>
+        set((s) => ({
+          project: {
+            ...s.project,
+            diagram: {
+              ...s.project.diagram!,
+              meta: { ...s.project.diagram!.meta, ...patch },
+            },
+          },
+        })),
+
+      addDiagramNode: (node) =>
+        set((s) => ({
+          project: {
+            ...s.project,
+            diagram: {
+              ...s.project.diagram!,
+              nodes: [...s.project.diagram!.nodes, node],
+            },
+          },
+        })),
 
       // ── Persistence entry points ────────────────────────────────────────
       // loadProject: replace everything. Resets ephemeral UI state because

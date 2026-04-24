@@ -292,6 +292,13 @@ export interface Project {
   strings: PvString[];
   inverters: Inverter[];
   mapState: MapState;
+  /**
+   * Optional electrical block diagram. Absent until the user opens the
+   * diagram view for the first time — then bootstrapped from roofs, panels,
+   * and inverters via `buildBootstrapDiagram()`. Mutated afterward via
+   * diagram store actions.
+   */
+  diagram?: Diagram;
 }
 
 /**
@@ -319,3 +326,82 @@ export const STRING_COLORS = [
   '#A8DADC', '#9B2226', '#6A4C93', '#81B29A', '#F2CC8F',
   '#264653', '#E76F51',
 ];
+
+// ────────────────────────────────────────────────────────────────────────────
+// Electrical block diagram types — used for system-level wiring visualization.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Allowed node types in an electrical block diagram.
+ * These types correspond to distinct hardware components or functional blocks
+ * in a solar PV system.
+ */
+export type DiagramNodeType =
+  | 'solarGenerator' // Roof with panels (aggregated from roofs + panels)
+  | 'inverter'       // DC-to-AC converter
+  | 'switch'         // DC isolator switch
+  | 'fuse'           // DC fuse array
+  | 'battery'        // Optional energy storage
+  | 'fre'            // Frequency relay / ESS controller
+  | 'gridOutput';    // Grid connection point
+
+/**
+ * Data payload for a diagram node. Contains the display label and optional
+ * sublabel (typically specs: module count, kWp, rating, etc.).
+ */
+export interface DiagramNodeData {
+  label: string;
+  sublabel?: string;
+}
+
+/**
+ * A node in the electrical block diagram.
+ * Matches React Flow's Node shape so instances can be passed directly
+ * to React Flow components. Position is in canvas pixels (local to the diagram).
+ */
+export interface DiagramNode {
+  id: string;
+  type: DiagramNodeType;
+  position: { x: number; y: number };
+  data: DiagramNodeData;
+}
+
+/**
+ * An edge (connection) between two nodes in the diagram.
+ * Specifies source and target nodes via their ids, plus optional handle
+ * names for routing multiple edges from a single node.
+ */
+export interface DiagramEdge {
+  id: string;
+  source: string;       // source node id
+  sourceHandle: string; // named output on source (e.g., 'out')
+  target: string;       // target node id
+  targetHandle: string; // named input on target (e.g., 'in')
+}
+
+/**
+ * Metadata about the diagram: client, installer, system specs, and
+ * documentation fields. Populated at bootstrap and editable in the
+ * diagram metadata editor.
+ */
+export interface DiagramMeta {
+  client?: string;      // ← project.name on bootstrap
+  module?: string;      // ← panelType.name on bootstrap
+  systemSize?: string;  // ← computed kWp on bootstrap
+  salesperson?: string;
+  planner?: string;
+  company?: string;
+  date?: string;        // ISO date string (YYYY-MM-DD)
+}
+
+/**
+ * The electrical block diagram: nodes, edges, and metadata.
+ * Persisted as part of the Project. Created once on first open of the
+ * diagram editor via `buildBootstrapDiagram()` and then mutated via
+ * diagram store actions.
+ */
+export interface Diagram {
+  nodes: DiagramNode[];
+  edges: DiagramEdge[];
+  meta: DiagramMeta;
+}
