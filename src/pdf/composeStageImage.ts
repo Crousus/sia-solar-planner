@@ -108,38 +108,314 @@ export async function captureStage(stageEl: HTMLElement): Promise<{
 }
 
 /**
+ * One text run inside the captured diagram. All coordinates and sizes are
+ * in diagram pixels (the 1122×794 capture frame, top-left origin). The PDF
+ * layout rescales these to points when overlaying the text on the embedded
+ * image. Styling is flattened to what react-pdf can render: the browser's
+ * full computed style is lossy here (no gradients, no custom fonts beyond
+ * the Helvetica/Courier mapping) but what survives is enough to reproduce
+ * the designer's look.
+ */
+export interface DiagramTextRun {
+  /** Visible text content — already upper-cased when the source style
+   *  uses `text-transform: uppercase`, since react-pdf renders literals
+   *  without the CSS text-transform pipeline. */
+  text: string;
+  /** Top-left of the element's bounding box in diagram px. */
+  x: number;
+  y: number;
+  /** Bounding box size in diagram px. Width is set on the PDF Text so
+   *  text-align works; height is kept so the overlay roughly matches the
+   *  original line box when fonts have slightly different metrics. */
+  width: number;
+  height: number;
+  /** Computed font size in diagram px. Scaled to points at render time. */
+  fontSize: number;
+  /** 'sans' → Helvetica, 'mono' → Courier (the built-in react-pdf fonts
+   *  we're mapping to; Geist and JetBrains Mono don't ship with the PDF). */
+  fontFamily: 'sans' | 'mono';
+  /** Whether to use the bold face variant. We only have normal/bold,
+   *  not 500/600/800 — so this collapses all heavy weights to one. */
+  bold: boolean;
+  /** Computed color as a CSS color string, passed straight to react-pdf. */
+  color: string;
+  /** 'left' | 'center' | 'right' | 'justify' — from computed textAlign. */
+  textAlign: 'left' | 'center' | 'right' | 'justify';
+  /** Letter-spacing in diagram px. Scaled to points at render time. */
+  letterSpacing: number;
+}
+
+/**
+ * Walk the diagram DOM and extract each leaf text element's position and
+ * style. We need the bounding rects measured in the SAME render state that
+ * produces the capture — i.e. with `[data-pdf-export]` applied — so call
+ * this after the theme attribute is set but before hiding the text.
+ *
+ * Criteria for "leaf text element":
+ *   - has at least one direct text-node child whose content is non-empty
+ *   - has NO element children (we skip mixed-content nodes like inline
+ *     icons next to labels, because positioning only the text half is
+ *     fiddly and no element in the diagram relies on that pattern today)
+ *   - has a non-zero bounding rect (collapsed/display:none elements are
+ *     implicitly excluded by the width/height check)
+ *
+ * This heuristic cleanly picks up: the title strip heading, the project
+ * name, every node type label, every node body label, every node sublabel,
+ * and every meta-table cell (label + readonly value + input placeholder).
+ * It deliberately skips icon swatches (their SVG child is an element, so
+ * the container's children are element-typed) so icons remain baked into
+ * the image rather than being re-emitted as text.
+ */
+function collectDiagramTexts(root: HTMLElement): Array<DiagramTextRun & { el: HTMLElement }> {
+  const rootRect = root.getBoundingClientRect();
+  const out: Array<DiagramTextRun & { el: HTMLElement }> = [];
+
+  // React Flow applies a CSS transform (translate + scale) to its
+  // `.react-flow__viewport` element for pan / zoom / fitView. For nodes
+  // living inside that viewport, `getComputedStyle().fontSize` returns
+  // the *unscaled* CSS value (e.g. 13px) while `getBoundingClientRect()`
+  // returns the *scaled* layout rect. That mismatch is what makes PDF
+  // text come out too small: we'd position nodes correctly (scaled
+  // rects) but size their text from the unscaled fontSize.
+  //
+  // We read the viewport's scale factor once from its transform matrix
+  // and apply it to fontSize + letterSpacing for any element that's a
+  // descendant of the viewport. Elements outside the viewport (the title
+  // strip and meta table live on the A4 sheet, not inside React Flow)
+  // stay at their natural CSS size.
+  const viewportEl = root.querySelector('.react-flow__viewport') as HTMLElement | null;
+  let viewportScale = 1;
+  if (viewportEl) {
+    const tf = window.getComputedStyle(viewportEl).transform;
+    // `matrix(a, b, c, d, tx, ty)` — for a scale+translate transform
+    // a === d === scale. `matrix3d` is used by some browsers for
+    // identical results in 2D; we handle both.
+    const m2d = tf.match(/matrix\(([-0-9.,\se+]+)\)/);
+    const m3d = tf.match(/matrix3d\(([-0-9.,\se+]+)\)/);
+    if (m2d) {
+      const vals = m2d[1].split(',').map((s) => parseFloat(s.trim()));
+      if (vals.length >= 4 && !isNaN(vals[0])) viewportScale = vals[0];
+    } else if (m3d) {
+      const vals = m3d[1].split(',').map((s) => parseFloat(s.trim()));
+      // matrix3d scale-x lives in vals[0] for 2D scale-only transforms.
+      if (vals.length >= 1 && !isNaN(vals[0])) viewportScale = vals[0];
+    }
+  }
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node = walker.nextNode();
+  while (node) {
+    const el = node as HTMLElement;
+    node = walker.nextNode();
+
+    // Skip input elements for their *default* capture path — we read
+    // their `.value` instead of textContent because inputs render their
+    // value rather than a text node.
+    const isInput = el.tagName === 'INPUT';
+    // An element counts as a text leaf if it has at least one direct text
+    // child AND no element children. Inputs are handled explicitly below.
+    if (!isInput) {
+      const childNodes = Array.from(el.childNodes);
+      const hasElementChild = childNodes.some((c) => c.nodeType === Node.ELEMENT_NODE);
+      if (hasElementChild) continue;
+      const directText = childNodes
+        .filter((c) => c.nodeType === Node.TEXT_NODE)
+        .map((c) => c.textContent ?? '')
+        .join('');
+      if (directText.trim() === '') continue;
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+
+    const cs = window.getComputedStyle(el);
+    // Skip elements that are fully transparent or display:none — no
+    // contribution to the printed output.
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) {
+      continue;
+    }
+
+    // Raw value: input.value when it's a form field, otherwise the
+    // element's direct text (collapsed whitespace). Empty inputs produce
+    // no overlay — we don't want blank placeholders on paper.
+    let raw = isInput ? (el as HTMLInputElement).value : el.textContent ?? '';
+    raw = raw.replace(/\s+/g, ' ').trim();
+    if (raw === '') continue;
+
+    // Apply CSS text-transform at extraction time. react-pdf doesn't run
+    // the transform pipeline, so we bake the uppercased form into the
+    // string. 'capitalize' and 'lowercase' are handled too for
+    // completeness even though the diagram only uses 'uppercase'.
+    const tt = cs.textTransform;
+    if (tt === 'uppercase') raw = raw.toUpperCase();
+    else if (tt === 'lowercase') raw = raw.toLowerCase();
+    else if (tt === 'capitalize') raw = raw.replace(/\b\w/g, (m) => m.toUpperCase());
+
+    // Coarse font-family mapping — the diagram uses Geist (sans) and
+    // JetBrains Mono (mono). react-pdf's built-in fonts are Helvetica
+    // (sans) and Courier (mono). Anything else — including system fonts
+    // from the computed style — falls back to sans.
+    const ff = cs.fontFamily.toLowerCase();
+    const fontFamily: 'sans' | 'mono' =
+      ff.includes('mono') || ff.includes('courier') ? 'mono' : 'sans';
+
+    // Font-weight: anything ≥ 600 (or named "bold") we render bold.
+    const fwRaw = cs.fontWeight;
+    const fw = fwRaw === 'bold' ? 700 : parseInt(fwRaw, 10) || 400;
+    const bold = fw >= 600;
+
+    // Text-align — react-pdf supports left/right/center/justify.
+    const ta = cs.textAlign;
+    const textAlign: DiagramTextRun['textAlign'] =
+      ta === 'right' || ta === 'center' || ta === 'justify' ? ta : 'left';
+
+    // Letter-spacing: computed style returns 'normal' or an explicit px
+    // value — we only forward the numeric case.
+    const lsRaw = cs.letterSpacing;
+    const letterSpacingRaw = lsRaw === 'normal' ? 0 : parseFloat(lsRaw) || 0;
+
+    // Apply the React Flow viewport scale to text metrics (not to
+    // position — the rects we measured are already scaled). Only
+    // elements *inside* the viewport get this multiplier so the A4
+    // sheet's title strip and meta table keep their natural CSS size.
+    const scale = viewportEl && viewportEl.contains(el) ? viewportScale : 1;
+
+    out.push({
+      el,
+      text: raw,
+      x: rect.left - rootRect.left,
+      y: rect.top - rootRect.top,
+      width: rect.width,
+      height: rect.height,
+      fontSize: parseFloat(cs.fontSize) * scale,
+      fontFamily,
+      bold,
+      color: cs.color,
+      textAlign,
+      letterSpacing: letterSpacingRaw * scale,
+    });
+  }
+  return out;
+}
+
+/**
  * Capture the DiagramView DOM element for PDF embedding.
  *
- * Why a separate function from captureStage:
- *   - captureStage captures a Konva scene graph (vector) via
- *     `stage.toCanvas` for crisp pixelRatio 3× output. The block
- *     diagram is plain HTML/CSS (the A4 div identified by
- *     `data-diagram-view`), so html2canvas is the right tool here.
- *   - The diagram has no mm-scale grid to bake in and no rotating
- *     compass, so there's no compose step — the captured PNG is the
- *     final page image. Returning a dataURL keeps the call site
- *     symmetric with `composeWithGrid`.
+ * Returns the diagram rasterised as a PNG **with its visible text
+ * transparent-ed out**, together with the per-text-run metadata needed to
+ * re-emit the same text as real PDF Text on top. The net effect in the
+ * PDF is pixel-perfect visual chrome (gradients, shadows, icons, edges,
+ * backgrounds) underneath selectable/searchable/crisp text — the combination
+ * that pure rasterisation loses and pure vector reconstruction can't match
+ * for styling fidelity.
  *
- * Dimensions (1122 × 794 px) match the A4 landscape container set by
- * DiagramView. `scale: 1` is deliberate: the diagram is pure vector/CSS
- * rendered at this exact size, so upscaling adds file size without
- * adding detail — html2canvas doesn't re-rasterize CSS at higher DPI,
- * it bilinear-upscales the screenshot.
+ * How it works:
+ *   1. Apply the light-theme `[data-pdf-export]` attribute (see index.css).
+ *   2. Measure every leaf text element's rect + computed style.
+ *   3. Inline `color: transparent` on each of those elements so the
+ *      rasteriser captures their chrome (borders, backgrounds, icons) but
+ *      no visible glyphs.
+ *   4. Run html-to-image.
+ *   5. Restore inline colors and remove the theme attribute.
  *
- * `ignoreElements` guards against html2canvas 1.4.1's
- * `createPattern on a canvas with width/height of 0` crash (same bug
- * documented in `captureStage` — some rendering libraries briefly
- * have 0-sized canvas children mid-layout).
+ * `width: 1122, height: 794` matches the on-screen A4 landscape container
+ * so the capture scale is 1:1 with the DOM rects we measured. Changing
+ * either value without changing the other would invalidate the text
+ * positioning math downstream.
  */
-export async function captureDiagramView(el: HTMLElement): Promise<string> {
-  const canvas = await html2canvas(el, {
-    useCORS: true,
-    scale: 1,
-    width: 1122,
-    height: 794,
-    ignoreElements: (e) => e.tagName === 'CANVAS' && (e as HTMLCanvasElement).width === 0,
-  });
-  return canvas.toDataURL('image/png');
+export async function captureDiagramView(el: HTMLElement): Promise<{
+  image: string;
+  texts: DiagramTextRun[];
+  /** Capture frame size in px — echoed so the PDF layout doesn't have to
+   *  re-know the 1122×794 literal. */
+  captureWidth: number;
+  captureHeight: number;
+}> {
+  // Why `html-to-image` (and not `html2canvas`) for this capture:
+  //   html2canvas 1.4.1 has a known bug where its Range-based text
+  //   measurement throws
+  //     IndexSizeError: Failed to execute 'setEnd' on 'Range': The offset
+  //     N is larger than the node's length (N-1).
+  //   whenever it walks a text node with `letter-spacing`,
+  //   `text-transform: uppercase`, `font-feature-settings`, or
+  //   contentEditable. The block diagram uses all of the above on its
+  //   node type labels (JetBrains Mono + 0.14em letter-spacing +
+  //   uppercase), title strip, and body labels (contentEditable), so the
+  //   default html2canvas renderer is a non-starter.
+  //   `foreignObjectRendering: true` avoids the Range code path but
+  //   reliably produces a blank canvas in Chromium when external web
+  //   fonts and CSS custom properties (`var(--ink-*)`, Geist/JetBrains
+  //   Mono via @fontsource or similar) can't be inlined into the SVG.
+  //   html-to-image is the React-Flow-team-recommended alternative —
+  //   it walks the DOM without Range, inlines web fonts by fetching and
+  //   base64-encoding them, and resolves CSS custom properties before
+  //   serialising. The output matches on-screen fidelity closely enough
+  //   that the exported PDF reads as a screenshot of the editor.
+  //
+  //   We deliberately do NOT swap html2canvas for `captureStage` — that
+  //   one uses Konva's `stage.toCanvas` directly and never touches
+  //   html2canvas's DOM walker, so it's not affected by the bug in the
+  //   first place (and Konva's vector output is already crisper).
+  const { toPng } = await import('html-to-image');
+
+  // Print-theme toggle — the editor runs dark-on-dark; for the PDF we
+  // swap to a scoped light theme via `[data-pdf-export]` (see index.css).
+  //
+  // Two rAF ticks before we measure/capture: toggling the attribute
+  // schedules a style recomputation, but the computed styles we read
+  // for text extraction are only stable AFTER the next paint. One frame
+  // is usually enough; two is the classic belt-and-braces for browsers
+  // that batch style changes across multiple frames under load.
+  el.setAttribute('data-pdf-export', 'true');
+  await new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+
+  // 1) Measure text runs BEFORE we mutate colors — so the rects we store
+  //    reflect the exact on-screen layout.
+  const runs = collectDiagramTexts(el);
+
+  // 2) Hide the text glyphs by inlining `color: transparent` on each
+  //    captured element. Icons are safe because the extractor already
+  //    skipped elements with element children (icon swatches have an SVG
+  //    child, so they were excluded). Inline color > stylesheet rules,
+  //    so this wins over the light-theme's `color: var(--ink-*)` values.
+  const savedColors: Array<{ el: HTMLElement; prev: string }> = runs.map((r) => ({
+    el: r.el,
+    prev: r.el.style.color,
+  }));
+  for (const r of runs) r.el.style.color = 'transparent';
+
+  try {
+    const image = await toPng(el, {
+      width: 1122,
+      height: 794,
+      // Force a white background so transparent regions become paper-
+      // white rather than bleeding the editor's canvas-bg through.
+      backgroundColor: '#ffffff',
+      cacheBust: true,
+      // Skip font inlining entirely. html-to-image tries to walk every
+      // loaded stylesheet to extract @font-face rules — including Google
+      // Fonts, whose CSS is cross-origin and throws a SecurityError when
+      // the browser blocks cssRules access. Since all text nodes are made
+      // transparent before capture, fonts in the image are irrelevant;
+      // they are re-emitted as real PDF text by react-pdf instead.
+      skipFonts: true,
+    });
+    // Strip the `el` reference from each run — callers don't need it and
+    // holding a detached DOM reference across async boundaries is fragile.
+    const texts: DiagramTextRun[] = runs.map(({ el: _el, ...rest }) => rest);
+    return { image, texts, captureWidth: 1122, captureHeight: 794 };
+  } finally {
+    // Restore inline colors in the REVERSE order of assignment so any
+    // element that appeared twice (shouldn't happen but be defensive)
+    // ends up with its original value rather than an intermediate one.
+    for (let i = savedColors.length - 1; i >= 0; i--) {
+      const { el: tEl, prev } = savedColors[i];
+      tEl.style.color = prev;
+    }
+    el.removeAttribute('data-pdf-export');
+  }
 }
 
 /**
