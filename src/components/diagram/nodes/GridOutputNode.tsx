@@ -2,6 +2,7 @@
 // Sky-blue accent — distinct from the inverter's brand-blue, evoking the
 // "public utility / shared grid" feel.
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -27,13 +28,14 @@ const GridIcon = () => (
 );
 
 export default function GridOutputNode({ id, data, selected }: NodeProps<GridOutputNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#0ea5e9"
-      typeLabel="Netzeinspeisung"
+      typeLabel={t('diagram.nodes.gridOutput')}
       icon={<GridIcon />}
     />
   );

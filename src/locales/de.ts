@@ -43,6 +43,10 @@ const de = {
     loadFailedGeneral: 'Projekt konnte nicht geladen werden: {{message}}',
   },
   sidebar: {
+    // View toggle — siehe en.ts für Kontext. Deutsches Wording ist der
+    // historische Standard in dieser Oberfläche.
+    viewRoof: 'Dachplan',
+    viewDiagram: 'Schaltplan',
     project: 'Projekt',
     panelType: 'Modultyp',
     model: 'Modell',
@@ -274,6 +278,29 @@ const de = {
     tempCoefficientPmax: 'Temp.-Koeffizient Pmax (%/°C)',
     warrantyYears:       'Garantie (Jahre)',
     datasheetUrl:        'Datenblatt-URL',
+  },
+  diagram: {
+    toolbar: {
+      addLabel: '+ Hinzufügen:',
+    },
+    nodes: {
+      solarGenerator: 'Solargenerator',
+      inverter: 'Wechselrichter',
+      switch: 'Schalter',
+      fuse: 'Sicherung',
+      battery: 'Batterie',
+      fre: 'FRE Controller',
+      gridOutput: 'Netzeinspeisung',
+    },
+    meta: {
+      client: 'Projekt für Kunde',
+      module: 'Modul',
+      systemSize: 'Anlagengröße',
+      salesperson: 'Verkauf',
+      planner: 'Planung',
+      company: 'Firma',
+      date: 'Datum',
+    },
   },
   inverterModel: {
     noModelOption:   '— Kein Modell —',

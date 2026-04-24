@@ -201,13 +201,13 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
             onClick={() => setActiveView('roof')}
             className={`flex-1 py-1.5 transition-colors ${activeView === 'roof' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
           >
-            Dachplan
+            {t('sidebar.viewRoof')}
           </button>
           <button
             onClick={() => setActiveView('diagram')}
             className={`flex-1 py-1.5 transition-colors ${activeView === 'diagram' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
           >
-            Schaltplan
+            {t('sidebar.viewDiagram')}
           </button>
         </div>
         <label className="block">

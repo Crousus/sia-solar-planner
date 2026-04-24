@@ -2,6 +2,7 @@
 // mirrors the common "stored energy" visual convention (and contrasts
 // clearly with the amber solar source and blue inverter).
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -25,13 +26,14 @@ const BatteryIcon = () => (
 );
 
 export default function BatteryNode({ id, data, selected }: NodeProps<BatteryNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#10b981"
-      typeLabel="Batterie"
+      typeLabel={t('diagram.nodes.battery')}
       icon={<BatteryIcon />}
     />
   );

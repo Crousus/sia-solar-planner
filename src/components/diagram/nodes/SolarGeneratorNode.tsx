@@ -2,6 +2,7 @@
 // Amber accent (sun iconography). Uses dark header text because amber is a
 // light colour and white-on-amber fails contrast.
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -29,6 +30,9 @@ const SunIcon = () => (
 );
 
 export default function SolarGeneratorNode({ id, data, selected }: NodeProps<SolarGeneratorNodeType>) {
+  // Localised type label for the header band. Resolved at render so changing
+  // language live updates the node without re-mounting React Flow.
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
@@ -36,7 +40,7 @@ export default function SolarGeneratorNode({ id, data, selected }: NodeProps<Sol
       selected={selected}
       color="#f59e0b"
       textColor="#1e293b"
-      typeLabel="Solargenerator"
+      typeLabel={t('diagram.nodes.solarGenerator')}
       icon={<SunIcon />}
     />
   );

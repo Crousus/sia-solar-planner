@@ -1382,61 +1382,85 @@ export const useProjectStore = create<ProjectStore>()(
 
       // ── Electrical block diagram actions ────────────────────────────────
       // All diagram mutations are simple set() calls (no undo history).
+      // Action names are registered as 'bypass' in ACTION_POLICY so the
+      // middleware doesn't snapshot them. Named labels still matter — they
+      // surface in devtools and satisfy the "every set() call names its
+      // action" convention documented in AGENTS.md.
       bootstrapDiagram: () =>
-        set((s) => {
-          // Safety check: never overwrite an existing diagram.
-          if (s.project.diagram) return s;
-          return {
-            project: {
-              ...s.project,
-              diagram: buildBootstrapDiagram(
-                s.project.roofs,
-                s.project.panels,
-                s.project.inverters,
-                s.project.panelType,
-                s.project.name,
-              ),
-            },
-          };
-        }),
+        set(
+          (s) => {
+            // Safety check: never overwrite an existing diagram.
+            if (s.project.diagram) return s;
+            return {
+              project: {
+                ...s.project,
+                diagram: buildBootstrapDiagram(
+                  s.project.roofs,
+                  s.project.panels,
+                  s.project.inverters,
+                  s.project.panelType,
+                  s.project.name,
+                ),
+              },
+            };
+          },
+          false,
+          'bootstrapDiagram',
+        ),
 
       setDiagramNodes: (nodes) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            diagram: { ...s.project.diagram!, nodes },
-          },
-        })),
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              diagram: { ...s.project.diagram!, nodes },
+            },
+          }),
+          false,
+          'setDiagramNodes',
+        ),
 
       setDiagramEdges: (edges) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            diagram: { ...s.project.diagram!, edges },
-          },
-        })),
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              diagram: { ...s.project.diagram!, edges },
+            },
+          }),
+          false,
+          'setDiagramEdges',
+        ),
 
       updateDiagramMeta: (patch) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            diagram: {
-              ...s.project.diagram!,
-              meta: { ...s.project.diagram!.meta, ...patch },
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              diagram: {
+                ...s.project.diagram!,
+                meta: { ...s.project.diagram!.meta, ...patch },
+              },
             },
-          },
-        })),
+          }),
+          false,
+          'updateDiagramMeta',
+        ),
 
       addDiagramNode: (node) =>
-        set((s) => ({
-          project: {
-            ...s.project,
-            diagram: {
-              ...s.project.diagram!,
-              nodes: [...s.project.diagram!.nodes, node],
+        set(
+          (s) => ({
+            project: {
+              ...s.project,
+              diagram: {
+                ...s.project.diagram!,
+                nodes: [...s.project.diagram!.nodes, node],
+              },
             },
-          },
-        })),
+          }),
+          false,
+          'addDiagramNode',
+        ),
 
       // ── Persistence entry points ────────────────────────────────────────
       // loadProject: replace everything. Resets ephemeral UI state because

@@ -1,6 +1,7 @@
 // Switch node — DC isolator / disconnect switch. Slate-grey accent (neutral,
 // since switches are passive routing elements — no warning colour like fuses).
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -26,13 +27,14 @@ const SwitchIcon = () => (
 );
 
 export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#64748b"
-      typeLabel="Schalter"
+      typeLabel={t('diagram.nodes.switch')}
       icon={<SwitchIcon />}
     />
   );

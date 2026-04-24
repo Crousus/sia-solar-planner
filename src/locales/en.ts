@@ -42,6 +42,13 @@ const en = {
     loadFailedGeneral: 'Failed to load project: {{message}}',
   },
   sidebar: {
+    // View toggle labels — sit at the top of the sidebar and switch the
+    // main editor between the roof plan canvas and the electrical block
+    // diagram. Shortened to "Plan" vs "Diagram" in English because the
+    // parent toggle is pill-shaped and wider text wraps; the German
+    // equivalents ("Dachplan" / "Schaltplan") are already compact.
+    viewRoof: 'Roof Plan',
+    viewDiagram: 'Block Diagram',
     project: 'Project',
     panelType: 'Panel Type',
     model: 'Model',
@@ -294,6 +301,36 @@ const en = {
     warrantyYears:       'Warranty (years)',
     datasheetUrl:        'Datasheet URL',
   },
+  // Electrical block diagram strings. Uses three sub-groups (toolbar,
+  // nodes, meta) because those are the three places diagram copy
+  // surfaces in the UI; grouping keeps related keys together. The
+  // DiagramNodeType labels in `nodes.*` are reused by both the toolbar
+  // buttons AND each node component's header band, so one edit updates
+  // both places. The Translations type is recursive (see below) so this
+  // extra nesting level satisfies the shape check.
+  diagram: {
+    toolbar: {
+      addLabel: '+ Add:',
+    },
+    nodes: {
+      solarGenerator: 'Solar Generator',
+      inverter: 'Inverter',
+      switch: 'Switch',
+      fuse: 'Fuse',
+      battery: 'Battery',
+      fre: 'FRE Controller',
+      gridOutput: 'Grid Output',
+    },
+    meta: {
+      client: 'Client',
+      module: 'Module',
+      systemSize: 'System Size',
+      salesperson: 'Sales',
+      planner: 'Planner',
+      company: 'Company',
+      date: 'Date',
+    },
+  },
   inverterModel: {
     noModelOption:   '— No model —',
     change:          'Change',
@@ -326,8 +363,17 @@ export default en;
 // strings must cover every key, not match English literals. So we widen
 // the leaves to `string` here. The `satisfies Translations` in de.ts
 // then enforces "same keys as en" without demanding "same values".
+//
+// The inner mapped type recurses so a namespace's value can itself be a
+// nested object (e.g. `diagram.toolbar.addLabel` where `diagram.toolbar`
+// is a group). Previously the constraint was fixed at two levels which
+// forced every locale key into `namespace.leaf` form — too coarse once
+// the diagram feature needed `diagram.{toolbar,nodes,meta}.*` sub-groups
+// that logically cluster together. Recursion keeps the same "en is the
+// source of truth for shape" invariant without capping depth.
+type TranslationLeaf<T> = T extends Record<string, unknown>
+  ? { readonly [K in keyof T]: TranslationLeaf<T[K]> }
+  : string;
 export type Translations = {
-  readonly [K in keyof typeof en]: {
-    readonly [K2 in keyof (typeof en)[K]]: string;
-  };
+  readonly [K in keyof typeof en]: TranslationLeaf<(typeof en)[K]>;
 };

@@ -2,6 +2,7 @@
 // "safety/protection device" at a glance, matching common electrical
 // schematic colour conventions.
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -24,13 +25,14 @@ const FuseIcon = () => (
 );
 
 export default function FuseNode({ id, data, selected }: NodeProps<FuseNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#ef4444"
-      typeLabel="Sicherung"
+      typeLabel={t('diagram.nodes.fuse')}
       icon={<FuseIcon />}
     />
   );

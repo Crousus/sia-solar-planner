@@ -1,5 +1,6 @@
 // Inverter node — DC→AC converter block. Blue accent.
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -21,13 +22,14 @@ const InverterIcon = () => (
 );
 
 export default function InverterNode({ id, data, selected }: NodeProps<InverterNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#3b82f6"
-      typeLabel="Wechselrichter"
+      typeLabel={t('diagram.nodes.inverter')}
       icon={<InverterIcon />}
     />
   );

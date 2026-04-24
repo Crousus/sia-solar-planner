@@ -2,6 +2,7 @@
 // it from the blue inverter (which it often sits next to in the diagram)
 // while still feeling "electronic/control" rather than "power/protection".
 
+import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
@@ -27,13 +28,14 @@ const FreIcon = () => (
 );
 
 export default function FreNode({ id, data, selected }: NodeProps<FreNodeType>) {
+  const { t } = useTranslation();
   return (
     <BaseNode
       id={id}
       data={data}
       selected={selected}
       color="#8b5cf6"
-      typeLabel="FRE Controller"
+      typeLabel={t('diagram.nodes.fre')}
       icon={<FreIcon />}
     />
   );
