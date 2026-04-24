@@ -35,6 +35,7 @@ const de = {
     alreadyRegistered: 'Bereits registriert?',
     createOne: 'Jetzt erstellen →',
     signInLink: 'Anmelden →',
+    pendingApproval: 'Konto erstellt — ein Administrator wird Ihre Registrierung freischalten, bevor Sie sich anmelden können.',
   },
   account: {
     title: 'Dein Konto',

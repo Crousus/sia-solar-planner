@@ -34,6 +34,7 @@ const en = {
     alreadyRegistered: 'Already registered?',
     createOne: 'Create one →',
     signInLink: 'Sign in →',
+    pendingApproval: 'Account created — an administrator will approve your registration before you can sign in.',
   },
   account: {
     title: 'Your account',

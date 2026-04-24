@@ -18,10 +18,13 @@ package handlers
 
 import (
 	"fmt"
+	"net/http"
+	"os"
 	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 )
 
 // RegisterHooks wires lifecycle integrations onto the PocketBase app.
@@ -30,6 +33,7 @@ func RegisterHooks(app *pocketbase.PocketBase) {
 	registerTeamAutoAdmin(app)
 	registerProjectCreator(app)
 	registerPatchTTL(app)
+	registerUserApprovalGate(app)
 }
 
 // After a `teams` record is created via the API, auto-insert a
@@ -110,6 +114,48 @@ func registerProjectCreator(app *pocketbase.PocketBase) {
 			e.Record.Set("created_by", e.Auth.Id)
 		}
 		return e.Next()
+	})
+}
+
+// When the REQUIRE_APPROVAL environment variable is set to "true", new user
+// accounts must be manually approved by a superadmin (via the PocketBase admin
+// UI: set users.approved = true) before they can sign in.
+//
+// Why env-var instead of a settings collection:
+//   The gate is a deployment-time policy choice, not a runtime toggle. Tying
+//   it to an env var keeps production and dev identical binaries — dev is
+//   started without the var, prod with it. A settings collection would add a
+//   migration + UI surface for a one-bit decision that changes at deploy time.
+//
+// Hook placement (after e.Next()):
+//   We call e.Next() first so PocketBase performs the password check in the
+//   normal way. If credentials are wrong, PocketBase returns its own "invalid
+//   credentials" error and we pass it through unchanged — the approval message
+//   must not appear for wrong-password attempts (that would confirm the account
+//   exists to an attacker). Only after successful credential verification do we
+//   inspect the approved flag. At that point e.Record is populated by the
+//   default handler and we can read it directly.
+func registerUserApprovalGate(app *pocketbase.PocketBase) {
+	if os.Getenv("REQUIRE_APPROVAL") != "true" {
+		return
+	}
+
+	app.OnRecordAuthWithPasswordRequest("users").BindFunc(func(e *core.RecordAuthWithPasswordRequestEvent) error {
+		// Let the default handler run: verifies credentials and populates e.Record.
+		if err := e.Next(); err != nil {
+			return err // bad credentials — pass through PocketBase's own error
+		}
+
+		// Credentials valid but account not yet approved.
+		if !e.Record.GetBool("approved") {
+			return router.NewApiError(
+				http.StatusForbidden,
+				"Your account is pending approval. An administrator will review your registration.",
+				nil,
+			)
+		}
+
+		return nil
 	})
 }
 

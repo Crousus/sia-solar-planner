@@ -44,6 +44,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { ClientResponseError } from 'pocketbase';
 import { pb } from '../backend/pb';
 import { maybeImportLocalStorage } from '../backend/migrateLocalStorage';
 
@@ -63,6 +64,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [pendingApproval, setPendingApproval] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const navigate = useNavigate();
@@ -74,6 +76,7 @@ export default function LoginPage() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setPendingApproval(false);
     setBusy(true);
     try {
       if (mode === 'signup') {
@@ -102,8 +105,20 @@ export default function LoginPage() {
       const target = importedProjectId ? `/p/${importedProjectId}` : from;
       navigate(target, { replace: true });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Sign-in failed.';
-      setError(msg);
+      // When REQUIRE_APPROVAL is active on the server, a fresh sign-up
+      // succeeds (account created) but the subsequent authWithPassword is
+      // rejected with 403. Rather than showing a red error we show a neutral
+      // "awaiting approval" notice — the user did nothing wrong.
+      if (
+        mode === 'signup' &&
+        err instanceof ClientResponseError &&
+        err.status === 403
+      ) {
+        setPendingApproval(true);
+      } else {
+        const msg = err instanceof Error ? err.message : 'Sign-in failed.';
+        setError(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -256,9 +271,7 @@ export default function LoginPage() {
             />
           </label>
 
-          {/* Error — hairline scarlet-tinted chip to match the `.chip-amber`
-              (now scarlet-tinted) primitive used in chips elsewhere. Keeps
-              the whole UI speaking one color language. */}
+          {/* Error — hairline scarlet-tinted chip. */}
           {error && (
             <div
               role="alert"
@@ -270,6 +283,24 @@ export default function LoginPage() {
               }}
             >
               {error}
+            </div>
+          )}
+
+          {/* Approval-pending notice — shown after a successful sign-up when
+              the server requires admin approval before the account is usable.
+              Neutral amber tint rather than scarlet because this isn't an
+              error — the registration succeeded; it just needs a review. */}
+          {pendingApproval && (
+            <div
+              role="status"
+              className="rounded-lg px-3 py-2 text-[12.5px] leading-snug"
+              style={{
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                color: 'var(--sun-300)',
+              }}
+            >
+              {t('login.pendingApproval')}
             </div>
           )}
 
