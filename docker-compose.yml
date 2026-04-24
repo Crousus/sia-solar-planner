@@ -10,6 +10,15 @@
 #   docker compose down -v
 
 services:
+  pdf-service:
+    build:
+      context: .
+      dockerfile: pdf-service/Dockerfile
+    environment:
+      - POCKETBASE_URL=http://backend:8090
+    restart: unless-stopped
+    # Internal only — no host port exposure needed.
+
   ocr-service:
     build:
       context: ./ocr-service
@@ -32,8 +41,10 @@ services:
       - pb_data:/app/pb_data
     environment:
       - OCR_SERVICE_URL=http://ocr-service:8001
+      - PDF_SERVICE_URL=http://pdf-service:3002
     depends_on:
       - ocr-service
+      - pdf-service
     restart: unless-stopped
     # No ports exposed to the host — the frontend nginx proxies /api to here.
     # To access the PocketBase admin UI directly during debugging, temporarily

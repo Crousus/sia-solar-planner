@@ -401,6 +401,22 @@ export interface DiagramEdge {
   sourceHandle: string; // named output on source (e.g., 'out')
   target: string;       // target node id
   targetHandle: string; // named input on target (e.g., 'in')
+  // Free-form text rendered at the midpoint of the edge (e.g., "3×6 mm²",
+  // "230 V", string numbers). Optional — absent for unlabelled edges.
+  // Edited in place via the custom editable edge component; persisted
+  // through the normal setDiagramEdges → doc JSON → patch sync pipeline.
+  label?: string;
+  // React Flow consults `type` to pick a renderer. Omitted on bootstrap
+  // edges so the `defaultEdgeOptions` type wins; present on user-created
+  // edges once we default-stamp them to the editable variant.
+  type?: string;
+  // Edge-local data. `labelOffset` shifts the label chip away from the
+  // geometric midpoint (flow-space pixels, not screen pixels, so the
+  // offset survives zooming). Stored here so it round-trips through the
+  // JSON-patch sync layer without the edge component needing a side table.
+  data?: {
+    labelOffset?: { x: number; y: number };
+  };
 }
 
 /**
@@ -409,11 +425,20 @@ export interface DiagramEdge {
  * diagram metadata editor.
  */
 export interface DiagramMeta {
-  client?: string;      // ← project.name on bootstrap
-  module?: string;      // ← panelType.name on bootstrap
-  systemSize?: string;  // ← computed kWp on bootstrap
+  // Legacy free-text fields — seeded by pre-2026-04 bootstrap runs.
+  // The title block now derives customer/module/system-size directly
+  // from Project state (so they can't drift as the project evolves),
+  // but we keep the keys here so old docs deserialize cleanly and the
+  // data is not silently dropped during a JSON export round-trip.
+  client?: string;
+  module?: string;
+  systemSize?: string;
+  // Free-text identity/role fields. Still stored here because they have
+  // no canonical source on the Project itself (a person's name and phone
+  // aren't derivable from panels or roofs).
   salesperson?: string;
   planner?: string;
+  plannerPhone?: string;
   company?: string;
   date?: string;        // ISO date string (YYYY-MM-DD)
 }

@@ -116,12 +116,18 @@ export function PageShell({
 
         {userEmail && (
           <div className="flex items-center gap-3">
-            <span
-              className="hidden sm:inline font-mono text-[13px] text-ink-400 tabular-nums"
+            {/* Email doubles as the link to the account page — the user's
+                own identity is the natural click target for "edit me".
+                Keeping it as a styled link rather than a separate
+                "Account" button avoids cluttering the nav pill, which
+                is already tight at narrow widths. */}
+            <Link
+              to="/account"
+              className="hidden sm:inline font-mono text-[13px] text-ink-400 tabular-nums hover:text-ink-200 transition-colors"
               title={userEmail}
             >
               {userEmail}
-            </span>
+            </Link>
             {onSignOut && (
               <button
                 onClick={onSignOut}

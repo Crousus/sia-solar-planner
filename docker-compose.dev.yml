@@ -13,6 +13,18 @@
 # the next server restart without rebuilding the image.
 
 services:
+  pdf-service:
+    build:
+      # Context is the repo root so the Dockerfile can copy src/pdf/ and
+      # src/types/ alongside the pdf-service/ entrypoint.
+      context: .
+      dockerfile: pdf-service/Dockerfile
+    environment:
+      - POCKETBASE_URL=http://backend:8090
+    ports:
+      - "3002:3002"
+    restart: unless-stopped
+
   ocr-service:
     build:
       context: ./ocr-service
@@ -34,8 +46,10 @@ services:
       - ./server/pb_migrations:/app/pb_migrations
     environment:
       - OCR_SERVICE_URL=http://ocr-service:8001
+      - PDF_SERVICE_URL=http://pdf-service:3002
     depends_on:
       - ocr-service
+      - pdf-service
     ports:
       # Expose to host so you can reach the PocketBase admin UI at
       # http://localhost:8090/_/ during development.
@@ -53,9 +67,8 @@ services:
     ports:
       - "5173:5173"
     environment:
-      # Overrides the default 127.0.0.1:8090 proxy target in vite.config.ts
-      # so the Vite dev server can reach the backend container by service name.
       - API_TARGET=http://backend:8090
+      - PDF_TARGET=http://pdf-service:3002
     command: npm run dev
     depends_on:
       - backend

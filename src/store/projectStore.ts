@@ -1450,15 +1450,22 @@ export const useProjectStore = create<ProjectStore>()(
 
       updateDiagramMeta: (patch) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              diagram: {
-                ...s.project.diagram!,
-                meta: { ...s.project.diagram!.meta, ...patch },
+          (s) => {
+            // diagram may not exist yet when DiagramMetaTable's date-seeding
+            // effect fires before bootstrapDiagram() (child effects run before
+            // parent effects in React). Bail silently — the effect will re-run
+            // once diagram is initialised and meta.date is still absent.
+            if (!s.project.diagram) return s;
+            return {
+              project: {
+                ...s.project,
+                diagram: {
+                  ...s.project.diagram,
+                  meta: { ...s.project.diagram.meta, ...patch },
+                },
               },
-            },
-          }),
+            };
+          },
           false,
           'updateDiagramMeta',
         ),

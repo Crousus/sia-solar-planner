@@ -52,11 +52,11 @@ import {
 import html2canvas from 'html2canvas';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ToolMode } from '../types';
+import type { ToolMode, DiagramNodeType } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
 import LanguageToggle from './LanguageToggle';
 import { BrandMark } from './BrandMark';
-import { getActiveProjectTeamId } from './ProjectEditor';
+import { getActiveProjectTeamId, getActiveProjectCreatorId } from './ProjectEditor';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -67,7 +67,40 @@ interface Props {
    * resets it on lock transitions.
    */
   preLockRotation: number;
+  /**
+   * Which editor is active. Drives which mid-bar cluster of controls is
+   * shown — roof-plan gets Lock/basemap/tool-modes/backdrop; block-diagram
+   * gets the node-insert palette. Common controls (undo/redo, save/load,
+   * settings, language, export, reset) are identical on both views.
+   */
+  activeView: 'roof' | 'diagram';
 }
+
+// Diagram node-insert palette — previously lived in its own floating pill
+// above the A4 sheet (DiagramToolbar). Inlined here so the main toolbar
+// fully replaces the roof-plan cluster when the user switches views;
+// keeping two header rows would mean "which controls do I use?" ambiguity.
+//
+// Only the node types that aren't auto-bootstrapped appear here. Solar
+// generators and inverters are derived from project state by
+// bootstrapDiagram, so exposing "add" buttons for them would create
+// phantom nodes that don't map to any roof/inverter record.
+const DIAGRAM_NODE_BUTTONS: ReadonlyArray<{
+  type: DiagramNodeType;
+  labelKey:
+    | 'diagram.nodes.switch'
+    | 'diagram.nodes.fuse'
+    | 'diagram.nodes.battery'
+    | 'diagram.nodes.fre'
+    | 'diagram.nodes.gridOutput';
+  color: string;
+}> = [
+  { type: 'switch',     labelKey: 'diagram.nodes.switch',     color: '#64748b' },
+  { type: 'fuse',       labelKey: 'diagram.nodes.fuse',       color: '#dc2626' },
+  { type: 'battery',    labelKey: 'diagram.nodes.battery',    color: '#059669' },
+  { type: 'fre',        labelKey: 'diagram.nodes.fre',        color: '#7c3aed' },
+  { type: 'gridOutput', labelKey: 'diagram.nodes.gridOutput', color: '#0284c7' },
+];
 
 // Mode definitions. `glyph` is an inline SVG (instead of emoji) so the
 // icon weight matches the typography and scales correctly on HiDPI. `key`
@@ -135,9 +168,10 @@ const MODES: {
   },
 ];
 
-export default function Toolbar({ mapRef, preLockRotation }: Props) {
+export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const addDiagramNode = useProjectStore((s) => s.addDiagramNode);
   // The editor is always mounted under /p/:projectId, so projectId is
   // defined here. Read via the router rather than the store because
   // the store's `project` blob doesn't carry the record id.
@@ -272,16 +306,30 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
   };
 
   const handleExport = async () => {
-    // The overlay element is looked up here — pdfExport no longer reaches
-    // into the DOM itself. Same class selector as before; failing fast
-    // with a user-facing error is fine because Export is only wired to
-    // the toolbar button, which is hidden when the map isn't locked.
+    // Two possible capture sources — either can legitimately be absent
+    // depending on which view is active:
+    //   - `.konva-overlay`         → roof plan (only mounted on activeView 'roof')
+    //   - `[data-diagram-view]`    → electrical block diagram (only on activeView 'diagram')
+    // The PDF tolerates missing roof plan too (see exportPdf); only if BOTH
+    // are missing do we bail. In practice one of them is always mounted
+    // because the toolbar is rendered inside App which always picks a view.
     const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
-    if (!stageEl) {
+    const diagramEl = document.querySelector('[data-diagram-view]') as HTMLElement | null;
+    if (!stageEl && !diagramEl) {
       alert(t('toolbar.exportFailed'));
       return;
     }
-    const ok = await exportPdf(project, stageEl, inverterModelCache);
+    // Branding + planner context, read at export time so any tab that
+    // just switched teams/projects sees fresh values rather than a stale
+    // closure capture. `teamId` drives the logo + company_name lookup;
+    // `creatorId` drives the planner name + phone lookup. Either may be
+    // null (legacy project without created_by, or exceptional mount
+    // without a team binding) — exportPdf tolerates both.
+    const brandingCtx = {
+      teamId: getActiveProjectTeamId(),
+      creatorId: getActiveProjectCreatorId(),
+    };
+    const ok = await exportPdf(project, stageEl, inverterModelCache, brandingCtx);
     if (!ok) alert(t('toolbar.exportFailedGeneral'));
   };
 
@@ -448,6 +496,12 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
 
       <div className="divider-v" />
 
+      {/* View-specific middle cluster. Roof plan shows Lock/basemap/
+          tool-modes/backdrop; block diagram shows the node-insert palette.
+          Switching hides the entire "wrong" cluster so the user never
+          sees controls that don't act on the currently visible canvas. */}
+      {activeView === 'roof' && (
+      <>
       {/* Lock button — the hero of the toolbar.
           When locked: filled amber with ambient glow (primary action achieved).
           When unlocked: ghost surface with a subtle "press me" pulse.
@@ -522,6 +576,72 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
           as a single control (not four loose buttons), which matches how
           they function: exclusive selection. */}
       <div className="segmented">{MODES.map(renderSegment)}</div>
+      </>
+      )}
+
+      {activeView === 'diagram' && (
+        // Diagram node-insert palette. Same pattern the previous floating
+        // DiagramToolbar used — a prefix tech-label plus one color-dotted
+        // chip per node type — but styled as bare inline elements so it
+        // reads as part of the toolbar rather than a nested widget.
+        <div className="flex items-center gap-1.5">
+          <span
+            className="uppercase select-none"
+            style={{
+              fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+              fontSize: 10,
+              fontWeight: 500,
+              letterSpacing: '0.16em',
+              color: 'var(--ink-400)',
+              paddingRight: 4,
+            }}
+          >
+            {t('diagram.toolbar.addLabel')}
+          </span>
+          {DIAGRAM_NODE_BUTTONS.map(({ type, labelKey, color }) => {
+            const label = t(labelKey);
+            return (
+              <button
+                key={type}
+                onClick={() =>
+                  addDiagramNode({
+                    // 8-char base36 id — cheap, collision-unlikely enough
+                    // for a single diagram; avoids pulling in a UUID dep
+                    // for a UI-only identifier.
+                    id: Math.random().toString(36).slice(2, 10),
+                    type,
+                    // Randomize within a small rectangle so successive
+                    // adds don't overlap perfectly and hide each other.
+                    position: {
+                      x: 200 + Math.random() * 200,
+                      y: 200 + Math.random() * 100,
+                    },
+                    data: { label },
+                  })
+                }
+                className="btn btn-ghost"
+                style={{ padding: '6px 10px 6px 8px', fontSize: 11.5 }}
+                title={`Add ${label}`}
+              >
+                {/* 7px identity dot — the type's accent hue as a tiny
+                    round pilot light, matching the node's header color
+                    in the canvas so the palette reads like a legend. */}
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: 999,
+                    background: color,
+                    boxShadow: `0 0 0 1px rgba(255,255,255,0.06), 0 0 6px -1px ${color}`,
+                    flexShrink: 0,
+                  }}
+                />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex-1" />
 
@@ -564,6 +684,7 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
         </button>
         <SyncStatusIndicator />
         <div className="divider-v mx-1" />
+        {activeView === 'roof' && (
         <button
           className={`btn btn-tool ${locked && showBackground ? 'text-sun-300' : ''}`}
           onClick={toggleBackground}
@@ -595,6 +716,7 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
           )}
           <span>{t('toolbar.backdrop')}</span>
         </button>
+        )}
 
         <div className="divider-v mx-1" />
 

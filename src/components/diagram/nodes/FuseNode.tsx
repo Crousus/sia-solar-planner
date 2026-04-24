@@ -30,7 +30,7 @@ type FuseNodeType = Node<DiagramNodeData, 'fuse'>;
 // Rounded rectangle = fuse body, with wires entering/exiting on both sides.
 // This is the IEC-60617 fuse symbol, simplified.
 const FuseIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
     {/* Wire in */}
     <line x1="2" y1="12" x2="6" y2="12" />
     {/* Fuse body */}

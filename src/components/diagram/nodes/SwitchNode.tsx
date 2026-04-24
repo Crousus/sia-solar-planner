@@ -29,7 +29,7 @@ type SwitchNodeType = Node<DiagramNodeData, 'switch'>;
 // Two contact points with a hinged lever — the schematic symbol for an open
 // knife switch. Simple enough to read at 13x13 px.
 const SwitchIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
     {/* Left wire */}
     <line x1="2" y1="16" x2="8" y2="16" />
     {/* Hinged lever (angled up-right) */}

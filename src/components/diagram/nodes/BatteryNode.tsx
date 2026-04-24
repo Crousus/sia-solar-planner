@@ -31,7 +31,7 @@ type BatteryNodeType = Node<DiagramNodeData, 'battery'>;
 // battery even at icon size. The small terminal nub on the right makes
 // the orientation unambiguous.
 const BatteryIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
     {/* Battery body */}
     <rect x="2" y="7" width="17" height="10" rx="1.5" />
     {/* Terminal */}

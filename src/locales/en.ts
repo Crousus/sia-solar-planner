@@ -35,6 +35,27 @@ const en = {
     createOne: 'Create one →',
     signInLink: 'Sign in →',
   },
+  account: {
+    title: 'Your account',
+    desc: 'Your name and phone number appear on PDF exports of projects you create — so the recipient knows who to call.',
+    phoneLabel: 'Phone',
+    phonePlaceholder: 'e.g. +49 171 1234567',
+    save: 'Save',
+    saving: 'Saving…',
+    saved: 'Saved.',
+  },
+  branding: {
+    title: 'Team branding',
+    desc: 'Logo and company name shown on every PDF export from this team.',
+    logoLabel: 'Company logo',
+    logoHint: 'PNG, JPG, SVG or WebP · up to 2 MB',
+    noLogo: 'No logo uploaded',
+    removeLogo: 'Remove on save',
+    removeLogoUndo: 'Keep logo',
+    companyNameLabel: 'Company name',
+    companyNamePlaceholder: 'e.g. Acme Solar GmbH',
+    readOnly: 'Only team admins can edit branding.',
+  },
   toolbar: {
     lockMap: 'Lock Map',
     mapLocked: 'Map Locked',
@@ -128,6 +149,7 @@ const en = {
     manageMembers: 'Manage members →',
     customers: 'Customers',
     catalog: 'Hardware catalog',
+    branding: 'Branding',
     newProject: 'New project',
     creating: 'Creating…',
     emptyProjectsTitle: 'Start a new layout',
@@ -176,6 +198,10 @@ const en = {
     // local typographic conventions.
     metaClient: 'Client',
     metaAddress: 'Address',
+    // Planner block (above Customer) — identifies the person who created
+    // the project. Name + optional phone pulled from the user's profile.
+    metaPlanner: 'Planner',
+    metaPhone: 'Phone',
     metaSep: ' · ',
     notesLabel: 'Notes',
     strings: 'Strings',
@@ -326,7 +352,10 @@ const en = {
   // extra nesting level satisfies the shape check.
   diagram: {
     toolbar: {
-      addLabel: '+ Add:',
+      addLabel: 'Insert',
+    },
+    titleBlock: {
+      heading: 'Electrical Block Diagram',
     },
     nodes: {
       solarGenerator: 'Solar Generator',
@@ -338,13 +367,26 @@ const en = {
       gridOutput: 'Grid Output',
     },
     meta: {
-      client: 'Client',
-      module: 'Module',
-      systemSize: 'System Size',
-      salesperson: 'Sales',
-      planner: 'Planner',
-      company: 'Company',
-      date: 'Date',
+      // Derived fields — read live from Project state, shown read-only
+      // in the title block's top row.
+      customer:     'Customer',
+      address:      'Address',
+      panels:       'Panels',
+      wattage:      'Wattage',
+      // Kept for backwards-compatibility with existing saves; these
+      // labels are still surfaced where the derived values render.
+      client:       'Client',
+      module:       'Module',
+      systemSize:   'System Size',
+      // Editable free-text — second row of the title block.
+      salesperson:  'Sales',
+      planner:      'Planner',
+      plannerPhone: 'Planner Phone',
+      company:      'Company',
+      date:         'Date',
+      // Placeholder shown in read-only cells when the project has
+      // no value for the field yet.
+      emptyDash:    '—',
     },
   },
   inverterModel: {

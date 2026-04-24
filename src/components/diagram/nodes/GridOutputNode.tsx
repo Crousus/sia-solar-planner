@@ -31,7 +31,7 @@ type GridOutputNodeType = Node<DiagramNodeData, 'gridOutput'>;
 // Chosen over a simpler plug icon because it unambiguously means "utility
 // feed-in" rather than "generic electrical outlet".
 const GridIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     {/* Tower legs */}
     <line x1="6" y1="22" x2="10" y2="4" />
     <line x1="18" y1="22" x2="14" y2="4" />

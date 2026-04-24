@@ -95,6 +95,9 @@ function serverRecord(doc: Project, revision = 1): ProjectRecord {
     // feature added it; tests don't exercise catalog behavior so an
     // empty string (same convention as customer above) is fine.
     panel_model: '',
+    // created_by: empty string mirrors the server's default for legacy
+    // rows. Sync tests don't exercise branding/planner behavior.
+    created_by: '',
   };
 }
 

@@ -30,6 +30,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import i18next from 'i18next';
 import type { TFunction } from 'i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
@@ -196,6 +197,14 @@ export default function TeamView() {
                       className="hover:text-ink-200 transition-colors"
                     >
                       {t('team.manageMembers')}
+                    </Link>
+                  )}
+                  {myRole === 'admin' && (
+                    <Link
+                      to={`/teams/${team!.id}/branding`}
+                      className="hover:text-ink-200 transition-colors"
+                    >
+                      {t('team.branding')}
                     </Link>
                   )}
                   <Link
@@ -446,5 +455,14 @@ function relativeTime(d: Date, t: TFunction): string {
   if (hrs < 24) return t('team.hoursAgo', { count: hrs });
   const days = Math.floor(hrs / 24);
   if (days < 30) return t('team.daysAgo', { count: days });
-  return d.toLocaleDateString();
+  // Fall through to an absolute date — formatted in the app's active
+  // locale (read from i18next so the toggle in the header drives it, not
+  // the browser default). German → "24.04.2026", English → "04/24/2026".
+  // Zero-padded 2-digit day/month so the dotted form stays column-aligned
+  // in list views — `dateStyle: 'short'` would drop the leading zeros.
+  return d.toLocaleDateString(i18next.language, {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
 }

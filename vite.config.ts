@@ -41,6 +41,15 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      // PDF export goes directly to the pdf-service, bypassing PocketBase
+      // entirely. PocketBase has a 32 MB body limit that the image payload
+      // can exceed; the pdf-service has its own auth validation and a 60 MB
+      // limit. PDF_TARGET follows the same pattern as API_TARGET for Docker.
+      '/pdf': {
+        target: process.env.PDF_TARGET ?? 'http://127.0.0.1:3002',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/pdf/, ''),
+      },
     },
   },
 });

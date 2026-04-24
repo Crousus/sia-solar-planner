@@ -77,6 +77,16 @@ export function getActiveProjectTeamId(): string | null {
   return activeProjectTeamId;
 }
 
+// The user id that created the currently-open project. Empty string
+// for legacy projects created before the `created_by` field existed
+// (migration 1712346900). Read by exportPdf to populate the "Planner"
+// identity on the printed PDF — falls back to a blank planner block
+// when unset.
+let activeProjectCreatorId: string | null = null;
+export function getActiveProjectCreatorId(): string | null {
+  return activeProjectCreatorId;
+}
+
 export default function ProjectEditor() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -181,6 +191,11 @@ export default function ProjectEditor() {
 
         // Set before setLoaded so Toolbar can read it on first render.
         activeProjectTeamId = record.team;
+        // `created_by` is empty string for legacy projects (pre-migration
+        // 1712346900). Normalize to null so callers only need one falsy
+        // check — matches the pattern for activeProjectTeamId when no
+        // project is open.
+        activeProjectCreatorId = record.created_by || null;
         setLoaded(true);
         // Start the sync client AFTER loadProject so its initial
         // `lastSyncedDoc` fetch aligns with the doc we just loaded.
@@ -222,6 +237,7 @@ export default function ProjectEditor() {
       syncClientRef.current = null;
       activeSyncClient = null;
       activeProjectTeamId = null;
+      activeProjectCreatorId = null;
       // Clear the store on unmount so the next project load starts clean.
       // See header comment for why this matters across project navigation.
       const store = useProjectStore.getState();

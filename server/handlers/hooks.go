@@ -28,6 +28,7 @@ import (
 // Called once from main(); idempotent per-boot.
 func RegisterHooks(app *pocketbase.PocketBase) {
 	registerTeamAutoAdmin(app)
+	registerProjectCreator(app)
 	registerPatchTTL(app)
 }
 
@@ -86,6 +87,29 @@ func registerTeamAutoAdmin(app *pocketbase.PocketBase) {
 			return fmt.Errorf("could not create team_members admin row: %w", err)
 		}
 		return nil
+	})
+}
+
+// Stamps the authenticated caller onto `projects.created_by` during the
+// create request so the client can't impersonate a different "planner"
+// at creation time. The client is allowed to send `created_by` in the
+// payload but we always overwrite it here — trusting client-supplied
+// identity on a field that feeds the printed PDF would be a soft
+// forgery vector (any team member could produce an export that names a
+// colleague as the planner).
+//
+// Set BEFORE e.Next() so the value is present during validation and
+// persisted by the default create handler. If e.Auth is nil (no
+// authenticated caller — shouldn't happen given the collection's
+// createRule, but defensively handled) we leave the field empty and
+// let the default handler save a row with a dangling planner. The PDF
+// then falls back to "unknown planner" rather than 500-ing.
+func registerProjectCreator(app *pocketbase.PocketBase) {
+	app.OnRecordCreateRequest("projects").BindFunc(func(e *core.RecordRequestEvent) error {
+		if e.Auth != nil {
+			e.Record.Set("created_by", e.Auth.Id)
+		}
+		return e.Next()
 	})
 }
 

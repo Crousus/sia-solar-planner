@@ -15,8 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Solar generator node — represents the aggregated roof(s) + panels block.
-// Amber accent (sun iconography). Uses dark header text because amber is a
-// light colour and white-on-amber fails contrast.
+// Amber accent (sun iconography). In the new BaseNode treatment the icon
+// sits on a filled amber swatch with white strokes, so a custom header
+// text override is no longer required.
 
 import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
@@ -29,10 +30,10 @@ import BaseNode from './BaseNode';
 type SolarGeneratorNodeType = Node<DiagramNodeData, 'solarGenerator'>;
 
 // Inline SVG sun — self-contained so we don't pull an icon library just for
-// seven nodes. Stroke colour matches the header textColor (#1e293b = slate-800)
-// so the icon tracks the label.
+// seven nodes. `stroke="currentColor"` so the icon inherits the swatch's
+// foreground (white) set by BaseNode; the amber background provides contrast.
 const SunIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#1e293b" strokeWidth="2.5">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <circle cx="12" cy="12" r="5" />
     <line x1="12" y1="1" x2="12" y2="3" />
     <line x1="12" y1="21" x2="12" y2="23" />
@@ -55,7 +56,6 @@ export default function SolarGeneratorNode({ id, data, selected }: NodeProps<Sol
       data={data}
       selected={selected}
       color="#f59e0b"
-      textColor="#1e293b"
       typeLabel={t('diagram.nodes.solarGenerator')}
       icon={<SunIcon />}
     />

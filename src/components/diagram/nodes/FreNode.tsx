@@ -31,7 +31,7 @@ type FreNodeType = Node<DiagramNodeData, 'fre'>;
 // protruding on two sides, suggesting a control module. Abstract enough
 // to represent any FRE/ESS box without prescribing a specific vendor.
 const FreIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
     {/* Chip body */}
     <rect x="6" y="6" width="12" height="12" rx="1" />
     {/* Pins — left side */}

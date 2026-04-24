@@ -212,16 +212,22 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
             and stats below are secondary to that choice. Pill-style
             segmented control matches the visual weight of other segmented
             toggles in the sidebar without competing with them. */}
-        <div className="flex rounded-lg overflow-hidden border border-slate-700 mb-4 text-xs font-medium">
+        {/* View toggle — styled as a segmented switcher matching the
+            toolbar's tool-mode control, so the two big modes of the
+            editor (plan vs schematic) read with the same visual weight
+            as other major selections elsewhere in the app. */}
+        <div className="segmented mb-4 w-full">
           <button
+            className="segment flex-1 justify-center"
+            data-active={activeView === 'roof' || undefined}
             onClick={() => setActiveView('roof')}
-            className={`flex-1 py-1.5 transition-colors ${activeView === 'roof' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
           >
             {t('sidebar.viewRoof')}
           </button>
           <button
+            className="segment flex-1 justify-center"
+            data-active={activeView === 'diagram' || undefined}
             onClick={() => setActiveView('diagram')}
-            className={`flex-1 py-1.5 transition-colors ${activeView === 'diagram' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
           >
             {t('sidebar.viewDiagram')}
           </button>
@@ -277,6 +283,11 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
       <div className="px-4 py-4 space-y-6">
 
         {/* ── Panel type ──────────────────────────────────────────── */}
+        {/* Panel type is roof-plan-only — physical module dimensions
+            determine placement on the roof polygon, which has no
+            analogue on the block-diagram canvas. Inverters (next
+            section) stay visible on both views because the diagram
+            bootstraps one node per inverter. */}
         {/*
            Two display modes driven by `activePanelModelId`:
             (a) Catalog-linked (id present): show a read-only summary
@@ -295,6 +306,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                 setPanelModelFromCatalog which both patches panel_model
                 on PB and updates doc.panelType.
         */}
+        {activeView === 'roof' && (
         <section>
           <h3 className="section-title">
             <span>{t('sidebar.panelType')}</span>
@@ -413,6 +425,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
             </div>
           )}
         </section>
+        )}
 
         {/* ── Inverters ───────────────────────────────────────────── */}
         <section>
@@ -542,6 +555,11 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
         </section>
 
         {/* ── Strings ─────────────────────────────────────────────── */}
+        {/* Strings are a roof-plan construct — they group placed panels
+            for wiring-path rendering. Hidden in diagram view because
+            the block diagram doesn't render individual panels or
+            per-string polylines. */}
+        {activeView === 'roof' && (
         <section>
           <h3 className="section-title">
             <span>{t('sidebar.strings')}</span>
@@ -682,9 +700,10 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
             })}
           </div>
         </section>
+        )}
 
         {/* ── Selected roof (conditional) ─────────────────────────── */}
-        {selectedRoof && (
+        {activeView === 'roof' && selectedRoof && (
           <section>
             <h3 className="section-title">
               <span>{t('sidebar.roof')}</span>

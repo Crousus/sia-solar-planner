@@ -40,11 +40,23 @@ export interface UserRecord extends BaseRecord {
   email: string;
   name: string;
   verified: boolean;
+  // Optional free-form phone string. Surfaced alongside `name` on the
+  // PDF as the "Planner" identity block. Kept as text (not validated)
+  // because international number formats vary too much to be worth
+  // enforcing server-side; the value is displayed verbatim.
+  phone?: string;
 }
 
 export interface TeamRecord extends BaseRecord {
   name: string;
   created_by: string; // relation → users.id
+  // Team-level branding — flows into PDF exports (not the in-app UI).
+  // `logo` is the file name of a single uploaded image in the `teams`
+  // collection's file bucket; the full URL is built via
+  // pb.files.getUrl(teamRecord, teamRecord.logo) at read time. Empty
+  // string (PB's default for unset file fields) when no logo uploaded.
+  logo?: string;
+  company_name?: string;
 }
 
 export interface TeamMemberRecord extends BaseRecord {
@@ -71,9 +83,17 @@ export interface ProjectRecord extends BaseRecord {
   // that to overwrite doc.panelType on load, giving us "live reference"
   // semantics — catalog edits propagate to projects on next open.
   panel_model: string;
+  // Relation → users.id. Empty string for legacy projects created before
+  // this field existed (the migration doesn't backfill — see migration
+  // 1712346900). Always populated on new rows via the server-side
+  // OnRecordCreateRequest hook. Used as the "Planner" identity on PDF
+  // exports; when expanded via `expand: 'created_by'` the full user
+  // record (including `phone`) lives at expand?.created_by.
+  created_by: string;
   expand?: {
     customer?: CustomerRecord;
     panel_model?: PanelModelRecord;
+    created_by?: UserRecord;
   };
 }
 

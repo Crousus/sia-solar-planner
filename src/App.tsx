@@ -29,6 +29,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useState, useEffect, useCallback } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import MapView from './components/MapView';
 import KonvaOverlay from './components/KonvaOverlay';
 import Sidebar from './components/Sidebar';
@@ -66,13 +67,31 @@ export default function App() {
   // unlock always starts at 0° rather than inheriting a stale value.
   const [preLockRotation, setPreLockRotation] = useState(0);
 
-  // View toggle — the sidebar's top-of-body switch flips the right-hand
-  // pane between the roof-plan editor (map + Konva overlay) and the
-  // electrical block diagram (React Flow). Kept as local App state rather
-  // than in the project store because it's a pure UI preference: reloading
-  // the project should always start on the roof plan, and remote
-  // collaborators shouldn't see their view flipped by a teammate.
-  const [activeView, setActiveView] = useState<'roof' | 'diagram'>('roof');
+  // View toggle — roof-plan editor (map + Konva overlay) vs. electrical
+  // block diagram (React Flow). Sourced from the URL so reload, deep-link,
+  // and browser back/forward all preserve the active pane. Routes:
+  //   /p/:projectId          → roof
+  //   /p/:projectId/diagram  → diagram
+  // Kept out of the project store because it's a per-tab UI preference:
+  // remote collaborators shouldn't see their view flipped by a teammate,
+  // and we don't want to diff/sync it across devices.
+  const { projectId } = useParams<{ projectId: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeView: 'roof' | 'diagram' = location.pathname.endsWith('/diagram')
+    ? 'diagram'
+    : 'roof';
+  const setActiveView = useCallback(
+    (v: 'roof' | 'diagram') => {
+      if (!projectId) return;
+      const next = v === 'diagram' ? `/p/${projectId}/diagram` : `/p/${projectId}`;
+      // `replace` so toggling the view doesn't flood the history stack —
+      // a user bouncing between roof and diagram twenty times shouldn't
+      // need twenty Back presses to escape.
+      navigate(next, { replace: true });
+    },
+    [projectId, navigate],
+  );
   useEffect(() => {
     if (locked) setPreLockRotation(0);
   }, [locked]);
@@ -145,7 +164,7 @@ export default function App() {
 
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--ink-950)' }}>
-      <Toolbar mapRef={mapRef} preLockRotation={preLockRotation} />
+      <Toolbar mapRef={mapRef} preLockRotation={preLockRotation} activeView={activeView} />
       <div className="flex-1 flex overflow-hidden">
         <Sidebar activeView={activeView} setActiveView={setActiveView} />
         {/*
