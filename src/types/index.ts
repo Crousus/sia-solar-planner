@@ -348,10 +348,18 @@ export type DiagramNodeType =
 /**
  * Data payload for a diagram node. Contains the display label and optional
  * sublabel (typically specs: module count, kWp, rating, etc.).
+ *
+ * The `[key: string]: unknown` index signature is required by React Flow v12
+ * — its `Node<TData>` generic constrains `TData extends Record<string, unknown>`.
+ * Without the index signature, every `NodeProps<Node<DiagramNodeData>>` site
+ * would fail to compile. Downside: it opens the door to accidental extra
+ * fields, but we treat `label`/`sublabel` as the only canonical keys and
+ * never read arbitrary properties.
  */
 export interface DiagramNodeData {
   label: string;
   sublabel?: string;
+  [key: string]: unknown;
 }
 
 /**
