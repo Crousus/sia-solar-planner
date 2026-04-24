@@ -600,6 +600,38 @@ export default function Sidebar() {
                       </option>
                     ))}
                   </select>
+                  {/* MPPT port selector — only visible when the assigned
+                      inverter has a linked catalog model with mpptCount > 0.
+                      Letters A, B, C… derived from mpptCount at render time;
+                      the stored mpptPort value is just the letter string. */}
+                  {(() => {
+                    if (!str.inverterId) return null;
+                    const inv = inverters.find((i) => i.id === str.inverterId);
+                    if (!inv?.inverterModelId) return null;
+                    const model = inverterModelCache[inv.inverterModelId];
+                    const count = model?.mpptCount ?? 0;
+                    if (count <= 0) return null;
+                    const ports = Array.from({ length: count }, (_, i) =>
+                      String.fromCharCode(65 + i), // A, B, C, …
+                    );
+                    return (
+                      <select
+                        className="input mt-1"
+                        style={{ fontSize: 11 }}
+                        value={str.mpptPort ?? ''}
+                        onChange={(e) =>
+                          updateString(str.id, { mpptPort: e.target.value || null })
+                        }
+                      >
+                        <option value="">{t('sidebar.noMpptPortOption')}</option>
+                        {ports.map((port) => (
+                          <option key={port} value={port}>
+                            {t('sidebar.mpptPort')} {port}
+                          </option>
+                        ))}
+                      </select>
+                    );
+                  })()}
                 </div>
               );
             })}

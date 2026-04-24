@@ -134,6 +134,7 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
   const lockMap = useProjectStore((s) => s.lockMap);
   const unlockMap = useProjectStore((s) => s.unlockMap);
   const project = useProjectStore((s) => s.project);
+  const inverterModelCache = useProjectStore((s) => s.inverterModelCache);
   const loadProject = useProjectStore((s) => s.loadProject);
   const resetProject = useProjectStore((s) => s.resetProject);
   const addString = useProjectStore((s) => s.addString);
@@ -197,30 +198,37 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
     const c = map.getCenter();
     const z = map.getZoom();
     const mpp = metersPerPixel(z, c.lat);
-    const mapEl = document.querySelector('.leaflet-container') as HTMLElement | null;
-    if (!mapEl) {
+    // Target the MapView shell (the axis-aligned parent of the rotating
+    // wrapper) rather than `.leaflet-container`. The shell is main-sized
+    // with `overflow: hidden`; the rotated wrapper inside overflows it
+    // and gets clipped at the visible viewport. Capturing the shell
+    // therefore produces exactly what the user sees in preview — tilted
+    // tiles baked into a main-sized rectangle — so the locked background
+    // matches the preview 1:1, with no "flip to axis-aligned" frame and
+    // no need for a separate stage-rotation seed.
+    //
+    // Fallback to `.leaflet-container` if the shell can't be found for
+    // any reason; on the off chance MapView's structure changes the
+    // capture still produces something rather than aborting the lock.
+    const shellEl = document.querySelector('[data-map-shell]') as HTMLElement | null;
+    const captureEl =
+      shellEl ?? (document.querySelector('.leaflet-container') as HTMLElement | null);
+    if (!captureEl) {
       alert('Map container not found — cannot lock.');
       return;
     }
     setIsLocking(true);
-    // If the user rotated the Leaflet preview (see MapView's rotator
-    // wrapper), temporarily strip the CSS transform BEFORE html2canvas so
-    // the capture is axis-aligned — the wrapper only affects screen
-    // layout, and rotating the bitmap baked into capturedImage would
-    // complicate every downstream consumer (mpp math, dimension labels,
-    // roof-edge snap). Instead we preserve the rotation as an INITIAL
-    // stageRotation seed (lockMap arg below) and let Konva apply it.
-    // Restore after capture even though MapView is about to unmount —
-    // defensive in case the lock errors out mid-flight.
-    const rotateWrapper = document.querySelector<HTMLElement>('[data-map-rotate-wrapper]');
-    const savedTransform = rotateWrapper?.style.transform;
-    if (rotateWrapper) rotateWrapper.style.transform = 'none';
+    const cropW = captureEl.clientWidth;
+    const cropH = captureEl.clientHeight;
     try {
-      const canvas = await html2canvas(mapEl, {
+      const canvas = await html2canvas(captureEl, {
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#1a1812',
         logging: false,
+        // Exclude the Leaflet control overlay (zoom +/−) — it's interactive
+        // chrome that shouldn't appear in the locked background image.
+        ignoreElements: (el) => el.classList.contains('leaflet-control-container'),
       });
       const dataUrl = canvas.toDataURL('image/png');
       lockMap({
@@ -229,20 +237,18 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
         zoom: z,
         mpp,
         capturedImage: dataUrl,
-        capturedWidth: mapEl.clientWidth,
-        capturedHeight: mapEl.clientHeight,
-        initialRotationDeg: preLockRotation || undefined,
+        capturedWidth: cropW,
+        capturedHeight: cropH,
+        // Rotation is baked into the captured image (we targeted the
+        // axis-aligned shell which contains the rotating wrapper), so
+        // don't seed the stage with an additional rotation on top —
+        // that would double-rotate.
+        initialRotationDeg: undefined,
       });
     } catch (err) {
       console.error('Failed to capture satellite view', err);
       alert('Failed to capture the satellite view — see console for details.');
     } finally {
-      // Restore the preview rotation on failure (MapView is still mounted
-      // in the error path). On success this runs after MapView unmounts —
-      // querySelector would miss the element and the assignment no-ops.
-      if (rotateWrapper && savedTransform !== undefined) {
-        rotateWrapper.style.transform = savedTransform;
-      }
       // Always clear the flag so a single error doesn't permanently brick
       // the Lock button until reload.
       setIsLocking(false);
@@ -259,7 +265,7 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
       alert(t('toolbar.exportFailed'));
       return;
     }
-    const ok = await exportPdf(project, stageEl);
+    const ok = await exportPdf(project, stageEl, inverterModelCache);
     if (!ok) alert(t('toolbar.exportFailedGeneral'));
   };
 
@@ -486,12 +492,11 @@ export default function Toolbar({ mapRef, preLockRotation }: Props) {
           className="input"
           style={{ width: 'auto', padding: '6px 26px 6px 10px', fontSize: 12 }}
           value={mapProvider}
-          onChange={(e) => setMapProvider(e.target.value as 'esri' | 'bayern' | 'bayern_alkis')}
+          onChange={(e) => setMapProvider(e.target.value as 'esri' | 'bayern')}
           title="Satellite imagery provider"
         >
           <option value="esri">{t('toolbar.basemapEsri')}</option>
           <option value="bayern">{t('toolbar.basemapBayern')}</option>
-          <option value="bayern_alkis">{t('toolbar.basemapBayernAlkis')}</option>
         </select>
       )}
 

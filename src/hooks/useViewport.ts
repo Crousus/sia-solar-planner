@@ -125,22 +125,59 @@ export function useViewport({
   //
   // On lock → true we also SEED stageRotation from `initialRotationDeg`
   // (written by lockMap when the user rotated the Leaflet preview). This
-  // is a one-shot seed: subsequent renders with the same locked=true don't
-  // clobber live user rotation via middle-mouse / RotationDock. The
-  // `initialRotationDeg` dep is intentionally omitted from the array —
-  // we only want to apply the seed at the lock transition, not on every
-  // value change (the value is stable per lock anyway, but being explicit
-  // about "edge-triggered, not level-triggered" avoids a future footgun).
+  // is a one-shot seed per lock session, guarded by `seededForLockRef`
+  // so subsequent renders don't clobber live user rotation via
+  // middle-mouse / RotationDock.
+  //
+  // IMPORTANT — when seeding a non-zero rotation, we must also adjust
+  // `stagePos` so the rotation pivots around the screen center. Konva's
+  // Stage `rotation` pivots around the stage origin (local 0,0). With
+  // `stagePos = (0,0)` that origin coincides with the viewport's
+  // top-left, so seeding rotation alone would make the captured imagery
+  // swing out around the top-left corner — looking very different from
+  // the pre-lock preview (which rotates around the visible center via
+  // CSS) and giving the impression that the "rotation was reset".
+  //
+  // We include `size` + `initialRotationDeg` in the deps (not just
+  // `locked`) so the seed retries if it fires before the ResizeObserver
+  // has populated `size` — otherwise the first lock after mount would
+  // fall through to the `size.w === 0` fallback and apply rotation
+  // around (0,0). The `seededForLockRef` ref makes the retry one-shot.
+  const seededForLockRef = useRef(false);
   useEffect(() => {
     if (!locked) {
+      seededForLockRef.current = false;
       setStageScale(1);
       setStagePos({ x: 0, y: 0 });
       setStageRotation(0);
-    } else {
-      setStageRotation(initialRotationDeg ?? 0);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locked]);
+    if (seededForLockRef.current) return;
+    // Wait for size to be measured so the pivot math has real dimensions.
+    if (size.w <= 0 || size.h <= 0) return;
+    const seedDeg = initialRotationDeg ?? 0;
+    seededForLockRef.current = true;
+    setStageScale(1);
+    setStageRotation(seedDeg);
+    if (seedDeg === 0) {
+      setStagePos({ x: 0, y: 0 });
+      return;
+    }
+    // Before-seed state is identity: scale=1, pos=(0,0), rotation=0.
+    // So world_center == screen_center == (w/2, h/2). We want that same
+    // screen point to remain fixed after applying `rotation = seedDeg`.
+    //   screen = rotate(seedDeg)(world) * scale + pos
+    //   pos    = screen - rotate(seedDeg)(world)   // scale=1
+    const rad = (seedDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = size.w / 2;
+    const cy = size.h / 2;
+    setStagePos({
+      x: cx - (cos * cx - sin * cy),
+      y: cy - (sin * cx + cos * cy),
+    });
+  }, [locked, size.w, size.h, initialRotationDeg]);
 
   // ── Drag refs (pan via right-click/space, rotate via middle-click) ───
   const panRef = useRef<{ lastX: number; lastY: number } | null>(null);

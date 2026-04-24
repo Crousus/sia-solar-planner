@@ -3,7 +3,7 @@
 //
 // Reads as a stylized sun inside a command-palette square:
 //   - rounded square container echoes Raycast's app-icon grid
-//   - radial scarlet gradient inside is the "solar" domain cue
+//   - radial blue gradient inside is the "solar" domain cue
 //   - a tiny crosshair bisects the disc — a PV-cell nod plus a "precision
 //     instrument" signal
 //
@@ -39,7 +39,7 @@ export function BrandMark({ size = 22 }: Props) {
         stroke="url(#bm-stroke)"
         strokeWidth="0.75"
       />
-      {/* Inner disc — a warm scarlet bloom that reads as sun-at-dusk. */}
+      {/* Inner disc — a blue bloom that reads as the primary accent. */}
       <circle cx="12" cy="12" r="5.2" fill="url(#bm-core)" />
       {/* Crosshair — PV grid + precision-tool signal. Low alpha so it
           doesn't compete with the core; only visible at close range. */}
@@ -50,22 +50,22 @@ export function BrandMark({ size = 22 }: Props) {
         strokeLinecap="round"
       />
       <defs>
-        {/* Container fill — near-black with a 2% warm lift for tactility. */}
+        {/* Container fill — near-black with a faint cool tint to echo the blue accent. */}
         <linearGradient id="bm-bg" x1="12" y1="1" x2="12" y2="23" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#1b1416" />
-          <stop offset="100%" stopColor="#0b0909" />
+          <stop offset="0%" stopColor="#111318" />
+          <stop offset="100%" stopColor="#0a0b0e" />
         </linearGradient>
         {/* Container stroke — slightly brighter on top for an edge-lit feel. */}
         <linearGradient id="bm-stroke" x1="12" y1="1" x2="12" y2="23" gradientUnits="userSpaceOnUse">
           <stop offset="0%" stopColor="rgba(255,255,255,0.18)" />
           <stop offset="100%" stopColor="rgba(255,255,255,0.04)" />
         </linearGradient>
-        {/* Core disc gradient — warm scarlet-to-coral radial. Offset
-            toward the top-left so the disc has a convincing highlight. */}
+        {/* Core disc gradient — blue radial. Offset toward the top-left
+            so the disc has a convincing highlight. */}
         <radialGradient id="bm-core" cx="0.38" cy="0.32" r="0.9">
-          <stop offset="0%" stopColor="#ffc0b5" />
-          <stop offset="45%" stopColor="#ff6363" />
-          <stop offset="100%" stopColor="#8a1c1c" />
+          <stop offset="0%" stopColor="#bfdbfe" />
+          <stop offset="45%" stopColor="#60a5fa" />
+          <stop offset="100%" stopColor="#1d4ed8" />
         </radialGradient>
       </defs>
     </svg>

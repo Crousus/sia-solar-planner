@@ -105,6 +105,12 @@ func RegisterRoutes(app *pocketbase.PocketBase, e *core.ServeEvent) {
 	e.Router.POST("/api/sp/set-customer", func(re *core.RequestEvent) error {
 		return handleSetCustomer(app, re)
 	})
+	// /api/sp/parse-datasheet proxies to the ocr-service sidecar.
+	// Auth + SSRF validation happen here; PDF download, OCR, and LLM
+	// extraction happen in the Python service. See datasheetImport.go.
+	e.Router.POST("/api/sp/parse-datasheet", func(re *core.RequestEvent) error {
+		return handleDatasheetImport(app, re)
+	})
 }
 
 // ── Request/response DTOs ──────────────────────────────────────────────

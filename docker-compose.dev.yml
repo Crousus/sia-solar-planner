@@ -13,6 +13,18 @@
 # the next server restart without rebuilding the image.
 
 services:
+  ocr-service:
+    build:
+      context: ./ocr-service
+      dockerfile: Dockerfile
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    ports:
+      # Expose for direct testing: curl http://localhost:8001/parse
+      - "8001:8001"
+    restart: unless-stopped
+
   backend:
     build:
       context: ./server
@@ -20,6 +32,10 @@ services:
     volumes:
       - ./server/pb_data:/app/pb_data
       - ./server/pb_migrations:/app/pb_migrations
+    environment:
+      - OCR_SERVICE_URL=http://ocr-service:8001
+    depends_on:
+      - ocr-service
     ports:
       # Expose to host so you can reach the PocketBase admin UI at
       # http://localhost:8090/_/ during development.

@@ -37,6 +37,32 @@ import type { InverterModelRecord, PanelModelRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 
+// ── Datasheet import helpers ───────────────────────────────────────────────────
+// These types mirror the JSON the ocr-service returns after LLM extraction.
+// Fields are optional — the LLM omits ones it can't find.
+
+interface PanelExtractResult {
+  manufacturer?: string; model?: string;
+  wattPeak?: number;
+  voc?: number; isc?: number; vmpp?: number; impp?: number;
+  efficiencyPct?: number; weightKg?: number;
+  widthM?: number; heightM?: number;
+  tempCoefficientPmax?: number;
+}
+interface InverterExtractResult {
+  manufacturer?: string; model?: string;
+  maxAcPowerW?: number; maxDcPowerW?: number;
+  efficiencyPct?: number; maxInputVoltageV?: number;
+  phases?: number; maxStrings?: number;
+  mpptCount?: number; maxDcCurrentA?: number; stringsPerMppt?: number;
+}
+
+// Round to a fixed number of decimal places and strip trailing zeros so form
+// inputs show "430" not "430.0000000000001".
+function fmt(n: number, decimals = 4): string {
+  return parseFloat(n.toFixed(decimals)).toString();
+}
+
 // Tab identifier kept local to this file — no other component cares
 // about this enum.
 type Tab = 'panels' | 'inverters';
@@ -99,6 +125,9 @@ interface InverterFormState {
   phases: string;
   maxStrings: string;
   maxInputVoltageV: string;
+  mpptCount: string;
+  maxDcCurrentA: string;
+  stringsPerMppt: string;
   datasheetUrl: string;
 }
 function emptyInverterForm(): InverterFormState {
@@ -106,6 +135,7 @@ function emptyInverterForm(): InverterFormState {
     manufacturer: '', model: '',
     maxAcPowerW: '', maxDcPowerW: '', efficiencyPct: '',
     phases: '', maxStrings: '', maxInputVoltageV: '',
+    mpptCount: '', maxDcCurrentA: '', stringsPerMppt: '',
     datasheetUrl: '',
   };
 }
@@ -119,6 +149,9 @@ function inverterRecordToForm(r: InverterModelRecord): InverterFormState {
     phases: r.phases?.toString() ?? '',
     maxStrings: r.maxStrings?.toString() ?? '',
     maxInputVoltageV: r.maxInputVoltageV?.toString() ?? '',
+    mpptCount: r.mpptCount?.toString() ?? '',
+    maxDcCurrentA: r.maxDcCurrentA?.toString() ?? '',
+    stringsPerMppt: r.stringsPerMppt?.toString() ?? '',
     datasheetUrl: r.datasheetUrl ?? '',
   };
 }
@@ -315,6 +348,9 @@ export default function CatalogPage() {
         ...(numOrUndef(inverterForm.phases) !== undefined ? { phases: numOrUndef(inverterForm.phases) } : {}),
         ...(numOrUndef(inverterForm.maxStrings) !== undefined ? { maxStrings: numOrUndef(inverterForm.maxStrings) } : {}),
         ...(numOrUndef(inverterForm.maxInputVoltageV) !== undefined ? { maxInputVoltageV: numOrUndef(inverterForm.maxInputVoltageV) } : {}),
+        ...(numOrUndef(inverterForm.mpptCount) !== undefined ? { mpptCount: numOrUndef(inverterForm.mpptCount) } : {}),
+        ...(numOrUndef(inverterForm.maxDcCurrentA) !== undefined ? { maxDcCurrentA: numOrUndef(inverterForm.maxDcCurrentA) } : {}),
+        ...(numOrUndef(inverterForm.stringsPerMppt) !== undefined ? { stringsPerMppt: numOrUndef(inverterForm.stringsPerMppt) } : {}),
         ...(inverterForm.datasheetUrl.trim() ? { datasheetUrl: inverterForm.datasheetUrl.trim() } : {}),
       };
       if (editingInverterId === 'new') {
@@ -481,6 +517,103 @@ function PanelsTab(p: PanelsTabProps) {
     (e: React.ChangeEvent<HTMLInputElement>) =>
       p.setForm((f) => ({ ...f, [key]: e.target.value }));
 
+  // Import state — kept separate from the form's busy/error so the Import
+  // button doesn't interfere with the Save spinner.
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState(0);
+  // Populated when the LLM finds multiple product variants; the user picks
+  // one and the form fills. Cleared on entry edit switch or after picking.
+  const [importVariants, setImportVariants] = useState<PanelExtractResult[] | null>(null);
+
+  // Clear stale picker/message whenever a different catalog entry is opened.
+  useEffect(() => {
+    setImportVariants(null);
+    setImportMsg(null);
+    setImportProgress(0);
+  }, [p.editingId]);
+
+  function applyVariant(d: PanelExtractResult) {
+    const patch: Partial<PanelFormState> = {};
+    if (d.manufacturer        !== undefined) patch.manufacturer        = d.manufacturer;
+    if (d.model               !== undefined) patch.model               = d.model;
+    if (d.wattPeak            !== undefined) patch.wattPeak            = fmt(d.wattPeak, 0);
+    if (d.voc                 !== undefined) patch.voc                 = fmt(d.voc, 2);
+    if (d.isc                 !== undefined) patch.isc                 = fmt(d.isc, 2);
+    if (d.vmpp                !== undefined) patch.vmpp                = fmt(d.vmpp, 2);
+    if (d.impp                !== undefined) patch.impp                = fmt(d.impp, 2);
+    if (d.efficiencyPct       !== undefined) patch.efficiencyPct       = fmt(d.efficiencyPct, 2);
+    if (d.weightKg            !== undefined) patch.weightKg            = fmt(d.weightKg, 1);
+    if (d.widthM              !== undefined) patch.widthM              = fmt(d.widthM, 3);
+    if (d.heightM             !== undefined) patch.heightM             = fmt(d.heightM, 3);
+    if (d.tempCoefficientPmax !== undefined) patch.tempCoefficientPmax = fmt(d.tempCoefficientPmax, 3);
+    const count = Object.keys(patch).length;
+    if (count > 0) p.setForm((f) => ({ ...f, ...patch }));
+    setImportVariants(null);
+    setImportMsg(t(count > 0 ? 'catalog.importOk' : 'catalog.importNone', { count }));
+  }
+
+  async function handleImport() {
+    const url = p.form.datasheetUrl.trim();
+    if (!url || importing) return;
+    setImporting(true);
+    setImportMsg(null);
+    setImportVariants(null);
+    setImportProgress(0);
+    try {
+      const res = await fetch('/api/sp/parse-datasheet', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${pb.authStore.token}`,
+        },
+        body: JSON.stringify({ url, type: 'panel' }),
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        setImportMsg(t('catalog.importError', { message: (data as { error?: string; detail?: string }).error ?? (data as { detail?: string }).detail ?? 'request failed' }));
+        return;
+      }
+      // Read the ndjson stream line by line and advance the progress bar.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let msg: Record<string, unknown>;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (msg.progress === 'downloaded') setImportProgress(33);
+          else if (msg.progress === 'extracted') setImportProgress(66);
+          else if (typeof msg.error === 'string') {
+            setImportMsg(t('catalog.importError', { message: msg.error }));
+            break outer;
+          } else if (Array.isArray(msg.result)) {
+            setImportProgress(100);
+            const variants = msg.result as PanelExtractResult[];
+            if (variants.length === 0) {
+              setImportMsg(t('catalog.importNone', { count: 0 }));
+            } else if (variants.length === 1) {
+              applyVariant(variants[0]);
+            } else {
+              setImportVariants(variants);
+            }
+            break outer;
+          }
+        }
+      }
+    } catch {
+      setImportMsg(t('catalog.importError', { message: 'network error' }));
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <>
       {p.editingId !== null && (
@@ -543,8 +676,7 @@ function PanelsTab(p: PanelsTabProps) {
               <div className="flex gap-2 items-center">
                 <input className="input flex-1" type="url" value={p.form.datasheetUrl} onChange={field('datasheetUrl')} placeholder="https://…" maxLength={500} />
                 {/* Inline verify link — opens the URL in a new tab so
-                    the user can confirm the datasheet is right. Disabled
-                    look when the field is empty (no href). */}
+                    the user can confirm the datasheet is right. */}
                 {p.form.datasheetUrl.trim() && (
                   <a
                     href={p.form.datasheetUrl.trim()}
@@ -557,7 +689,71 @@ function PanelsTab(p: PanelsTabProps) {
                     ↗
                   </a>
                 )}
+                {/* Import button: downloads the PDF, OCRs it, sends the
+                    text to Gemini, and auto-fills the numeric fields. */}
+                {p.form.datasheetUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleImport}
+                    disabled={importing || p.busy}
+                    className="btn btn-ghost"
+                    style={{ padding: '8px 12px', fontSize: 13, whiteSpace: 'nowrap' }}
+                  >
+                    {importing && (
+                      <span
+                        className="inline-block w-[11px] h-[11px] rounded-full border-2 border-current border-t-transparent animate-spin mr-1.5 align-[-1px]"
+                        aria-hidden
+                      />
+                    )}
+                    {importing ? t('catalog.importing') : t('catalog.importBtn')}
+                  </button>
+                )}
               </div>
+              {/* Slim progress bar — only visible while an import is in
+                  flight. Advances through three real server-side stages:
+                  0 → 33 (PDF downloaded) → 66 (text extracted) → 100 (done). */}
+              {(importing || importProgress > 0) && (
+                <div className="mt-2 h-[3px] rounded-full overflow-hidden" style={{ background: 'var(--surface-1, rgba(255,255,255,0.08))' }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${importProgress}%`,
+                      background: 'var(--sun-300, #f59e0b)',
+                      transition: importProgress === 0 ? 'none' : 'width 0.4s ease',
+                    }}
+                  />
+                </div>
+              )}
+              {/* Variant picker: shown when the LLM found multiple power
+                  classes on the same datasheet. Click one to fill the form. */}
+              {importVariants && (
+                <div className="mt-2">
+                  <span className="block mb-1 text-[12px]" style={{ color: 'var(--ink-300)' }}>
+                    {t('catalog.importPickVariant')}
+                  </span>
+                  <div className="flex flex-wrap gap-1">
+                    {importVariants.map((v, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => applyVariant(v)}
+                        className="btn btn-ghost"
+                        style={{ padding: '4px 10px', fontSize: 12 }}
+                      >
+                        {v.model ?? ''}{v.model && v.wattPeak ? ' · ' : ''}{v.wattPeak != null ? `${v.wattPeak} Wp` : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {importMsg && (
+                <span
+                  className="block mt-1 text-[12px]"
+                  style={{ color: importMsg.startsWith(t('catalog.importError', { message: '' }).slice(0, 6)) ? 'var(--sun-200)' : 'var(--ink-300)' }}
+                >
+                  {importMsg}
+                </span>
+              )}
             </label>
           </div>
           {p.formError && (
@@ -648,6 +844,85 @@ function InvertersTab(p: InvertersTabProps) {
     (e: React.ChangeEvent<HTMLInputElement>) =>
       p.setForm((f) => ({ ...f, [key]: e.target.value }));
 
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState(0);
+
+  useEffect(() => {
+    setImportMsg(null);
+    setImportProgress(0);
+  }, [p.editingId]);
+
+  async function handleImport() {
+    const url = p.form.datasheetUrl.trim();
+    if (!url || importing) return;
+    setImporting(true);
+    setImportMsg(null);
+    setImportProgress(0);
+    try {
+      const res = await fetch('/api/sp/parse-datasheet', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${pb.authStore.token}`,
+        },
+        body: JSON.stringify({ url, type: 'inverter' }),
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        setImportMsg(t('catalog.importError', { message: (data as { error?: string; detail?: string }).error ?? (data as { detail?: string }).detail ?? 'request failed' }));
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let msg: Record<string, unknown>;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (msg.progress === 'downloaded') setImportProgress(33);
+          else if (msg.progress === 'extracted') setImportProgress(66);
+          else if (typeof msg.error === 'string') {
+            setImportMsg(t('catalog.importError', { message: msg.error }));
+            break outer;
+          } else if (Array.isArray(msg.result)) {
+            setImportProgress(100);
+            // For inverters take the first variant — multi-model sheets are
+            // uncommon and the user can adjust the fields manually.
+            const d = (msg.result as InverterExtractResult[])[0];
+            if (!d) { setImportMsg(t('catalog.importNone', { count: 0 })); break outer; }
+            const patch: Partial<InverterFormState> = {};
+            if (d.manufacturer     !== undefined) patch.manufacturer     = d.manufacturer;
+            if (d.model            !== undefined) patch.model            = d.model;
+            if (d.maxAcPowerW      !== undefined) patch.maxAcPowerW      = fmt(d.maxAcPowerW, 0);
+            if (d.maxDcPowerW      !== undefined) patch.maxDcPowerW      = fmt(d.maxDcPowerW, 0);
+            if (d.efficiencyPct    !== undefined) patch.efficiencyPct    = fmt(d.efficiencyPct, 2);
+            if (d.maxInputVoltageV !== undefined) patch.maxInputVoltageV = fmt(d.maxInputVoltageV, 0);
+            if (d.phases           !== undefined) patch.phases           = String(d.phases);
+            if (d.maxStrings       !== undefined) patch.maxStrings       = String(d.maxStrings);
+            if (d.mpptCount        !== undefined) patch.mpptCount        = String(d.mpptCount);
+            if (d.maxDcCurrentA    !== undefined) patch.maxDcCurrentA    = fmt(d.maxDcCurrentA, 1);
+            if (d.stringsPerMppt   !== undefined) patch.stringsPerMppt   = String(d.stringsPerMppt);
+            const count = Object.keys(patch).length;
+            if (count > 0) p.setForm((f) => ({ ...f, ...patch }));
+            setImportMsg(t(count > 0 ? 'catalog.importOk' : 'catalog.importNone', { count }));
+            break outer;
+          }
+        }
+      }
+    } catch {
+      setImportMsg(t('catalog.importError', { message: 'network error' }));
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <>
       {p.editingId !== null && (
@@ -685,6 +960,18 @@ function InvertersTab(p: InvertersTabProps) {
               <span className="field-label">{t('inverterModel.maxInputVoltageV')}</span>
               <input className="input input-mono" type="number" step="1" value={p.form.maxInputVoltageV} onChange={field('maxInputVoltageV')} />
             </label>
+            <label className="block">
+              <span className="field-label">{t('inverterModel.mpptCount')}</span>
+              <input className="input input-mono" type="number" step="1" value={p.form.mpptCount} onChange={field('mpptCount')} />
+            </label>
+            <label className="block">
+              <span className="field-label">{t('inverterModel.stringsPerMppt')}</span>
+              <input className="input input-mono" type="number" step="1" value={p.form.stringsPerMppt} onChange={field('stringsPerMppt')} />
+            </label>
+            <label className="col-span-2 block">
+              <span className="field-label">{t('inverterModel.maxDcCurrentA')}</span>
+              <input className="input input-mono" type="number" step="0.1" value={p.form.maxDcCurrentA} onChange={field('maxDcCurrentA')} />
+            </label>
             <label className="col-span-2 block">
               <span className="field-label">{t('inverterModel.datasheetUrl')}</span>
               <div className="flex gap-2 items-center">
@@ -701,7 +988,44 @@ function InvertersTab(p: InvertersTabProps) {
                     ↗
                   </a>
                 )}
+                {p.form.datasheetUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleImport}
+                    disabled={importing || p.busy}
+                    className="btn btn-ghost"
+                    style={{ padding: '8px 12px', fontSize: 13, whiteSpace: 'nowrap' }}
+                  >
+                    {importing && (
+                      <span
+                        className="inline-block w-[11px] h-[11px] rounded-full border-2 border-current border-t-transparent animate-spin mr-1.5 align-[-1px]"
+                        aria-hidden
+                      />
+                    )}
+                    {importing ? t('catalog.importing') : t('catalog.importBtn')}
+                  </button>
+                )}
               </div>
+              {(importing || importProgress > 0) && (
+                <div className="mt-2 h-[3px] rounded-full overflow-hidden" style={{ background: 'var(--surface-1, rgba(255,255,255,0.08))' }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${importProgress}%`,
+                      background: 'var(--sun-300, #f59e0b)',
+                      transition: importProgress === 0 ? 'none' : 'width 0.4s ease',
+                    }}
+                  />
+                </div>
+              )}
+              {importMsg && (
+                <span
+                  className="block mt-1 text-[12px]"
+                  style={{ color: importMsg.startsWith(t('catalog.importError', { message: '' }).slice(0, 6)) ? 'var(--sun-200)' : 'var(--ink-300)' }}
+                >
+                  {importMsg}
+                </span>
+              )}
             </label>
           </div>
           {p.formError && (
@@ -741,6 +1065,7 @@ function InvertersTab(p: InvertersTabProps) {
                   <span className="block font-mono text-[12px] text-ink-400 truncate">
                     {`${r.maxAcPowerW} W`}
                     {r.phases ? ` · ${r.phases}∅` : ''}
+                    {r.mpptCount ? ` · ${r.mpptCount} MPPT` : ''}
                     {r.efficiencyPct ? ` · ${r.efficiencyPct}%` : ''}
                   </span>
                 </div>

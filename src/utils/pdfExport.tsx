@@ -27,6 +27,7 @@
 
 import i18next from 'i18next';
 import type { Project } from '../types';
+import type { InverterModelRecord } from '../backend/types';
 
 // Page geometry (A4 landscape, in points). These constants are the
 // boundary contract with SolarPlanDoc — if you change the page padding
@@ -92,6 +93,7 @@ const SAFETY_PT = 8;
 export async function exportPdf(
   project: Project,
   stageEl: HTMLElement,
+  inverterModelCache: Record<string, InverterModelRecord> = {},
 ): Promise<boolean> {
   try {
     // Lazy-loaded modules. `Promise.all` parallelizes the fetches so
@@ -103,8 +105,10 @@ export async function exportPdf(
         import('../pdf/composeStageImage'),
       ]);
 
-    // ── Stage capture (one html2canvas pass) ────────────────────────────
-    const shot = await captureStage(stageEl);
+    // ── Stage capture (one Konva toCanvas pass) ─────────────────────────
+    // `captureStage` also returns the stage's current rotation so we can
+    // orient the export compass correctly in `composeWithGrid`.
+    const { canvas: shot, stageRotation } = await captureStage(stageEl);
     const aspect = shot.width / shot.height;
 
     // ── Layout math: pick an image size that fills the right column ─────
@@ -132,7 +136,18 @@ export async function exportPdf(
     // metric scale. composeWithGrid is sync, so this is a single tick of
     // CPU work between the html2canvas hop and the react-pdf hop.
     const drawWmm = planW / PT_PER_MM;
-    const imageDataUrl = composeWithGrid(shot, drawWmm);
+    const imageDataUrl = composeWithGrid(shot, drawWmm, stageRotation);
+
+    // ── Build inverter-id → model display name map ───────────────────────
+    // Keyed by inverter.id (not model id) so SolarPlanDoc can look up
+    // the model name directly from str.inverterId without an extra hop.
+    const inverterModelNames: Record<string, string> = {};
+    for (const inv of project.inverters) {
+      if (inv.inverterModelId) {
+        const m = inverterModelCache[inv.inverterModelId];
+        if (m) inverterModelNames[inv.id] = `${m.manufacturer} ${m.model}`;
+      }
+    }
 
     // ── Pre-resolve all localized strings + numerics ────────────────────
     // SolarPlanDoc is intentionally i18next-free AND Intl-free at render
@@ -177,7 +192,9 @@ export async function exportPdf(
       colColor: i18next.t('pdf.colColor'),
       colPanels: i18next.t('pdf.colPanels'),
       colWp: i18next.t('pdf.colWp'),
-      colInverter: i18next.t('pdf.colInverter'),
+      colInverterNum: i18next.t('pdf.colInverterNum'),
+      colMpptPort: i18next.t('pdf.colMpptPort'),
+      colInverterModel: i18next.t('pdf.colInverterModel'),
       statPanels: i18next.t('pdf.statPanels'),
       statPower: i18next.t('pdf.statPower'),
       statScale: i18next.t('pdf.statScale'),
@@ -222,6 +239,7 @@ export async function exportPdf(
         imageHeightPt={planH}
         strings={docStrings}
         stats={docStats}
+        inverterModelNames={inverterModelNames}
       />,
     ).toBlob();
 

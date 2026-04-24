@@ -112,6 +112,9 @@ export interface InverterModelRecord extends BaseRecord {
   phases?: number;
   maxStrings?: number;
   maxInputVoltageV?: number;
+  mpptCount?: number;
+  maxDcCurrentA?: number;
+  stringsPerMppt?: number;
   datasheetUrl?: string;
   deleted: boolean;
 }

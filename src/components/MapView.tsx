@@ -19,7 +19,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { MapContainer, TileLayer, WMSTileLayer, useMap } from 'react-leaflet';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useProjectStore } from '../store/projectStore';
 
 // ESRI's public satellite tile URL. Free for personal use, no API key.
@@ -30,9 +30,6 @@ const ESRI_SAT =
 
 // Geodaten Bayern WMS URL for current 20cm RGB Orthophotos.
 const BAYERN_WMS = 'https://geoservices.bayern.de/od/wms/dop/v1/dop20';
-
-// Geodaten Bayern ALKIS WMS URL for building footprints (Parzellarkarte).
-const BAYERN_ALKIS_WMS = 'https://geoservices.bayern.de/od/wms/alkis/v1/parzellarkarte';
 
 /**
  * Bridges the map instance out of react-leaflet's context. This is the
@@ -102,19 +99,119 @@ export default function MapView({ onMapReady, rotation = 0 }: Props) {
       : { lat: center.centerLat, lng: center.centerLng, zoom: center.zoom }
   );
 
+  // Outer shell fills <main> and serves two purposes:
+  //   - It's the element we measure for the rotator sizing below.
+  //   - It provides a positioned containing block so the absolutely
+  //     positioned rotator anchors correctly.
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  // Internal Leaflet map instance (separate from the onMapReady relay to
+  // App) so we can call invalidateSize() on shell resize without forcing
+  // App to re-fire anything.
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const [shellSize, setShellSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  // Measure <main> (the shell's parent, via shellRef.current) and track
+  // size changes. We need this because the rotator's pixel dimensions
+  // below are derived from main's diagonal — a constant percentage can
+  // never be both correct AND tight for arbitrary aspect ratios (a 2:1
+  // main at 90° rotation needs ≥ 200% height; a 1:1 main needs only
+  // sqrt(2) ≈ 141%). Computing from actual pixels is simpler than doing
+  // the per-aspect math in CSS.
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setShellSize({ w: r.width, h: r.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // When the shell resizes after initial mount, Leaflet's container has
+  // new dimensions but Leaflet doesn't re-measure on its own. Calling
+  // invalidateSize keeps tile math aligned with the container bounds.
+  useEffect(() => {
+    if (mapInstanceRef.current && shellSize.w > 0 && shellSize.h > 0) {
+      mapInstanceRef.current.invalidateSize();
+    }
+  }, [shellSize.w, shellSize.h]);
+
+  const handleMapReady = (m: L.Map) => {
+    mapInstanceRef.current = m;
+    onMapReady(m);
+  };
+
+  // Rotator dimensions. A square of side = sqrt(w² + h²) (main's
+  // diagonal) centered on main guarantees full coverage at ANY rotation
+  // angle: every point within main falls inside the inscribed circle of
+  // that square, which is invariant to rotation. This is the minimum
+  // oversizing that works for all aspect ratios — narrower than a fixed
+  // percentage that errs wide, so fewer tiles to fetch.
+  //
+  // Round to whole pixels. `shellSize.w/h` come from
+  // `getBoundingClientRect` which returns fractional pixels; if we
+  // passed those through, the rotator's absolute `top/left` would land
+  // on sub-pixel offsets, Leaflet would then position its 256×256 tiles
+  // at non-integer coords, and the browser would render thin seams
+  // between tiles (visible as a grid-line pattern over the imagery).
+  // `Math.ceil` on both the size floor AND the offset via `Math.round`
+  // keeps Leaflet's internal math on integer pixel boundaries.
+  const shellW = Math.ceil(shellSize.w);
+  const shellH = Math.ceil(shellSize.h);
+  const diagonal = Math.ceil(Math.sqrt(shellW ** 2 + shellH ** 2));
+  const offsetX = Math.round((diagonal - shellW) / 2);
+  const offsetY = Math.round((diagonal - shellH) / 2);
+  const rotatorReady = shellSize.w > 0 && shellSize.h > 0;
+
   return (
     <div
+      ref={shellRef}
+      data-map-shell
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}
+    >
+    {rotatorReady && (
+    <div
       // `data-map-rotate-wrapper` is the hook Toolbar.handleLock uses to
-      // temporarily strip the transform before html2canvas. The wrapper
-      // fills its parent and transforms only the visual — the parent
-      // `<main>` has overflow-hidden so rotated corners clip cleanly.
+      // temporarily strip the transform before html2canvas.
+      //
+      // Sizing note: the wrapper is a square of side = main's diagonal,
+      // centered on main via negative px offsets. This is the tightest
+      // size that fully covers the visible frame at every rotation angle
+      // — main's corners all lie inside the inscribed circle of a
+      // diagonal-sided square, and rotation of that square preserves the
+      // circle. Using pixel values (rather than percentages) lets us hit
+      // the diagonal exactly; a percentage-based approach would either
+      // fall short at wide aspect ratios or waste tiles by erring wide.
+      //
+      // The parent `<main>` has overflow-hidden so the rotated corners
+      // clip cleanly at the sidebar / toolbar boundaries.
+      //
+      // Leaflet still reads the wrapper as its own canvas — getCenter()
+      // and getZoom() remain correct because Leaflet's internal
+      // coordinate system is unaffected by the CSS rotate().
       data-map-rotate-wrapper
+      // `--preview-rotation` is consumed by index.css to counter-rotate
+      // `.leaflet-control-container` so the +/- zoom buttons and the
+      // attribution stay upright while the tiles tilt underneath.
       style={{
-        width: '100%',
-        height: '100%',
+        position: 'absolute',
+        top: `${-offsetY}px`,
+        left: `${-offsetX}px`,
+        width: `${diagonal}px`,
+        height: `${diagonal}px`,
         transform: `rotate(${rotation}deg)`,
         transformOrigin: 'center center',
-      }}
+        ['--preview-rotation' as string]: `${rotation}deg`,
+        // Offsets (in px) for the Leaflet control container so its
+        // corners land on main's corners even though the rotator is
+        // bigger than main. index.css reads these to position
+        // `.leaflet-top / -bottom / -left / -right`.
+        ['--preview-offset-x' as string]: `${offsetX}px`,
+        ['--preview-offset-y' as string]: `${offsetY}px`,
+      } as CSSProperties}
     >
     <MapContainer
       center={[initial.current.lat, initial.current.lng]}
@@ -127,7 +224,7 @@ export default function MapView({ onMapReady, rotation = 0 }: Props) {
       {(!center.mapProvider || center.mapProvider === 'esri') && (
         <TileLayer url={ESRI_SAT} maxZoom={22} maxNativeZoom={19} />
       )}
-      {(center.mapProvider === 'bayern' || center.mapProvider === 'bayern_alkis') && (
+      {center.mapProvider === 'bayern' && (
         <WMSTileLayer
           url={BAYERN_WMS}
           layers="by_dop20c"
@@ -137,19 +234,10 @@ export default function MapView({ onMapReady, rotation = 0 }: Props) {
           maxZoom={22}
         />
       )}
-      {center.mapProvider === 'bayern_alkis' && (
-        <WMSTileLayer
-          url={BAYERN_ALKIS_WMS}
-          layers="by_alkis_parzellarkarte_umr_gelb"
-          format="image/png"
-          transparent={true}
-          version="1.3.0"
-          maxZoom={22}
-          zIndex={10}
-        />
-      )}
-      <MapBinder onMapReady={onMapReady} />
+      <MapBinder onMapReady={handleMapReady} />
     </MapContainer>
+    </div>
+    )}
     </div>
   );
 }

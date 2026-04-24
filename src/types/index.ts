@@ -114,6 +114,17 @@ export interface PvString {
   id: string;
   label: string;                    // "String 1", "String 2", …
   inverterId: string | null;        // which inverter this string feeds (nullable)
+  /**
+   * Which MPPT input port on the inverter this string connects to.
+   * Addressed alphabetically: "A" = first tracker, "B" = second, etc.
+   * Null / undefined = not specified (user hasn't picked a port yet).
+   * Only meaningful when `inverterId` is set AND the linked inverter model
+   * has `mpptCount > 0`; we keep it on the string rather than computing
+   * it so the selection survives inverter model swaps mid-session.
+   * Reset to null whenever the string is moved to a different inverter
+   * (because port "B" on inverter X is unrelated to port "B" on inverter Y).
+   */
+  mpptPort?: string | null;
   color: string;                    // hex from STRING_COLORS palette
 }
 
@@ -178,7 +189,7 @@ interface MapStateShared {
   zoom: number;
   metersPerPixel: number;
   /** The currently selected map tile provider. */
-  mapProvider?: 'esri' | 'bayern' | 'bayern_alkis';
+  mapProvider?: 'esri' | 'bayern';
 }
 export interface MapStateUnlocked extends MapStateShared {
   locked: false;

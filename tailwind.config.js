@@ -50,20 +50,19 @@ export default {
           900: '#0b0b0c',
           950: '#080808',
         },
-        // Scarlet — Raycast-style warm red. Calibrated against screenshots:
-        // a coral-leaning red (not fire-engine, not rose). 400 is the
-        // canonical accent, 300 is hover-bright, 500+ is pressed / gradient
-        // base. The `sun` name is retained to avoid a 50-file rename; read
-        // it as "primary accent" wherever it appears.
+        // Blue — electric blue accent. 400 is the canonical accent,
+        // 300 is hover-bright, 500+ is pressed / gradient base. The `sun`
+        // name is retained to avoid a 50-file rename; read it as "primary
+        // accent" wherever it appears.
         sun: {
-          100: '#ffe1da',
-          200: '#ffb5a8',
-          300: '#ff8a79',
-          400: '#ff6363',   // primary accent
-          500: '#e84a4a',
-          600: '#c13636',
-          700: '#962828',
-          800: '#6b1c1c',
+          100: '#dbeafe',
+          200: '#bfdbfe',
+          300: '#93c5fd',
+          400: '#60a5fa',   // primary accent
+          500: '#3b82f6',
+          600: '#2563eb',
+          700: '#1d4ed8',
+          800: '#1e3a8a',
         },
         // Tungsten — used sparingly for destructive-adjacent signals so
         // scarlet stays *positive*. Hue-shifted from scarlet so they're
@@ -88,8 +87,8 @@ export default {
         // shadow carries less weight and the inset highlight is subtler.
         instrument:
           'inset 0 1px 0 rgba(255,255,255,0.03), 0 1px 0 rgba(0,0,0,0.5), 0 12px 32px -14px rgba(0,0,0,0.7)',
-        // The scarlet glow ring used on primary CTAs.
-        glow: '0 0 0 1px rgba(255,99,99,0.4), 0 0 28px -4px rgba(255,99,99,0.35)',
+        // The blue glow ring used on primary CTAs.
+        glow: '0 0 0 1px rgba(96,165,250,0.4), 0 0 28px -4px rgba(96,165,250,0.35)',
       },
       keyframes: {
         'pulse-sun': {

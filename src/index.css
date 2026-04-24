@@ -47,16 +47,14 @@
   --ink-100: #e8e8ec;
   --ink-50:  #f7f7f8;
 
-  /* Primary — Raycast scarlet. Calibrated against screenshots of raycast.com:
-     a warm near-coral red that avoids both fire-engine alarm and rose pink.
-     The 400 step is the canonical accent; 300 is hover; 500+ is for pressed
-     / gradient base. Saturated enough to read at small sizes but not so
-     neon that it ruins the mostly-grayscale restraint. */
-  --sun-200: #ffb5a8;
-  --sun-300: #ff8a79;
-  --sun-400: #ff6363;   /* canonical accent */
-  --sun-500: #e84a4a;
-  --sun-600: #c13636;
+  /* Primary — electric blue accent. The 400 step is the canonical accent;
+     300 is hover-bright; 500+ is for pressed / gradient base. Saturated
+     enough to read at small sizes without blowing out the grayscale restraint. */
+  --sun-200: #bfdbfe;
+  --sun-300: #93c5fd;
+  --sun-400: #60a5fa;   /* canonical accent */
+  --sun-500: #3b82f6;
+  --sun-600: #2563eb;
 
   /* Tungsten — secondary warmth. Used for destructive-adjacent accents
      (delete, reset) so the primary red remains a *positive* signal. */
@@ -77,10 +75,10 @@
   --hairline: rgba(255, 255, 255, 0.06);
   --hairline-strong: rgba(255, 255, 255, 0.11);
 
-  /* Ambient glow — the scarlet bloom used behind active elements and in
+  /* Ambient glow — the blue bloom used behind active elements and in
      the atmospheric background gradients. */
-  --glow-sun: rgba(255, 99, 99, 0.35);   /* aliased-name kept for back-compat */
-  --glow-red: rgba(255, 99, 99, 0.35);
+  --glow-sun: rgba(96, 165, 250, 0.35);   /* aliased-name kept for back-compat */
+  --glow-red: rgba(96, 165, 250, 0.35);
 }
 
 /* ── Global resets ────────────────────────────────────────────────────── */
@@ -143,6 +141,21 @@ html, body, #root {
   font-family: inherit;
 }
 
+/*
+ * Suppress the "grid of thin hairlines" that appears between adjacent
+ * 256×256 Leaflet tiles at some zoom levels / device-pixel-ratios. The
+ * seams are a browser subpixel-rounding artifact: two adjacent tiles
+ * sit at pixel boundaries that don't perfectly align with the device
+ * pixel grid, leaving a ~0.5px gap where the canvas background shows
+ * through. A 1px transparent outline on each tile makes neighbors
+ * overlap by a hairline, which hides the gap without affecting the
+ * tile content. Long-standing Leaflet workaround; see
+ * https://github.com/Leaflet/Leaflet/issues/3575
+ */
+.leaflet-tile-container .leaflet-tile {
+  outline: 1px solid transparent;
+}
+
 /* Skin Leaflet's zoom control to belong to this UI, not stock Leaflet. */
 .leaflet-control-zoom a {
   background: rgba(17, 17, 19, 0.85) !important;
@@ -154,6 +167,45 @@ html, body, #root {
 .leaflet-control-zoom a:hover {
   background: rgba(36, 36, 40, 0.95) !important;
   color: var(--sun-400) !important;
+}
+
+/*
+ * Pre-lock rotation preview: the rotator wrapper in MapView is a square
+ * of side = main's diagonal, centered on main so it covers the visible
+ * frame at any rotation. A side effect is that Leaflet's
+ * `.leaflet-control-container` (which holds the +/- zoom buttons and
+ * attribution) fills the oversized container — its top-left lands
+ * outside main's viewport.
+ *
+ * We fix this in two steps:
+ *   1. Push the corner-anchored sub-containers (.leaflet-top/-bottom/
+ *      -left/-right) in by the exact px overhang on each side
+ *      (--preview-offset-x / -y, set by MapView). This places them on
+ *      main's corners regardless of aspect ratio.
+ *   2. Counter-rotate the control container by the negative of the
+ *      wrapper's preview rotation, so the buttons stay upright while
+ *      the tiles tilt underneath. Both rotations share the same center
+ *      (main's center), so they cancel cleanly.
+ *
+ * The html2canvas capture in handleLock excludes `.leaflet-control-
+ * container` via `ignoreElements`, so these transforms have no effect
+ * on the locked image regardless.
+ */
+[data-map-rotate-wrapper] .leaflet-control-container {
+  transform: rotate(calc(-1 * var(--preview-rotation, 0deg)));
+  transform-origin: 50% 50%;
+}
+[data-map-rotate-wrapper] .leaflet-top {
+  top: var(--preview-offset-y, 0px);
+}
+[data-map-rotate-wrapper] .leaflet-bottom {
+  bottom: var(--preview-offset-y, 0px);
+}
+[data-map-rotate-wrapper] .leaflet-left {
+  left: var(--preview-offset-x, 0px);
+}
+[data-map-rotate-wrapper] .leaflet-right {
+  right: var(--preview-offset-x, 0px);
 }
 
 /* ── Konva overlay states ─────────────────────────────────────────────── */
@@ -198,8 +250,8 @@ html, body, #root {
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
     /* 2. dot grid — a single 1.3px dot tiled at 24px centers */
     radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.045) 1px, transparent 1.3px),
-    /* 3. scarlet bloom top-right */
-    radial-gradient(ellipse 55% 50% at 85% 8%, rgba(255, 99, 99, 0.14), transparent 70%),
+    /* 3. blue bloom top-right */
+    radial-gradient(ellipse 55% 50% at 85% 8%, rgba(96, 165, 250, 0.24), transparent 70%),
     /* 4. cyan counter bottom-left */
     radial-gradient(ellipse 50% 40% at 12% 88%, rgba(47, 208, 239, 0.04), transparent 75%),
     /* 5. base radial vignette */
@@ -261,7 +313,7 @@ html, body, #root {
   background-image:
     url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.035 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
     radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.035) 1px, transparent 1.3px),
-    radial-gradient(ellipse 60% 55% at 88% 12%, rgba(255, 99, 99, 0.18), transparent 72%),
+    radial-gradient(ellipse 60% 55% at 88% 12%, rgba(96, 165, 250, 0.28), transparent 72%),
     radial-gradient(ellipse 55% 45% at 10% 92%, rgba(120, 80, 255, 0.04), transparent 75%),
     radial-gradient(ellipse at center, var(--ink-900) 0%, var(--ink-950) 100%);
   background-size:
@@ -387,14 +439,14 @@ html, body, #root {
     font-weight: 600;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.18),
-      0 0 0 1px rgba(232, 74, 74, 0.4),
+      0 0 0 1px rgba(59, 130, 246, 0.4),
       0 8px 22px -8px var(--glow-red);
   }
   .btn-primary:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--sun-300) 0%, var(--sun-400) 100%);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.2),
-      0 0 0 1px rgba(255, 99, 99, 0.55),
+      0 0 0 1px rgba(96, 165, 250, 0.55),
       0 10px 26px -8px var(--glow-red);
   }
 
@@ -457,10 +509,10 @@ html, body, #root {
   .segment[data-active="true"] {
     color: var(--ink-50);
     background: linear-gradient(180deg, rgba(36, 36, 40, 0.95) 0%, rgba(24, 24, 27, 0.95) 100%);
-    border-color: rgba(255, 99, 99, 0.55);
+    border-color: rgba(96, 165, 250, 0.55);
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.06),
-      0 0 0 1px rgba(255, 99, 99, 0.25),
+      0 0 0 1px rgba(96, 165, 250, 0.25),
       0 6px 16px -6px var(--glow-red);
   }
   .segment:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -483,7 +535,7 @@ html, body, #root {
     outline: none;
     border-color: var(--sun-500);
     background: rgba(17, 17, 19, 0.95);
-    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.12);
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
   }
   .input-mono {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
@@ -535,7 +587,7 @@ html, body, #root {
     background: var(--ink-50);
     border: 2px solid var(--sun-500);
     border-radius: 999px;
-    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
     transition: transform 100ms ease;
   }
   .slider::-moz-range-thumb {
@@ -544,7 +596,7 @@ html, body, #root {
     background: var(--ink-50);
     border: 2px solid var(--sun-500);
     border-radius: 999px;
-    box-shadow: 0 0 0 3px rgba(255, 99, 99, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16), 0 2px 4px rgba(0, 0, 0, 0.5);
   }
   .slider:active::-webkit-slider-thumb { transform: scale(1.15); }
 
@@ -562,9 +614,9 @@ html, body, #root {
     background: rgba(11, 11, 12, 0.7);
     color: var(--ink-200);
   }
-  .chip-amber { /* kept name for API stability; now scarlet */
-    background: rgba(255, 99, 99, 0.12);
-    border-color: rgba(255, 99, 99, 0.38);
+  .chip-amber { /* kept name for API stability; now blue */
+    background: rgba(96, 165, 250, 0.12);
+    border-color: rgba(96, 165, 250, 0.38);
     color: var(--sun-300);
   }
   .chip-emerald {

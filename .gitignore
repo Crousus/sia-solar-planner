@@ -11,3 +11,4 @@ dist
 server/pb_data/
 # Downloaded PocketBase binary (installed locally by the server's README)
 server/pocketbase
+ocr-service/.env

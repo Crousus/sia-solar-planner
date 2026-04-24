@@ -72,7 +72,9 @@ export interface PdfStrings {
   colColor: string;
   colPanels: string;
   colWp: string;
-  colInverter: string;
+  colInverterNum: string;
+  colMpptPort: string;
+  colInverterModel: string;
   // Stat tiles (sidebar bottom)
   statPanels: string;   // label
   statPower: string;    // label
@@ -109,6 +111,13 @@ export interface SolarPlanDocProps {
   imageHeightPt: number;
   strings: PdfStrings;
   stats: PdfStats;
+  /**
+   * Inverter-id → "Manufacturer Model" display string for the strings
+   * table's Model column. Built by pdfExport from inverterModelCache;
+   * missing entries produce a dash — the component stays pure and never
+   * reaches into the store itself.
+   */
+  inverterModelNames: Record<string, string>;
 }
 
 // ── Brand tokens ──────────────────────────────────────────────────────────
@@ -403,9 +412,9 @@ const styles = StyleSheet.create({
   tableRowAlt: {
     backgroundColor: ZEBRA,
   },
-  // Column geometry (points). Widths are the same as before since the
-  // strings band still has roughly the same content width as the old
-  // page-flow table. `cellInverter` takes the remainder via flex: 1.
+  // Column geometry (points).
+  // label + swatch + panels + wp = 290 pt; the remaining ~488 pt is split
+  // three ways: inverter name (fixed), MPPT port (fixed), model (flex:1).
   cellLabel: { width: 96, fontFamily: 'Helvetica-Bold', color: INK },
   cellSwatch: { width: 50 },
   cellPanels: {
@@ -420,7 +429,12 @@ const styles = StyleSheet.create({
     paddingRight: 18,
     color: INK_MUTED,
   },
-  cellInverter: { flex: 1, color: INK_MUTED, paddingLeft: 4 },
+  // Inverter name ("Inverter A") — fixed width fits typical short names.
+  cellInverterNum: { width: 100, color: INK_MUTED, paddingLeft: 4 },
+  // MPPT port ("A", "B", …, or "—"). Narrow fixed column.
+  cellMpptPort: { width: 64, color: INK_MUTED, paddingLeft: 4 },
+  // Catalog model name takes the rest of the row.
+  cellInverterModel: { flex: 1, color: INK_MUTED, paddingLeft: 4 },
   swatch: {
     width: 11,
     height: 11,
@@ -428,7 +442,8 @@ const styles = StyleSheet.create({
     borderWidth: 0.6,
     borderColor: SUN_DARK,
   },
-  inverterEmpty: {
+  // Faint style for empty / unassigned cells.
+  empty: {
     color: INK_FAINT,
   },
 });
@@ -440,6 +455,7 @@ export function SolarPlanDoc({
   imageHeightPt,
   strings,
   stats,
+  inverterModelNames,
 }: SolarPlanDocProps) {
   // Inverter name lookup — used per-row in the strings table.
   const inverterById = new Map(project.inverters.map((i) => [i.id, i.name]));
@@ -617,17 +633,32 @@ export function SolarPlanDoc({
               <Text style={[styles.tableHeaderCell, styles.cellWp]}>
                 {strings.colWp}
               </Text>
-              <Text style={[styles.tableHeaderCell, styles.cellInverter]}>
-                {strings.colInverter}
+              <Text style={[styles.tableHeaderCell, styles.cellInverterNum]}>
+                {strings.colInverterNum}
+              </Text>
+              <Text style={[styles.tableHeaderCell, styles.cellMpptPort]}>
+                {strings.colMpptPort}
+              </Text>
+              <Text style={[styles.tableHeaderCell, styles.cellInverterModel]}>
+                {strings.colInverterModel}
               </Text>
             </View>
             {project.strings.map((s, idx) => {
               const count = project.panels.filter((p) => p.stringId === s.id).length;
               const wp = count * project.panelType.wattPeak;
+              // Inverter name: "Inverter A" or "—" when unassigned.
               const invName = s.inverterId
-                ? inverterById.get(s.inverterId) || '?'
+                ? (inverterById.get(s.inverterId) ?? '?')
                 : '—';
-              const isEmptyInverter = invName === '—';
+              // MPPT port letter: "A", "B", … or "—" when unset / no inverter.
+              const mpptPort = s.inverterId && s.mpptPort ? s.mpptPort : '—';
+              // Catalog model name: resolved from the pre-built map; "—" when
+              // not linked or inverter not assigned.
+              const modelName = s.inverterId
+                ? (inverterModelNames[s.inverterId] ?? '—')
+                : '—';
+
+              const isEmpty = !s.inverterId;
               const rowStyle = idx % 2 === 1
                 ? [styles.tableRowBase, styles.tableRowAlt]
                 : [styles.tableRowBase];
@@ -640,13 +671,19 @@ export function SolarPlanDoc({
                   <Text style={styles.cellPanels}>{String(count)}</Text>
                   <Text style={styles.cellWp}>{String(wp)}</Text>
                   <Text
-                    style={
-                      isEmptyInverter
-                        ? [styles.cellInverter, styles.inverterEmpty]
-                        : styles.cellInverter
-                    }
+                    style={isEmpty ? [styles.cellInverterNum, styles.empty] : styles.cellInverterNum}
                   >
                     {invName}
+                  </Text>
+                  <Text
+                    style={mpptPort === '—' ? [styles.cellMpptPort, styles.empty] : styles.cellMpptPort}
+                  >
+                    {mpptPort}
+                  </Text>
+                  <Text
+                    style={modelName === '—' ? [styles.cellInverterModel, styles.empty] : styles.cellInverterModel}
+                  >
+                    {modelName}
                   </Text>
                 </View>
               );

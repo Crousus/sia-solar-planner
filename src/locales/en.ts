@@ -35,7 +35,6 @@ const en = {
     lockFirst: 'Lock map first',
     basemapEsri: 'ESRI Satellite',
     basemapBayern: 'Bayern DOP 20cm (WMS)',
-    basemapBayernAlkis: 'Bayern DOP 20cm + ALKIS',
     resetConfirm: 'Reset entire project? This cannot be undone.',
     exportFailed: 'Export failed — the map canvas is not mounted.',
     exportFailedGeneral: 'Export failed — see console for details.',
@@ -56,6 +55,8 @@ const en = {
     newString: 'New string',
     noStrings: 'No strings yet.',
     noInverterOption: '— No inverter —',
+    mpptPort: 'MPPT port',
+    noMpptPortOption: '— Any port —',
     roof: 'Roof',
     selected: 'selected',
     name: 'Name',
@@ -163,7 +164,9 @@ const en = {
     colColor: 'Color',
     colPanels: 'Panels',
     colWp: 'Wp',
-    colInverter: 'Inverter',
+    colInverterNum: 'Inverter',
+    colMpptPort: 'MPPT port',
+    colInverterModel: 'Model',
     // Bottom stat-tile labels (small caps). One label per tile, the value
     // is composed numerically by the caller. Kept separate from the units
     // so the unit can be styled smaller next to the big number.
@@ -259,6 +262,12 @@ const en = {
     deletePanelConfirm:   'Delete this panel model? Projects linked to it will keep using its stored values, but it will no longer appear in the picker.',
     deleteInverterConfirm: 'Delete this inverter model? Inverters already linked to it will show only their user-editable name.',
     errorRequiredNumbers: 'Please fill in all required numeric fields.',
+    importBtn:         'Import from datasheet',
+    importing:         'Importing…',
+    importOk:          '{{count}} field(s) auto-filled — review before saving',
+    importNone:        'No fields found — the PDF may be scanned or the format is unsupported',
+    importError:       'Import failed: {{message}}',
+    importPickVariant: 'Multiple variants found — pick one:',
   },
   panelModel: {
     sectionLabel:    'Panel model',
@@ -298,8 +307,11 @@ const en = {
     maxDcPowerW:        'Max DC power (W)',
     efficiencyPct:      'Efficiency (%)',
     phases:             'Phases',
-    maxStrings:         'Max strings',
+    maxStrings:         'Max strings (total)',
     maxInputVoltageV:   'Max input voltage (V)',
+    mpptCount:          'MPPT trackers',
+    maxDcCurrentA:      'Max DC current per string (A)',
+    stringsPerMppt:     'Strings per MPPT',
     datasheetUrl:       'Datasheet URL',
   },
 } as const;

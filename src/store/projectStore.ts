@@ -283,7 +283,7 @@ interface ProjectStore extends UIState, HistoryState {
   setSelectedInverter: (id: string | null) => void;
   setActivePanelGroup: (id: string | null) => void;
   setSplitCandidateRoof: (id: string | null) => void;
-  setMapProvider: (provider: 'esri' | 'bayern' | 'bayern_alkis') => void;
+  setMapProvider: (provider: 'esri' | 'bayern') => void;
   toggleBackground: () => void;
   loadProject: (p: Project, history?: { past: UndoableSlice[]; future: UndoableSlice[] }) => void;
   resetProject: () => void;
@@ -1170,7 +1170,9 @@ export const useProjectStore = create<ProjectStore>()(
             project: {
               ...s.project,
               strings: s.project.strings.map((str) =>
-                str.id === stringId ? { ...str, inverterId } : str
+                // Reset mpptPort when the inverter changes — port "B" on
+                // inverter X has no relation to port "B" on inverter Y.
+                str.id === stringId ? { ...str, inverterId, mpptPort: null } : str
               ),
             },
           }),

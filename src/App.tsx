@@ -132,7 +132,7 @@ export default function App() {
           toggle — at which point this is what they see instead of a flat
           void. See index.css for the composition.
         */}
-        <main ref={canvasContainerRef} className="flex-1 relative canvas-bg">
+        <main ref={canvasContainerRef} className="flex-1 relative canvas-bg overflow-hidden">
           {/*
             Leaflet is only mounted in the UNLOCKED state — the "navigate
             to your building" phase. Once locked, we tear it down entirely:

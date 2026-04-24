@@ -36,9 +36,10 @@ import { stages } from 'konva/lib/Stage';
  * pixels).
  *
  * The non-Konva sibling DOM inside `.konva-overlay` (CompassWidget,
- * RotationDock) is intentionally NOT captured — those are interactive
- * chrome, not part of the plan. If we ever need to include additional
- * DOM overlays, composite them separately on top of the shot here.
+ * RotationDock) is structurally excluded from this capture: `toCanvas`
+ * renders only Konva's internal scene graph, which contains no HTML
+ * nodes. A replacement compass is drawn directly onto the composed
+ * canvas in `composeWithGrid` using the rotation returned here.
  *
  * `pixelRatio: 3` matches the legacy jsPDF exporter — vector overlays
  * (roofs, strings, labels, panels) re-paint at 3× DPI for crisp print
@@ -51,7 +52,10 @@ import { stages } from 'konva/lib/Stage';
  * html2canvas — with `ignoreElements` filtering 0-dim canvases so the
  * above bug doesn't bite the fallback path either.
  */
-export async function captureStage(stageEl: HTMLElement): Promise<HTMLCanvasElement> {
+export async function captureStage(stageEl: HTMLElement): Promise<{
+  canvas: HTMLCanvasElement;
+  stageRotation: number;
+}> {
   // `stages` is Konva's module-level registry of all live Stage instances.
   // Finding ours by DOM-ancestry avoids passing a Konva ref down through
   // Toolbar / exportPdf just to satisfy this one call site.
@@ -64,19 +68,27 @@ export async function captureStage(stageEl: HTMLElement): Promise<HTMLCanvasElem
     }
   });
   if (konvaStage) {
-    return konvaStage.toCanvas({ pixelRatio: 3 });
+    return {
+      canvas: konvaStage.toCanvas({ pixelRatio: 3 }),
+      // rotation() returns the stage's current rotation in degrees — used
+      // by composeWithGrid to orient the export compass correctly.
+      stageRotation: konvaStage.rotation(),
+    };
   }
-  return html2canvas(stageEl, {
-    backgroundColor: null,
-    logging: false,
-    scale: 3,
-    // Guard against the 0-dim-canvas createPattern crash if html2canvas
-    // is ever exercised (unlikely — the Konva path above handles this
-    // app). Skipping a 0×0 canvas is lossless: a 0-dim element has no
-    // content the capture would have shown anyway.
-    ignoreElements: (el) =>
-      el instanceof HTMLCanvasElement && (el.width === 0 || el.height === 0),
-  });
+  return {
+    canvas: await html2canvas(stageEl, {
+      backgroundColor: null,
+      logging: false,
+      scale: 3,
+      // Guard against the 0-dim-canvas createPattern crash if html2canvas
+      // is ever exercised (unlikely — the Konva path above handles this
+      // app). Skipping a 0×0 canvas is lossless: a 0-dim element has no
+      // content the capture would have shown anyway.
+      ignoreElements: (el) =>
+        el instanceof HTMLCanvasElement && (el.width === 0 || el.height === 0),
+    }),
+    stageRotation: 0,
+  };
 }
 
 /**
@@ -95,8 +107,11 @@ export async function captureStage(stageEl: HTMLElement): Promise<HTMLCanvasElem
  *   - Fine every 5 mm — gives a millimeter reference surface
  *   - Coarse every 25 mm — visual rhythm at a glance
  * Matched to the PDF's printed width via `pxPerMm = canvasPixelsWide / drawWidthMm`.
+ *
+ * `stageRotation` (degrees) is forwarded from the Konva stage so the
+ * export compass indicates the correct north bearing in the image.
  */
-export function composeWithGrid(shot: HTMLCanvasElement, drawWidthMm: number): string {
+export function composeWithGrid(shot: HTMLCanvasElement, drawWidthMm: number, stageRotation: number): string {
   const c = document.createElement('canvas');
   c.width = shot.width;
   c.height = shot.height;
@@ -159,8 +174,117 @@ export function composeWithGrid(shot: HTMLCanvasElement, drawWidthMm: number): s
   // satellite raster + roof fills don't cover.
   ctx.drawImage(shot, 0, 0);
 
+  // Export compass — drawn last so it sits above everything else. The
+  // interactive CompassWidget/RotationDock are HTML DOM siblings of the
+  // Konva stage and are never included in the canvas capture above, so
+  // this is the only compass the exported image has.
+  drawExportCompass(ctx, c.width, drawWidthMm, stageRotation);
+
   // JPEG 0.9: visually indistinguishable from source on A4 print, ~1/5
   // the PNG size. Below ~0.8, roof outlines and label text develop
   // block artifacts against large flat fills.
   return c.toDataURL('image/jpeg', 0.9);
+}
+
+/**
+ * Draw a minimal print-compass onto the composed canvas.
+ *
+ * Design choices vs the interactive CompassWidget:
+ *   - Diamond needle only (no tick ring, no cardinal ring), keeps it
+ *     unobtrusive at print scale.
+ *   - Single 'N' label inside the disc, no E/S/W — a bearing reference,
+ *     not a full rose.
+ *   - Sized in mm so the printed diameter is the same regardless of the
+ *     zoom level the user had when they exported.
+ *   - Placed top-right to match the editor widget's position, so the
+ *     user's eye already knows where to look.
+ *
+ * `stageRotation` is the Konva stage rotation in degrees. When non-zero
+ * the satellite imagery in the captured canvas is rotated, so north in
+ * the image points `stageRotation` degrees clockwise from image-up. The
+ * needle is rotated by the same amount so it correctly indicates north.
+ */
+function drawExportCompass(
+  ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  drawWidthMm: number,
+  stageRotation: number,
+): void {
+  const pxPerMm = canvasW / drawWidthMm;
+  // 8 mm radius → 16 mm printed diameter, readable on A4 without dominating.
+  const r = 8 * pxPerMm;
+  // 12 mm from each edge keeps the disc fully inside the canvas at any rotation.
+  const margin = 12 * pxPerMm;
+  const cx = canvasW - margin;
+  const cy = margin;
+
+  const rotRad = (stageRotation * Math.PI) / 180;
+
+  ctx.save();
+
+  // Dark semi-transparent background disc, slightly larger than the needle.
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 1.25, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(10, 8, 4, 0.72)';
+  ctx.fill();
+  // Hairline amber-tinted bezel ring.
+  ctx.strokeStyle = 'rgba(255, 228, 185, 0.28)';
+  ctx.lineWidth = Math.max(1, pxPerMm * 0.4);
+  ctx.stroke();
+
+  // Rotate around the compass center to orient the needle.
+  ctx.translate(cx, cy);
+  ctx.rotate(rotRad);
+
+  // Diamond needle — same geometry as CompassWidget.tsx but drawn with
+  // Canvas 2D instead of SVG paths. The waist point (ws) sits slightly
+  // above center so north and south halves share the same widest points
+  // without a flat edge where they meet.
+  const hw = r * 0.22;   // half-width at the widest point (y=0)
+  const nt = -(r * 0.72); // north tip
+  const st = r * 0.72;    // south tip
+  const ws = -(r * 0.11); // waist y — the shared inner vertex
+
+  // North half (amber)
+  ctx.beginPath();
+  ctx.moveTo(0, nt);
+  ctx.lineTo(hw, 0);
+  ctx.lineTo(0, ws);
+  ctx.lineTo(-hw, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#f5b544';
+  ctx.fill();
+
+  // South half (muted warm gray)
+  ctx.beginPath();
+  ctx.moveTo(0, st);
+  ctx.lineTo(hw, 0);
+  ctx.lineTo(0, ws);
+  ctx.lineTo(-hw, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#6c6557';
+  ctx.fill();
+
+  // Glowing pivot dot
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.13, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff4d6';
+  ctx.fill();
+
+  ctx.restore();
+
+  // 'N' label — placed just beyond the needle tip in the north direction,
+  // inside the dark disc so it always has contrast. Coordinates are in
+  // the unrotated canvas frame, derived by converting (0, -0.86r) from
+  // the rotated needle frame to screen space.
+  const lx = cx + Math.sin(rotRad) * r * 0.86;
+  const ly = cy - Math.cos(rotRad) * r * 0.86;
+  const fontSize = Math.max(9, r * 0.5);
+  ctx.save();
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#f5b544';
+  ctx.fillText('N', lx, ly);
+  ctx.restore();
 }
