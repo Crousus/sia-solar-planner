@@ -30,7 +30,16 @@ import type { PanelType } from '../types';
 import PanelModelPicker from './PanelModelPicker';
 import InverterModelPicker from './InverterModelPicker';
 
-export default function Sidebar() {
+// Sidebar accepts the view-toggle pair from App. Held in the parent (not
+// the store) because switching between roof-plan and block-diagram is a
+// pure per-tab UI preference — not something to persist, diff, or sync
+// to other collaborators.
+interface SidebarProps {
+  activeView: 'roof' | 'diagram';
+  setActiveView: (v: 'roof' | 'diagram') => void;
+}
+
+export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
   const { t } = useTranslation();
   const project = useProjectStore((s) => s.project);
   const setProjectName = useProjectStore((s) => s.setProjectName);
@@ -181,6 +190,26 @@ export default function Sidebar() {
             'radial-gradient(ellipse 80% 60% at 50% -20%, rgba(245,181,68,0.12), transparent 70%)',
         }}
       >
+        {/* View toggle — switches between roof plan canvas and electrical
+            block diagram. Sits above the PROJEKT label because it's a
+            top-level "what am I looking at" switch; the project identity
+            and stats below are secondary to that choice. Pill-style
+            segmented control matches the visual weight of other segmented
+            toggles in the sidebar without competing with them. */}
+        <div className="flex rounded-lg overflow-hidden border border-slate-700 mb-4 text-xs font-medium">
+          <button
+            onClick={() => setActiveView('roof')}
+            className={`flex-1 py-1.5 transition-colors ${activeView === 'roof' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            {t('sidebar.viewRoof')}
+          </button>
+          <button
+            onClick={() => setActiveView('diagram')}
+            className={`flex-1 py-1.5 transition-colors ${activeView === 'diagram' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            {t('sidebar.viewDiagram')}
+          </button>
+        </div>
         <label className="block">
           <span className="field-label">{t('sidebar.project')}</span>
           <input

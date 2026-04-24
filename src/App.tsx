@@ -17,6 +17,7 @@ import MapView from './components/MapView';
 import KonvaOverlay from './components/KonvaOverlay';
 import Sidebar from './components/Sidebar';
 import Toolbar from './components/Toolbar';
+import DiagramView from './components/DiagramView';
 import { useProjectStore } from './store/projectStore';
 import { getActiveSyncClient } from './components/ProjectEditor';
 
@@ -48,6 +49,14 @@ export default function App() {
   // transitions back to unlocked so re-opening the Leaflet view after an
   // unlock always starts at 0° rather than inheriting a stale value.
   const [preLockRotation, setPreLockRotation] = useState(0);
+
+  // View toggle — the sidebar's top-of-body switch flips the right-hand
+  // pane between the roof-plan editor (map + Konva overlay) and the
+  // electrical block diagram (React Flow). Kept as local App state rather
+  // than in the project store because it's a pure UI preference: reloading
+  // the project should always start on the roof plan, and remote
+  // collaborators shouldn't see their view flipped by a teammate.
+  const [activeView, setActiveView] = useState<'roof' | 'diagram'>('roof');
   useEffect(() => {
     if (locked) setPreLockRotation(0);
   }, [locked]);
@@ -122,7 +131,7 @@ export default function App() {
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--ink-950)' }}>
       <Toolbar mapRef={mapRef} preLockRotation={preLockRotation} />
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar />
+        <Sidebar activeView={activeView} setActiveView={setActiveView} />
         {/*
           `canvas-bg` paints a warm drafting-paper backdrop (sunflare
           gradient + amber grid + grain) beneath the Konva stage. It's
@@ -133,6 +142,8 @@ export default function App() {
           void. See index.css for the composition.
         */}
         <main ref={canvasContainerRef} className="flex-1 relative canvas-bg overflow-hidden">
+          {activeView === 'roof' ? (
+            <>
           {/*
             Leaflet is only mounted in the UNLOCKED state — the "navigate
             to your building" phase. Once locked, we tear it down entirely:
@@ -308,6 +319,10 @@ export default function App() {
                 it, or press Enter to commit a polyline cut.
               </span>
             </div>
+          )}
+            </>
+          ) : (
+            <DiagramView />
           )}
         </main>
       </div>

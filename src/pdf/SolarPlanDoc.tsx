@@ -118,6 +118,14 @@ export interface SolarPlanDocProps {
    * reaches into the store itself.
    */
   inverterModelNames: Record<string, string>;
+  /**
+   * Optional pre-captured electrical block diagram PNG dataURL. When
+   * present, a second A4 landscape page is appended containing just
+   * this image (edge-to-edge). When absent (user exported while on the
+   * roof-plan tab so DiagramView wasn't mounted), the second page is
+   * silently skipped — v1 behavior, documented in the feature plan.
+   */
+  diagramImage?: string;
 }
 
 // ── Brand tokens ──────────────────────────────────────────────────────────
@@ -456,6 +464,7 @@ export function SolarPlanDoc({
   strings,
   stats,
   inverterModelNames,
+  diagramImage,
 }: SolarPlanDocProps) {
   // Inverter name lookup — used per-row in the strings table.
   const inverterById = new Map(project.inverters.map((i) => [i.id, i.name]));
@@ -691,6 +700,19 @@ export function SolarPlanDoc({
           </View>
         )}
       </Page>
+      {/* ── Optional second page: electrical block diagram ─────────────
+          Only rendered when the caller captured a DiagramView (i.e.
+          the user had the diagram tab mounted at export time). The
+          image is sized to fully cover the A4 landscape page; we set
+          `padding: 0` so it bleeds edge-to-edge without the default
+          page padding above. The diagram PNG was captured at 1122×794,
+          which is the same aspect ratio as A4 landscape — so stretching
+          to width:100%/height:100% doesn't distort it. */}
+      {diagramImage && (
+        <Page size="A4" orientation="landscape" style={{ padding: 0 }}>
+          <Image src={diagramImage} style={{ width: '100%', height: '100%' }} />
+        </Page>
+      )}
     </Document>
   );
 }

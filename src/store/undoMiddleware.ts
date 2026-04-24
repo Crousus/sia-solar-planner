@@ -137,6 +137,18 @@ export type ActionName =
   | 'setActivePanelModelId'
   | 'setInverterModelCache'
   | 'setPanelModelFromCatalog'
+  // ── Diagram (electrical block diagram view) ─────────────────────────
+  // All diagram mutations are bypass — the diagram feature is a separate
+  // view layer that doesn't participate in the project undo stack. The
+  // meta table inputs coalesce per-keystroke which would be noisy for
+  // the normal undo flow, and nodes/edges are manipulated through React
+  // Flow's own interactions (drag, connect) that don't map cleanly to
+  // the record-path coalescing model.
+  | 'bootstrapDiagram'
+  | 'setDiagramNodes'
+  | 'setDiagramEdges'
+  | 'updateDiagramMeta'
+  | 'addDiagramNode'
   // ── Special (history management) ───────────────────────────────────
   | 'resetProject'
   | 'loadProject'
@@ -204,6 +216,14 @@ export const ACTION_POLICY: Record<ActionName, Policy> = {
   setActivePanelModelId:   { kind: 'bypass' },
   setInverterModelCache:   { kind: 'bypass' },
   setPanelModelFromCatalog: { kind: 'bypass' },
+
+  // Diagram actions — bypass for the reasons described at the ActionName
+  // union above (separate view layer, not part of project undo stack).
+  bootstrapDiagram:        { kind: 'bypass' },
+  setDiagramNodes:         { kind: 'bypass' },
+  setDiagramEdges:         { kind: 'bypass' },
+  updateDiagramMeta:       { kind: 'bypass' },
+  addDiagramNode:          { kind: 'bypass' },
 
   // ── Special ────────────────────────────────────────────────────────
   resetProject:            { kind: 'clear-history' },
