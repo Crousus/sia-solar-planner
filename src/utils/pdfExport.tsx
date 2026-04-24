@@ -98,12 +98,15 @@ export async function exportPdf(
   try {
     // Lazy-loaded modules. `Promise.all` parallelizes the fetches so
     // first-click cost is one round-trip wide, not three.
-    const [{ pdf }, { SolarPlanDoc }, { captureStage, composeWithGrid }] =
-      await Promise.all([
-        import('@react-pdf/renderer'),
-        import('../pdf/SolarPlanDoc'),
-        import('../pdf/composeStageImage'),
-      ]);
+    const [
+      { pdf },
+      { SolarPlanDoc },
+      { captureStage, composeWithGrid, captureDiagramView },
+    ] = await Promise.all([
+      import('@react-pdf/renderer'),
+      import('../pdf/SolarPlanDoc'),
+      import('../pdf/composeStageImage'),
+    ]);
 
     // ── Stage capture (one Konva toCanvas pass) ─────────────────────────
     // `captureStage` also returns the stage's current rotation so we can
@@ -137,6 +140,20 @@ export async function exportPdf(
     // CPU work between the html2canvas hop and the react-pdf hop.
     const drawWmm = planW / PT_PER_MM;
     const imageDataUrl = composeWithGrid(shot, drawWmm, stageRotation);
+
+    // ── Optional block-diagram page capture ─────────────────────────────
+    // The diagram lives in a separate sidebar-switchable view; when the
+    // user is on the roof-plan tab at export time the DiagramView
+    // component is NOT mounted and the querySelector returns null. In
+    // that case we skip the capture and SolarPlanDoc suppresses the
+    // second page. This is deliberate v1 behavior — we don't force-mount
+    // DiagramView off-screen just to capture it, because an unmounted
+    // diagram means the user has never visited that tab for this
+    // project and has no diagram content worth exporting yet.
+    const diagramEl = document.querySelector('[data-diagram-view]') as HTMLElement | null;
+    const diagramImage = diagramEl
+      ? await captureDiagramView(diagramEl)
+      : undefined;
 
     // ── Build inverter-id → model display name map ───────────────────────
     // Keyed by inverter.id (not model id) so SolarPlanDoc can look up
@@ -240,6 +257,7 @@ export async function exportPdf(
         strings={docStrings}
         stats={docStats}
         inverterModelNames={inverterModelNames}
+        diagramImage={diagramImage}
       />,
     ).toBlob();
 

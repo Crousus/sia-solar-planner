@@ -92,6 +92,41 @@ export async function captureStage(stageEl: HTMLElement): Promise<{
 }
 
 /**
+ * Capture the DiagramView DOM element for PDF embedding.
+ *
+ * Why a separate function from captureStage:
+ *   - captureStage captures a Konva scene graph (vector) via
+ *     `stage.toCanvas` for crisp pixelRatio 3× output. The block
+ *     diagram is plain HTML/CSS (the A4 div identified by
+ *     `data-diagram-view`), so html2canvas is the right tool here.
+ *   - The diagram has no mm-scale grid to bake in and no rotating
+ *     compass, so there's no compose step — the captured PNG is the
+ *     final page image. Returning a dataURL keeps the call site
+ *     symmetric with `composeWithGrid`.
+ *
+ * Dimensions (1122 × 794 px) match the A4 landscape container set by
+ * DiagramView. `scale: 1` is deliberate: the diagram is pure vector/CSS
+ * rendered at this exact size, so upscaling adds file size without
+ * adding detail — html2canvas doesn't re-rasterize CSS at higher DPI,
+ * it bilinear-upscales the screenshot.
+ *
+ * `ignoreElements` guards against html2canvas 1.4.1's
+ * `createPattern on a canvas with width/height of 0` crash (same bug
+ * documented in `captureStage` — some rendering libraries briefly
+ * have 0-sized canvas children mid-layout).
+ */
+export async function captureDiagramView(el: HTMLElement): Promise<string> {
+  const canvas = await html2canvas(el, {
+    useCORS: true,
+    scale: 1,
+    width: 1122,
+    height: 794,
+    ignoreElements: (e) => e.tagName === 'CANVAS' && (e as HTMLCanvasElement).width === 0,
+  });
+  return canvas.toDataURL('image/png');
+}
+
+/**
  * Composite the captured (transparent) Konva stage onto a warm-gray
  * "drafting paper" canvas with a mm-accurate grid baked in, return the
  * result as a JPEG data URL.
