@@ -47,6 +47,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ClientResponseError } from 'pocketbase';
 import { pb } from '../backend/pb';
 import { maybeImportLocalStorage } from '../backend/migrateLocalStorage';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 type Mode = 'signin' | 'signup';
 
@@ -116,8 +117,13 @@ export default function LoginPage() {
       ) {
         setPendingApproval(true);
       } else {
-        const msg = err instanceof Error ? err.message : 'Sign-in failed.';
-        setError(msg);
+        // eslint-disable-next-line no-console
+        console.error('[LoginPage] auth failed', err);
+        // Classifier-formatted message gives the user a real headline:
+        // "Cannot reach the server" for backend down, "Some fields aren't
+        // valid" for a 400 validation, etc. — instead of PocketBase's
+        // generic "Failed to authenticate." boilerplate.
+        setError(formatErrorForUser(err, t));
       }
     } finally {
       setBusy(false);

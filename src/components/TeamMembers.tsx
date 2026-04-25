@@ -37,6 +37,7 @@ import { pb } from '../backend/pb';
 import type { TeamMemberRecord, UserRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 interface MemberWithUser {
   member: TeamMemberRecord;
@@ -81,7 +82,11 @@ export default function TeamMembers() {
   }
 
   useEffect(() => {
-    reload().catch((e) => setError((e as Error).message));
+    reload().catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error('[TeamMembers] reload failed', e);
+      setError(formatErrorForUser(e, t));
+    });
     // Reload is stable per teamId — not including it in deps prevents
     // an infinite re-fetch loop on identity changes (it's recreated on
     // every render). The teamId dep alone is the correct trigger.
@@ -120,7 +125,9 @@ export default function TeamMembers() {
       setInviteEmail('');
       await reload();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Invite failed.');
+      // eslint-disable-next-line no-console
+      console.error('[TeamMembers] invite failed', err);
+      setError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -128,8 +135,19 @@ export default function TeamMembers() {
 
   async function removeMember(memberId: string) {
     if (!confirm(t('team.removeMemberConfirm'))) return;
-    await pb.collection('team_members').delete(memberId);
-    await reload();
+    // Without a try/catch this would surface as an uncaught promise
+    // rejection — the global handler in AppShell would show a toast,
+    // but the inline form-banner is more contextual for an action the
+    // user just triggered from this page. Both signals are useful, but
+    // the inline alert is the canonical "this action failed" channel.
+    try {
+      await pb.collection('team_members').delete(memberId);
+      await reload();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[TeamMembers] remove failed', err);
+      setError(formatErrorForUser(err, t));
+    }
   }
 
   return (
@@ -141,7 +159,7 @@ export default function TeamMembers() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to={`/teams/${teamId}`}
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           {t('team.backToTeam')}
         </Link>

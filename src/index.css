@@ -40,9 +40,9 @@
   --ink-800: #111113;
   --ink-700: #18181b;
   --ink-600: #242428;
-  --ink-500: #3a3a3f;
-  --ink-400: #65656b;
-  --ink-300: #95959c;
+  --ink-500: #4a4a50;
+  --ink-400: #8e8e95;
+  --ink-300: #a8a8af;
   --ink-200: #c5c5cc;
   --ink-100: #e8e8ec;
   --ink-50:  #f7f7f8;
@@ -761,11 +761,11 @@ html, body, #root {
    */
   .tech-label {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
-    font-size: 10.5px;
+    font-size: 12px;
     font-weight: 500;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--ink-400);
+    color: var(--ink-300);
   }
 
   /* ── Section & field (sidebar) ───────────────────────────────────── */

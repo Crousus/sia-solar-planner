@@ -28,6 +28,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 import { pb } from '../backend/pb';
+import { formatErrorForUser } from '../utils/errorClassify';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -63,10 +64,13 @@ export default function NewTeamPage() {
       });
       navigate(`/teams/${team.id}`);
     } catch (err: unknown) {
-      // Surface server validation messages (e.g. "name: required") rather
-      // than a generic "failed". `err instanceof Error` narrows the
-      // unknown without losing the upstream message.
-      setError(err instanceof Error ? err.message : 'Create failed.');
+      // eslint-disable-next-line no-console
+      console.error('[NewTeamPage] create failed', err);
+      // formatErrorForUser handles validation (400/422 with field
+      // payloads) by surfacing the field-level reason in the detail
+      // line, network failures with their own headline, etc. — same
+      // signal as `err.message` carried, with categorised wording.
+      setError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -82,7 +86,7 @@ export default function NewTeamPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to="/"
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           {t('team.allTeams')}
         </Link>

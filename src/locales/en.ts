@@ -147,10 +147,11 @@ const en = {
     noTeamsBody: 'A team is how you share projects. Create one and invite collaborators by email.',
     createFirstTeam: 'Create your first team →',
     allTeams: '← All teams',
-    manageMembers: 'Manage members →',
+    manageMembers: 'Manage members',
     customers: 'Customers',
     catalog: 'Hardware catalog',
     branding: 'Branding',
+    navAriaLabel: 'Team navigation',
     newProject: 'New project',
     creating: 'Creating…',
     emptyProjectsTitle: 'Start a new layout',
@@ -389,6 +390,48 @@ const en = {
       // no value for the field yet.
       emptyDash:    '—',
     },
+  },
+  // Error / toast namespace. Surfaced by <Toaster/> via pushToast()
+  // calls scattered across the app. Kept in its own namespace so a
+  // glance at en.ts shows every user-visible failure mode in one place.
+  errors: {
+    // Close button on a toast card (used as aria-label).
+    dismiss: 'Dismiss',
+    // Generic fallback when an unhandled exception or rejected promise
+    // bubbles up and we can't classify it any further. Vague on
+    // purpose — anything more specific would risk lying to the user.
+    unexpected: 'Something went wrong.',
+    // Subtext shown under `unexpected` when the underlying Error has
+    // no message of its own. Rare in practice — most errors carry
+    // *some* message — but a guaranteed fallback keeps the toast from
+    // ever rendering with an empty detail row.
+    unexpectedDetail: 'An unexpected error occurred — try again, and if it persists reload the page.',
+    // Per-category headlines selected by `classifyError()`. These should
+    // tell the user WHAT happened in plain language; the technical
+    // payload (URL, error message) goes in the toast's `detail` row.
+    networkHeadline: 'Cannot reach the server.',
+    authHeadline: 'Your session expired — please sign in again.',
+    permissionHeadline: 'You don\'t have permission to do that.',
+    notFoundHeadline: 'That item could not be found.',
+    serverHeadline: 'The server hit an error processing your request.',
+    validationHeadline: 'Some fields aren\'t valid.',
+    // Old generic-network key kept for callers that don't classify
+    // (e.g. simple form pickers) — slightly different wording so they
+    // can be told apart in user reports if needed.
+    network: 'Network error — check your connection and try again.',
+    // SyncClient-level surfacing: the editor lost its server connection
+    // for long enough that we want the user to know edits aren't being
+    // saved. The badge already shows "Offline" but a toast adds a louder
+    // beat so the user doesn't keep working unaware.
+    syncOffline: 'Connection to the server lost. Your changes are kept locally and will sync when the connection returns.',
+    syncRestored: 'Connection restored — changes saved.',
+    // Map / capture-side failures (Toolbar.handleLock).
+    mapContainerMissing: 'Map container not found — cannot lock.',
+    mapCaptureFailed: 'Failed to capture the satellite view. The tile provider may be blocking cross-origin reads.',
+    captureDecodeFailed: 'Could not load the captured satellite image — try locking the map again.',
+    // Generic delete failure — used by TeamView, CustomersPage,
+    // CatalogPage when a row delete returns a server error.
+    deleteFailed: 'Delete failed: {{message}}',
   },
   inverterModel: {
     noModelOption:   '— No model —',

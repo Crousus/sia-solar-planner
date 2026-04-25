@@ -35,6 +35,7 @@ import { pb } from '../backend/pb';
 import type { TeamMemberRecord, TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function TeamBrandingPage() {
   const { t } = useTranslation();
@@ -78,9 +79,14 @@ export default function TeamBrandingPage() {
         setCompanyName(teamRec.company_name ?? '');
         setMyRole(me.role);
       })
-      .catch((err) => { if (!cancelled) setError((err as Error).message); });
+      .catch((err) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error('[TeamBrandingPage] initial fetch failed', err);
+        setError(formatErrorForUser(err, t));
+      });
     return () => { cancelled = true; };
-  }, [teamId, user]);
+  }, [teamId, user, t]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -115,7 +121,9 @@ export default function TeamBrandingPage() {
       if (fileInputRef.current) fileInputRef.current.value = '';
       setSaved(true);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed.');
+      // eslint-disable-next-line no-console
+      console.error('[TeamBrandingPage] save failed', err);
+      setError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -153,7 +161,7 @@ export default function TeamBrandingPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to={teamId ? `/teams/${teamId}` : '/'}
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           {team ? `← ${team.name}` : t('team.allTeams')}
         </Link>

@@ -37,6 +37,8 @@ import { pb } from '../backend/pb';
 import type { ProjectRecord, TeamRecord, TeamMemberRecord, CustomerRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { pushToast } from '../store/toastStore';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function TeamView() {
   const { t } = useTranslation();
@@ -85,9 +87,18 @@ export default function TeamView() {
         setMyRole(me.role);
         setCustomers(custs);
       })
-      .catch((err) => { if (!cancelled) setError(err.message); });
+      .catch((err) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error('[TeamView] initial fetch failed', err);
+        // Classifier-formatted message: "<headline> — <detail>". For a
+        // backend-down 500 from the Vite proxy the user reads
+        // "The server hit an error… — HTTP 500" instead of
+        // PocketBase's generic boilerplate.
+        setError(formatErrorForUser(err, t));
+      });
     return () => { cancelled = true; };
-  }, [teamId, user]);
+  }, [teamId, user, t]);
 
   // Project creation moved to /teams/:teamId/projects/new — see
   // NewProjectPage. That page captures name + optional client + address
@@ -107,7 +118,11 @@ export default function TeamView() {
       // server-side row remains and a refresh will show it again.
       setProjects((list) => list?.filter((p) => p.id !== projectId) ?? null);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Delete failed.');
+      // Toast carries the server's message verbatim so the user can tell
+      // whether it was permissions, a constraint, or a transient error.
+      pushToast('error', t('errors.deleteFailed', {
+        message: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 
@@ -159,18 +174,18 @@ export default function TeamView() {
             <div className="flex items-center gap-2 mb-3">
               <Link
                 to="/"
-                className="font-mono text-[12.5px] text-ink-400 hover:text-ink-200 transition-colors"
+                className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
               >
                 {t('team.allTeams')}
               </Link>
-              <span className="font-mono text-[12.5px] text-ink-500">/</span>
-              <span className="font-mono text-[12.5px] text-ink-300 tabular-nums">
+              <span className="font-mono text-[14px] text-ink-500">/</span>
+              <span className="font-mono text-[14px] text-ink-200 tabular-nums">
                 {team!.id.slice(0, 10)}
               </span>
             </div>
             <div className="flex items-end justify-between gap-4">
               <div className="min-w-0">
-                <span className="tech-label" style={{ fontSize: 12 }}>TEAM</span>
+                <span className="tech-label">TEAM</span>
                 <h1
                   // `break-words` instead of truncate — a team name is
                   // brand-like; hiding characters with an ellipsis erodes
@@ -180,49 +195,20 @@ export default function TeamView() {
                 >
                   {team!.name}
                 </h1>
-                <div className="mt-2.5 flex items-center gap-3 font-mono text-[13px] text-ink-400">
+                {/* Stats line — projects count + role chip. Kept tight to
+                    the title so it reads as a sub-heading. The nav buttons
+                    below get their own row to stop reading as connected
+                    text. */}
+                <div className="mt-3 flex items-center gap-3 font-mono text-[14px] text-ink-300">
                   <span>
-                    <span className="text-ink-200 tabular-nums">
+                    <span className="text-ink-100 tabular-nums">
                       {projects!.length}
                     </span>{' '}
                     {t('team.projectUnit', { count: projects!.length })}
                   </span>
-                  {/* role badge — mono caps, low key */}
                   <span className="chip chip-amber" style={{ fontSize: 12 }}>
                     {myRole}
                   </span>
-                  {myRole === 'admin' && (
-                    <Link
-                      to={`/teams/${team!.id}/members`}
-                      className="hover:text-ink-200 transition-colors"
-                    >
-                      {t('team.manageMembers')}
-                    </Link>
-                  )}
-                  {myRole === 'admin' && (
-                    <Link
-                      to={`/teams/${team!.id}/branding`}
-                      className="hover:text-ink-200 transition-colors"
-                    >
-                      {t('team.branding')}
-                    </Link>
-                  )}
-                  <Link
-                    to={`/teams/${team!.id}/customers`}
-                    className="hover:text-ink-200 transition-colors"
-                  >
-                    {t('team.customers')}
-                  </Link>
-                  {/* Hardware catalog link — global, not team-scoped,
-                      so the URL has no team segment. Placed next to
-                      customers so both "adjacent" DBs (customer &
-                      hardware) live together in the nav. */}
-                  <Link
-                    to="/catalog"
-                    className="hover:text-ink-200 transition-colors"
-                  >
-                    {t('team.catalog')}
-                  </Link>
                 </div>
               </div>
 
@@ -237,6 +223,52 @@ export default function TeamView() {
                 <span>{t('team.newProject')}</span>
               </Link>
             </div>
+
+            {/* Team-scope navigation — promoted from inline mono links to
+                proper ghost buttons. Each entry is a discrete affordance
+                with its own border + hover state, so the cluster reads as
+                a button bar rather than a run-on sentence. Wraps onto a
+                second row on narrow viewports. */}
+            <nav
+              aria-label={t('team.navAriaLabel')}
+              className="mt-5 flex flex-wrap gap-2"
+            >
+              {myRole === 'admin' && (
+                <Link
+                  to={`/teams/${team!.id}/members`}
+                  className="btn btn-ghost"
+                  style={{ padding: '8px 14px', fontSize: 13 }}
+                >
+                  {t('team.manageMembers')}
+                </Link>
+              )}
+              {myRole === 'admin' && (
+                <Link
+                  to={`/teams/${team!.id}/branding`}
+                  className="btn btn-ghost"
+                  style={{ padding: '8px 14px', fontSize: 13 }}
+                >
+                  {t('team.branding')}
+                </Link>
+              )}
+              <Link
+                to={`/teams/${team!.id}/customers`}
+                className="btn btn-ghost"
+                style={{ padding: '8px 14px', fontSize: 13 }}
+              >
+                {t('team.customers')}
+              </Link>
+              {/* Hardware catalog link — global, not team-scoped, so the
+                  URL has no team segment. Placed next to customers so both
+                  "adjacent" DBs (customer & hardware) live together. */}
+              <Link
+                to="/catalog"
+                className="btn btn-ghost"
+                style={{ padding: '8px 14px', fontSize: 13 }}
+              >
+                {t('team.catalog')}
+              </Link>
+            </nav>
           </header>
 
           {customers.length > 0 && (
@@ -267,7 +299,7 @@ export default function TeamView() {
                     'radial-gradient(ellipse 50% 50% at 50% 0%, rgba(255,99,99,0.12), transparent 70%)',
                 }}
               />
-              <span className="tech-label relative" style={{ fontSize: 12 }}>EMPTY · 00 PROJECTS</span>
+              <span className="tech-label relative">EMPTY · 00 PROJECTS</span>
               <h2 className="relative mt-3 font-editorial text-[34px] text-ink-50 leading-none">
                 {t('team.emptyProjectsTitle')}
               </h2>

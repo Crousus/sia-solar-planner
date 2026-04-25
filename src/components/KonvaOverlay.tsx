@@ -50,7 +50,9 @@
 
 import { Stage, Layer, Group, Image as KonvaImage } from 'react-konva';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../store/projectStore';
+import { pushToast } from '../store/toastStore';
 import RoofLayer from './RoofLayer';
 import StringLayer from './StringLayer';
 import PanelLayer from './PanelLayer';
@@ -71,6 +73,7 @@ interface Props {
 
 export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   const stageRef = useRef<Konva.Stage>(null);
+  const { t } = useTranslation();
 
   // ── Store subscriptions (narrow-slice selectors) ─────────────────────
   const locked = useProjectStore((s) => s.project.mapState.locked);
@@ -141,7 +144,15 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
     img.onload = () => { if (!cancelled) setBgImage(img); };
     img.onerror = () => {
       if (cancelled) return;
+      // Fires when the captured base64 PNG fails to decode — usually
+      // means the data URL was truncated by a localStorage quota limit
+      // or hand-edited. Toast surfaces it visibly; without this the
+      // canvas would just render empty and the user would have no
+      // signal that something is wrong.
       console.error('Failed to decode captured background image');
+      pushToast('error', t('errors.captureDecodeFailed'), {
+        dedupeKey: 'capture-decode',
+      });
       setBgImage(null);
     };
     img.src = capturedImage;
@@ -151,7 +162,7 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
       img.onerror = null;
       img.src = '';
     };
-  }, [capturedImage]);
+  }, [capturedImage, t]);
 
   // ── Merged Stage mouse handlers ──────────────────────────────────────
   // Order matters: viewport first. If the viewport consumes the event

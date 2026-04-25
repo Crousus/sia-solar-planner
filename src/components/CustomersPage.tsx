@@ -43,6 +43,8 @@ import type { ProjectAddress } from '../types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 import AddressAutocomplete from './AddressAutocomplete';
+import { pushToast } from '../store/toastStore';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 interface CustomerFormState {
   name: string;
@@ -126,10 +128,12 @@ export default function CustomersPage() {
           navigate('/', { replace: true });
           return;
         }
-        setError(err?.message ?? 'Failed to load customers');
+        // eslint-disable-next-line no-console
+        console.error('[CustomersPage] initial fetch failed', err);
+        setError(formatErrorForUser(err, t));
       });
     return () => { cancelled = true; };
-  }, [teamId, user, navigate]);
+  }, [teamId, user, navigate, t]);
 
   function startCreate() {
     setEditingId('new');
@@ -227,7 +231,9 @@ export default function CustomersPage() {
       }
       setEditingId(null);
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Save failed');
+      // eslint-disable-next-line no-console
+      console.error('[CustomersPage] save failed', err);
+      setFormError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -241,7 +247,9 @@ export default function CustomersPage() {
       // If we were editing this customer, close the form.
       if (editingId === id) setEditingId(null);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Delete failed.');
+      pushToast('error', t('errors.deleteFailed', {
+        message: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 
@@ -277,20 +285,20 @@ export default function CustomersPage() {
         <>
           <header className="mb-8">
             <div className="flex items-center gap-2 mb-3">
-              <Link to="/" className="font-mono text-[12.5px] text-ink-400 hover:text-ink-200 transition-colors">
+              <Link to="/" className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors">
                 {t('team.allTeams')}
               </Link>
-              <span className="font-mono text-[12.5px] text-ink-500">/</span>
+              <span className="font-mono text-[14px] text-ink-500">/</span>
               <Link
                 to={`/teams/${team!.id}`}
-                className="font-mono text-[12.5px] text-ink-400 hover:text-ink-200 transition-colors"
+                className="font-mono text-[14px] text-ink-200 hover:text-ink-100 transition-colors"
               >
                 {team!.name}
               </Link>
             </div>
             <div className="flex items-end justify-between gap-4">
               <div>
-                <span className="tech-label" style={{ fontSize: 12 }}>{t('customer.sectionTitle')}</span>
+                <span className="tech-label">{t('customer.sectionTitle')}</span>
                 <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
                   {t('customer.pageTitle')}
                 </h1>
@@ -391,7 +399,7 @@ export default function CustomersPage() {
           {/* Customer list */}
           {customers!.length === 0 && editingId === null ? (
             <div className="surface rounded-2xl px-8 py-14 text-center">
-              <span className="tech-label" style={{ fontSize: 12 }}>{t('customer.sectionTitle')}</span>
+              <span className="tech-label">{t('customer.sectionTitle')}</span>
               <h2 className="mt-3 font-editorial text-[34px] text-ink-50 leading-none">{t('customer.emptyTitle')}</h2>
               <p className="mt-3 text-ink-300 text-[15px] max-w-sm mx-auto">{t('customer.emptyBody')}</p>
             </div>

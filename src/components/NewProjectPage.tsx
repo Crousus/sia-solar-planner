@@ -48,6 +48,7 @@ import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 import ProjectMetaForm from './ProjectMetaForm';
 import PanelModelPicker from './PanelModelPicker';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function NewProjectPage() {
   const { t } = useTranslation();
@@ -100,10 +101,12 @@ export default function NewProjectPage() {
           navigate('/', { replace: true });
           return;
         }
-        setError(err?.message ?? 'Failed to load team');
+        // eslint-disable-next-line no-console
+        console.error('[NewProjectPage] team fetch failed', err);
+        setError(formatErrorForUser(err, t));
       });
     return () => { cancelled = true; };
-  }, [teamId, user, navigate]);
+  }, [teamId, user, navigate, t]);
 
   async function signOut() {
     pb.authStore.clear();
@@ -155,7 +158,9 @@ export default function NewProjectPage() {
       });
       navigate(`/p/${created.id}`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Create failed.');
+      // eslint-disable-next-line no-console
+      console.error('[NewProjectPage] create failed', err);
+      setError(formatErrorForUser(err, t));
       setBusy(false); // reset ONLY on failure — on success we're already navigating away
     }
   }
@@ -170,7 +175,7 @@ export default function NewProjectPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to={teamId ? `/teams/${teamId}` : '/'}
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           {team ? `← ${team.name}` : t('team.allTeams')}
         </Link>

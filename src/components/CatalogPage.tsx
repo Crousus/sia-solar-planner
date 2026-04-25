@@ -52,6 +52,8 @@ import { pb } from '../backend/pb';
 import type { InverterModelRecord, PanelModelRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { pushToast } from '../store/toastStore';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 // ── Datasheet import helpers ───────────────────────────────────────────────────
 // These types mirror the JSON the ocr-service returns after LLM extraction.
@@ -233,10 +235,12 @@ export default function CatalogPage() {
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err?.message ?? 'Failed to load catalog');
+        // eslint-disable-next-line no-console
+        console.error('[CatalogPage] initial fetch failed', err);
+        setError(formatErrorForUser(err, t));
       });
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, t]);
 
   // ── Panel CRUD handlers ──────────────────────────────────────────
   function startCreatePanel() {
@@ -297,7 +301,9 @@ export default function CatalogPage() {
       }
       setEditingPanelId(null);
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Save failed');
+      // eslint-disable-next-line no-console
+      console.error('[CatalogPage] save failed', err);
+      setFormError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -322,7 +328,9 @@ export default function CatalogPage() {
       setPanels((prev) => (prev ?? []).filter((p) => p.id !== id));
       if (editingPanelId === id) setEditingPanelId(null);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Delete failed.');
+      pushToast('error', t('errors.deleteFailed', {
+        message: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 
@@ -378,7 +386,9 @@ export default function CatalogPage() {
       }
       setEditingInverterId(null);
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Save failed');
+      // eslint-disable-next-line no-console
+      console.error('[CatalogPage] save failed', err);
+      setFormError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -395,7 +405,9 @@ export default function CatalogPage() {
       setInverters((prev) => (prev ?? []).filter((i) => i.id !== id));
       if (editingInverterId === id) setEditingInverterId(null);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Delete failed.');
+      pushToast('error', t('errors.deleteFailed', {
+        message: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 

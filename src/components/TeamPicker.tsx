@@ -38,6 +38,7 @@ import { pb } from '../backend/pb';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function TeamPicker() {
   const { t } = useTranslation();
@@ -59,9 +60,18 @@ export default function TeamPicker() {
     pb.collection('teams')
       .getFullList<TeamRecord>({ sort: '-updated' })
       .then((list) => { if (!cancelled) setTeams(list); })
-      .catch((err) => { if (!cancelled) setError(err.message); });
+      .catch((err) => {
+        if (cancelled) return;
+        // Mirror the raw error to the dev console so DevTools is the
+        // single source of truth on the underlying reason
+        // (ClientResponseError carries .status, .url, .originalError —
+        // none of which fit usefully into a one-line inline alert).
+        // eslint-disable-next-line no-console
+        console.error('[TeamPicker] team list fetch failed', err);
+        setError(formatErrorForUser(err, t));
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [t]);
 
   async function signOut() {
     // authStore.clear() is synchronous — wipes the in-memory token and
@@ -112,7 +122,12 @@ export default function TeamPicker() {
         </div>
       )}
 
-      {!teams ? (
+      {!teams && error ? (
+        /* Fetch failed and we have nothing to render — the error banner
+           above already explains why. Suppress the pulsing skeleton so
+           it doesn't imply "still loading" while the request is dead. */
+        null
+      ) : !teams ? (
         /* Skeleton row — 3 stub tiles so the page doesn't jank on load.
            Width + height match the real row so the hand-off is invisible. */
         <ul className="space-y-2">
@@ -197,10 +212,10 @@ export default function TeamPicker() {
                   {team.name.slice(0, 2).toUpperCase()}
                 </span>
                 <span className="flex-1 min-w-0">
-                  <span className="block truncate font-medium text-ink-100">
+                  <span className="block truncate font-medium text-[15px] text-ink-100">
                     {team.name}
                   </span>
-                  <span className="mt-0.5 block font-mono text-[10.5px] text-ink-400">
+                  <span className="mt-1 block font-mono text-[12px] text-ink-300">
                     /teams/{team.id.slice(0, 10)}
                   </span>
                 </span>

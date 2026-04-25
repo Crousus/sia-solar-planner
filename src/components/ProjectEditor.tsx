@@ -43,11 +43,14 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { InverterModelRecord, ProjectRecord } from '../backend/types';
 import { panelTypeFromCatalogRecord, useProjectStore } from '../store/projectStore';
 import { createSyncClient, type SyncClient } from '../backend/syncClient';
+import { dismissToast, pushToast } from '../store/toastStore';
+import { formatErrorForUser } from '../utils/errorClassify';
 import App from '../App';
 import ConflictModal from './ConflictModal';
 
@@ -90,6 +93,7 @@ export function getActiveProjectCreatorId(): string | null {
 export default function ProjectEditor() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [error, setError] = useState<string | null>(null);
   // `loaded` gates rendering of <App/>. We can't render it until the
   // store has a real project doc — otherwise the canvas would render
@@ -102,6 +106,10 @@ export default function ProjectEditor() {
   // depends on the client — only imperative paths (unmount cleanup,
   // sibling components via getActiveSyncClient) need to read it.
   const syncClientRef = useRef<SyncClient | null>(null);
+  // Holds the unsubscribe handle for the sync-status → toast bridge so
+  // unmount cleanup can drop it without leaking a closure that still
+  // references the dead client.
+  const statusUnsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -214,6 +222,59 @@ export default function ProjectEditor() {
         void client.start();
         syncClientRef.current = client;
         activeSyncClient = client;
+
+        // ── Sync error → toast ─────────────────────────────────────────
+        // The status badge (SyncStatusIndicator) already shows the
+        // current state at a glance, but the user can easily miss it
+        // while focused on the canvas. A toast adds a louder beat so
+        // they don't keep editing unaware that nothing is being saved.
+        //
+        // Strategy:
+        //   1. Wait `OFFLINE_GRACE_MS` after the first sign of offline
+        //      before toasting — short network blips that auto-recover
+        //      shouldn't bother the user. The retry mechanic in
+        //      syncClient already handles them silently.
+        //   2. Once the toast is up, keep it up until status returns to
+        //      `synced`, at which point we dismiss it and post a brief
+        //      success ("connection restored") toast.
+        //   3. Conflicts have their own UI (ConflictModal); don't toast
+        //      for those.
+        //
+        // We hold the in-flight toast id in a closure variable rather
+        // than reactive state because the subscription handler isn't a
+        // React effect — a ref/state would buy nothing here.
+        const OFFLINE_GRACE_MS = 5000;
+        let offlineToastId: string | null = null;
+        let offlineGraceTimer: ReturnType<typeof setTimeout> | null = null;
+        const unsubStatus = client.subscribeStatus((status) => {
+          if (status.kind === 'offline') {
+            if (offlineToastId || offlineGraceTimer) return; // already pending/shown
+            offlineGraceTimer = setTimeout(() => {
+              offlineGraceTimer = null;
+              offlineToastId = pushToast('error', t('errors.syncOffline'), {
+                dedupeKey: `sync-offline:${projectId}`,
+              });
+            }, OFFLINE_GRACE_MS);
+          } else if (status.kind === 'synced') {
+            // Cancel a pending grace toast that hadn't fired yet.
+            if (offlineGraceTimer) {
+              clearTimeout(offlineGraceTimer);
+              offlineGraceTimer = null;
+            }
+            // If we had actually shown the offline toast, swap it for
+            // a brief "restored" success message so the user knows the
+            // editor caught up.
+            if (offlineToastId) {
+              dismissToast(offlineToastId);
+              offlineToastId = null;
+              pushToast('success', t('errors.syncRestored'));
+            }
+          }
+        });
+        // Stash on the ref's metadata-by-closure so the unmount cleanup
+        // can find it. We piggyback on syncClientRef.current's own stop
+        // path by capturing the unsub in the outer-scope variable below.
+        statusUnsubRef.current = unsubStatus;
       })
       .catch((err) => {
         if (cancelled) return;
@@ -225,10 +286,17 @@ export default function ProjectEditor() {
           navigate('/', { replace: true });
           return;
         }
-        setError(err?.message ?? 'Failed to load project');
+        // eslint-disable-next-line no-console
+        console.error('[ProjectEditor] project fetch failed', err);
+        setError(formatErrorForUser(err, t));
       });
     return () => {
       cancelled = true;
+      // Drop the status → toast bridge before stop() so any final state
+      // emission during stop doesn't fire a stray toast for a project
+      // we're navigating away from.
+      statusUnsubRef.current?.();
+      statusUnsubRef.current = null;
       // Stop the sync client BEFORE resetting the store — stop() clears
       // its debounce timer and store subscription, so the resetProject()
       // below won't trigger a spurious outbound flush for a doc the
@@ -251,7 +319,7 @@ export default function ProjectEditor() {
       store.setActivePanelModelId(null);
       store.setInverterModelCache({});
     };
-  }, [projectId, navigate]);
+  }, [projectId, navigate, t]);
 
   if (error) {
     return (

@@ -36,6 +36,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { InverterModelRecord } from '../backend/types';
+import { formatErrorForUser } from '../utils/errorClassify';
+import { pushToast } from '../store/toastStore';
 
 interface Props {
   /** Currently linked inverter_models id, or null for unlinked. */
@@ -58,9 +60,17 @@ export default function InverterModelPicker({ value, onChange }: Props) {
         sort: 'manufacturer,model',
       })
       .then((recs) => { if (!cancelled) setModels(recs); })
-      .catch(() => { if (!cancelled) setModels([]); });
+      .catch((err) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error('[InverterModelPicker] fetch failed', err);
+        pushToast('error', formatErrorForUser(err, t), {
+          dedupeKey: 'inverter-model-picker-fetch',
+        });
+        setModels([]);
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [t]);
 
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const id = e.target.value;

@@ -47,6 +47,8 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { PanelModelRecord } from '../backend/types';
+import { formatErrorForUser } from '../utils/errorClassify';
+import { pushToast } from '../store/toastStore';
 
 interface Props {
   /** Currently selected panel_model record id, or null for unselected. */
@@ -74,9 +76,19 @@ export default function PanelModelPicker({ value, onChange }: Props) {
         sort: 'manufacturer,model',
       })
       .then((recs) => { if (!cancelled) setModels(recs); })
-      .catch(() => { if (!cancelled) setModels([]); });
+      .catch((err) => {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error('[PanelModelPicker] fetch failed', err);
+        pushToast('error', formatErrorForUser(err, t), {
+          dedupeKey: 'panel-model-picker-fetch',
+        });
+        // Empty list lets the dropdown render the "Add a panel model
+        // first" link rather than freezing on a spinner.
+        setModels([]);
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [t]);
 
   function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const id = e.target.value;

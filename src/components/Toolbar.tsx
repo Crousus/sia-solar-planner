@@ -57,6 +57,7 @@ import SyncStatusIndicator from './SyncStatusIndicator';
 import LanguageToggle from './LanguageToggle';
 import { BrandMark } from './BrandMark';
 import { getActiveProjectTeamId, getActiveProjectCreatorId } from './ProjectEditor';
+import { pushToast } from '../store/toastStore';
 
 interface Props {
   mapRef: React.MutableRefObject<L.Map | null>;
@@ -264,7 +265,10 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
     const captureEl =
       shellEl ?? (document.querySelector('.leaflet-container') as HTMLElement | null);
     if (!captureEl) {
-      alert('Map container not found — cannot lock.');
+      // Surfaced via toast rather than alert() so the user can keep
+      // interacting with the rest of the UI (e.g. switch basemap and
+      // try again) without dismissing a modal first.
+      pushToast('error', t('errors.mapContainerMissing'));
       return;
     }
     setIsLocking(true);
@@ -296,8 +300,12 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
         initialRotationDeg: undefined,
       });
     } catch (err) {
+      // Keep the console.error for devs; the toast carries the user-
+      // facing summary plus the underlying message as detail.
       console.error('Failed to capture satellite view', err);
-      alert('Failed to capture the satellite view — see console for details.');
+      pushToast('error', t('errors.mapCaptureFailed'), {
+        detail: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       // Always clear the flag so a single error doesn't permanently brick
       // the Lock button until reload.
@@ -316,7 +324,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
     const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
     const diagramEl = document.querySelector('[data-diagram-view]') as HTMLElement | null;
     if (!stageEl && !diagramEl) {
-      alert(t('toolbar.exportFailed'));
+      pushToast('error', t('toolbar.exportFailed'));
       return;
     }
     // Branding + planner context, read at export time so any tab that
@@ -330,7 +338,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
       creatorId: getActiveProjectCreatorId(),
     };
     const ok = await exportPdf(project, stageEl, inverterModelCache, brandingCtx);
-    if (!ok) alert(t('toolbar.exportFailedGeneral'));
+    if (!ok) pushToast('error', t('toolbar.exportFailedGeneral'));
   };
 
   /**
@@ -380,9 +388,11 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
         loadProject(project, history);
       } catch (err) {
         if (err instanceof ProjectDeserializationError) {
-          alert(t('toolbar.loadFailed', { message: err.message }));
+          pushToast('error', t('toolbar.loadFailed', { message: err.message }));
         } else {
-          alert(t('toolbar.loadFailedGeneral', { message: (err as Error).message }));
+          pushToast('error', t('toolbar.loadFailedGeneral', {
+            message: (err as Error).message,
+          }));
         }
       }
     };

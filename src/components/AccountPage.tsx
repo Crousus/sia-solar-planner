@@ -35,6 +35,7 @@ import { pb } from '../backend/pb';
 import type { UserRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function AccountPage() {
   const { t } = useTranslation();
@@ -82,7 +83,9 @@ export default function AccountPage() {
       });
       setSaved(true);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed.');
+      // eslint-disable-next-line no-console
+      console.error('[AccountPage] save failed', err);
+      setError(formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -100,7 +103,7 @@ export default function AccountPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to="/"
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           {t('team.allTeams')}
         </Link>

@@ -34,6 +34,7 @@
 import { Link } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { BrandMark } from './BrandMark';
+import LanguageToggle from './LanguageToggle';
 
 interface Props {
   /** Content rendered in the main column. */
@@ -114,31 +115,44 @@ export function PageShell({
           </span>
         </Link>
 
-        {userEmail && (
-          <div className="flex items-center gap-3">
-            {/* Email doubles as the link to the account page — the user's
-                own identity is the natural click target for "edit me".
-                Keeping it as a styled link rather than a separate
-                "Account" button avoids cluttering the nav pill, which
-                is already tight at narrow widths. */}
-            <Link
-              to="/account"
-              className="hidden sm:inline font-mono text-[13px] text-ink-400 tabular-nums hover:text-ink-200 transition-colors"
-              title={userEmail}
-            >
-              {userEmail}
-            </Link>
-            {onSignOut && (
-              <button
-                onClick={onSignOut}
-                className="btn btn-ghost text-[13px]"
-                style={{ padding: '7px 13px' }}
+        <div className="flex items-center gap-3">
+          {/* Language toggle lives in the nav so it's reachable from any
+              dashboard page — previously the toggle existed only inside
+              the editor's Toolbar and on LoginPage. A hairline divider
+              separates it from the user-identity cluster so the two
+              pieces of meta read as distinct controls. */}
+          <LanguageToggle />
+          {userEmail && (
+            <>
+              <span
+                aria-hidden
+                className="hidden sm:block h-4 w-px"
+                style={{ background: 'var(--hairline-strong)' }}
+              />
+              {/* Email doubles as the link to the account page — the user's
+                  own identity is the natural click target for "edit me".
+                  Keeping it as a styled link rather than a separate
+                  "Account" button avoids cluttering the nav pill, which
+                  is already tight at narrow widths. */}
+              <Link
+                to="/account"
+                className="hidden sm:inline font-mono text-[13px] text-ink-300 tabular-nums hover:text-ink-100 transition-colors"
+                title={userEmail}
               >
-                Sign out
-              </button>
-            )}
-          </div>
-        )}
+                {userEmail}
+              </Link>
+              {onSignOut && (
+                <button
+                  onClick={onSignOut}
+                  className="btn btn-ghost text-[13px]"
+                  style={{ padding: '7px 13px' }}
+                >
+                  Sign out
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </nav>
 
       {/* ── Corner tech-labels ───────────────────────────────────────

@@ -49,6 +49,7 @@ import { diffProjects } from '../backend/diff';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 import ProjectMetaForm from './ProjectMetaForm';
+import { formatErrorForUser } from '../utils/errorClassify';
 
 export default function ProjectSettingsPage() {
   const { t } = useTranslation();
@@ -75,10 +76,12 @@ export default function ProjectSettingsPage() {
           navigate('/', { replace: true });
           return;
         }
-        setError(err?.message ?? 'Failed to load project');
+        // eslint-disable-next-line no-console
+        console.error('[ProjectSettingsPage] initial fetch failed', err);
+        setError(formatErrorForUser(err, t));
       });
     return () => { cancelled = true; };
-  }, [projectId, navigate]);
+  }, [projectId, navigate, t]);
 
   async function signOut() {
     pb.authStore.clear();
@@ -161,7 +164,9 @@ export default function ProjectSettingsPage() {
       setError(text || `Save failed (${res.status}).`);
       setBusy(false);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Save failed.');
+      // eslint-disable-next-line no-console
+      console.error('[ProjectSettingsPage] save failed', err);
+      setError(formatErrorForUser(err, t));
       setBusy(false);
     }
   }
@@ -176,7 +181,7 @@ export default function ProjectSettingsPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link
           to={record ? `/p/${record.id}` : '/'}
-          className="font-mono text-[11px] text-ink-400 hover:text-ink-200 transition-colors"
+          className="font-mono text-[14px] text-ink-300 hover:text-ink-100 transition-colors"
         >
           ← {t('projectMeta.backToEditor')}
         </Link>

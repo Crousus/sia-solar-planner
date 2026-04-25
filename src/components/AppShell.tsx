@@ -38,6 +38,7 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { lazy, Suspense, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   BrowserRouter,
   Routes,
@@ -45,8 +46,11 @@ import {
 } from 'react-router-dom';
 import { pb } from '../backend/pb';
 import type { UserRecord } from '../backend/types';
+import { pushToast } from '../store/toastStore';
+import { classifyError, headlineForCategory } from '../utils/errorClassify';
 import LoginPage from './LoginPage';
 import AuthGuard from './AuthGuard';
+import Toaster from './Toaster';
 import TeamPicker from './TeamPicker';
 import NewTeamPage from './NewTeamPage';
 import TeamView from './TeamView';
@@ -91,9 +95,87 @@ export function useAuthUser(): UserRecord | null {
   return user;
 }
 
+/**
+ * Hook: route uncaught browser errors and unhandled promise rejections
+ * into the toast store so the user sees a visible message instead of
+ * the failure being swallowed into the devtools console (where most
+ * users never look).
+ *
+ * Why this lives in AppShell rather than as a free top-level effect:
+ *   - We need access to `t()` for the localised message. AppShell is
+ *     already inside the i18n provider via main.tsx's import order.
+ *   - Mounting once at the root guarantees a single set of listeners;
+ *     a free `window.addEventListener` at module scope would either
+ *     leak in HMR or require careful cleanup.
+ *
+ * Filtering rationale:
+ *   - We dedupe by message+source so a render loop firing the same
+ *     error 60 Hz collapses to one card the user can dismiss.
+ *   - We ignore "ResizeObserver loop limit exceeded" (a known benign
+ *     warning emitted by libraries like react-leaflet on rapid resizes)
+ *     and "Script error." (the opaque cross-origin form, which gives
+ *     us nothing actionable to show the user).
+ */
+function useGlobalErrorToasts() {
+  const { t } = useTranslation();
+  useEffect(() => {
+    function shouldIgnore(message: string): boolean {
+      // ResizeObserver's "loop completed with undelivered notifications"
+      // (and the older "limit exceeded" wording) is a no-op warning the
+      // browser fires when an observer callback synchronously triggers
+      // another layout. It surfaces in dev under Konva/Leaflet without
+      // any user-visible bug, so suppress it from the toast channel.
+      if (/ResizeObserver/i.test(message)) return true;
+      // Cross-origin script errors deliver only "Script error." with no
+      // stack — there's nothing to show the user beyond a vague "X
+      // happened" so we'd rather skip than cry-wolf.
+      if (message === 'Script error.') return true;
+      return false;
+    }
+
+    function emit(reason: unknown, fallbackMessage: string) {
+      // Classify so the headline matches what actually happened (network
+      // unreachable vs. auth expired vs. server crash vs. unknown). The
+      // user-grade message goes in the title; the technical payload
+      // goes in the detail row so devs can still triage from a screenshot.
+      const { category, detail, dedupeKey } = classifyError(reason);
+      const message =
+        detail || fallbackMessage || t('errors.unexpectedDetail');
+      if (shouldIgnore(message)) return;
+      pushToast('error', headlineForCategory(category, t), {
+        detail: message,
+        dedupeKey: `${category}:${dedupeKey}`,
+      });
+    }
+
+    function onError(event: ErrorEvent) {
+      // ErrorEvent carries the actual thrown object on `event.error`
+      // when available — that's what we want to classify (a bare
+      // `event.message` string would miss .status / .originalError).
+      // Fall back to the message string for cross-origin / synthesized
+      // events that strip the error object.
+      const reason = event.error ?? event.message;
+      emit(reason, event.message);
+    }
+
+    function onRejection(event: PromiseRejectionEvent) {
+      emit(event.reason, '');
+    }
+
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, [t]);
+}
+
 export default function AppShell() {
+  useGlobalErrorToasts();
   return (
     <BrowserRouter>
+      <Toaster />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<AuthGuard><TeamPicker /></AuthGuard>} />

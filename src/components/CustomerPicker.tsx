@@ -33,6 +33,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { pb } from '../backend/pb';
 import type { CustomerRecord } from '../backend/types';
+import { formatErrorForUser } from '../utils/errorClassify';
+import { pushToast } from '../store/toastStore';
 
 interface Props {
   teamId: string;
@@ -57,9 +59,22 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
     pb.collection('customers')
       .getFullList<CustomerRecord>({ filter: `team="${teamId}"`, sort: 'name' })
       .then((recs) => { if (!cancelled) setCustomers(recs); })
-      .catch(() => { if (!cancelled) setCustomers([]); });
+      .catch((err) => {
+        if (cancelled) return;
+        // Previously this swallowed silently and left the picker
+        // showing "no customers". The user couldn't tell whether they
+        // genuinely had no customers or whether the fetch failed.
+        // We now toast the failure (so it's visible) AND set an empty
+        // list (so the picker still renders the "create new" option).
+        // eslint-disable-next-line no-console
+        console.error('[CustomerPicker] fetch failed', err);
+        pushToast('error', formatErrorForUser(err, t), {
+          dedupeKey: 'customer-picker-fetch',
+        });
+        setCustomers([]);
+      });
     return () => { cancelled = true; };
-  }, [teamId]);
+  }, [teamId, t]);
 
   function handleSelectChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const v = e.target.value;
@@ -92,7 +107,9 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
       setMode('select');
       setNewName(''); setNewPhone(''); setNewEmail(''); setNewNotes('');
     } catch (err: unknown) {
-      setCreateError(err instanceof Error ? err.message : 'Create failed');
+      // eslint-disable-next-line no-console
+      console.error('[CustomerPicker] create failed', err);
+      setCreateError(formatErrorForUser(err, t));
     } finally {
       setCreating(false);
     }
