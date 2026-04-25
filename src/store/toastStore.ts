@@ -185,3 +185,21 @@ function getSnapshot(): Toast[] {
 export function useToasts(): Toast[] {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
+
+// ── Test-only accessors ─────────────────────────────────────────────────
+//
+// Exposed so unit tests can read the live toast array and observe
+// listener notifications without pulling in @testing-library/react just
+// to render a hook consumer. Underscore-prefixed to signal "do not use
+// from production code" — same convention as undoMiddleware's
+// `_pendingCoalesce` field.
+
+/** Test-only: returns the current toast array snapshot. */
+export function _getToastsSnapshot(): Toast[] {
+  return toasts;
+}
+
+/** Test-only: subscribe to toast-state changes. Returns an unsubscribe. */
+export function _subscribeToasts(listener: () => void): () => void {
+  return subscribe(listener);
+}

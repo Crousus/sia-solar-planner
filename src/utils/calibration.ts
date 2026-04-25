@@ -34,9 +34,10 @@
  *   - Mercator stretches northward; at latitude φ, 1 pixel covers
  *     cos(φ) times fewer meters than at the equator.
  *
- * Reference value to sanity-check against:
- *   zoom 19, lat 48° → ~0.233 m/px (typical house-scale)
- *   zoom 21, lat 48° → ~0.058 m/px (tile over-zoom; ESRI max native is 19)
+ * Reference value to sanity-check against (verified in calibration.test.ts):
+ *   zoom 19, lat 48° → ~0.200 m/px (typical house-scale)
+ *   zoom 21, lat 48° → ~0.050 m/px (tile over-zoom; ESRI max native is 19)
+ *   zoom 0,  lat 0°  → 156543.034 m/px (the bare equator constant)
  *
  * This function is pure and synchronous — call it exactly once on Lock Map
  * and store the result in `mapState.metersPerPixel`. Don't recompute
