@@ -21,5 +21,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     globals: false,
+    // Exclude integration tests from the default unit-test run.
+    // Integration tests require RUN_INTEGRATION=1 and a compiled PocketBase
+    // binary — they live in vitest.integration.config.ts instead.
+    exclude: ['**/*.integration.test.ts', 'node_modules/**'],
   },
 });
