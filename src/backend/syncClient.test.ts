@@ -24,7 +24,7 @@
 //   and will be covered end-to-end in Task 16's integration test.
 //
 //   What we DO cover:
-//     1. Debounced outbound flush (no POST before 2s, exactly one after).
+//     1. Debounced outbound flush (no POST before 1s, exactly one after).
 //     2. 409 response transitions status to {kind:'conflict',...} with
 //        the server's doc payload.
 //     3. resolveConflict('discard-mine') loads the server doc into the
@@ -121,7 +121,7 @@ afterEach(() => {
 });
 
 describe('syncClient outbound flush', () => {
-  it('debounces outbound POST to 2s after last change', async () => {
+  it('debounces outbound POST to 1s after last change', async () => {
     const serverDoc = fixtureProject({ name: 'Original' });
     installPbFakes(serverRecord(serverDoc, 1));
     const fetchSpy = vi.fn().mockResolvedValue({
@@ -137,15 +137,15 @@ describe('syncClient outbound flush', () => {
 
     // Mutate the store — this fires the subscription → scheduleFlush.
     useProjectStore.getState().setProjectName('Edit 1');
-    // Mutate again at t~1s — should RESET the debounce timer.
-    vi.advanceTimersByTime(1000);
+    // Mutate again at t~500ms — should RESET the debounce timer.
+    vi.advanceTimersByTime(500);
     useProjectStore.getState().setProjectName('Edit 2');
 
-    // At t=1999 (999ms after the most recent edit) the timer hasn't fired.
+    // At t=1499 (999ms after the most recent edit) the timer hasn't fired.
     vi.advanceTimersByTime(999);
     expect(fetchSpy).not.toHaveBeenCalled();
 
-    // At t=2001 (1001ms after the most recent edit) the timer fires and
+    // At t=1501 (1001ms after the most recent edit) the timer fires and
     // flush() is invoked. Because flush is async (awaits fetch), we also
     // flush pending microtasks to let the fetch stub resolve.
     vi.advanceTimersByTime(2);
@@ -160,6 +160,56 @@ describe('syncClient outbound flush', () => {
     expect(Array.isArray(body.ops)).toBe(true);
 
     client.stop();
+  });
+
+  // Regression test for the bug where toggling between roof/diagram views
+  // (or any other unmount inside the 1 s debounce window) silently dropped
+  // the pending edit. ProjectEditor's unmount cleanup calls stop(), and
+  // the previous teardown path cleared the debounce timer without
+  // flushing — the next mount fetched the pre-edit doc from the server
+  // and the change disappeared.
+  //
+  // Fix lives in stop(): if a debounce timer is pending, fire one final
+  // flush() before tearing down. Fire-and-forget by necessity (React
+  // unmount cleanup is synchronous), but fetch() dispatches the request
+  // before returning the Promise, so the bytes are on the wire by the
+  // time control returns.
+  it('flushes pending debounced changes when stop() is called mid-debounce', async () => {
+    const serverDoc = fixtureProject({ name: 'Original' });
+    installPbFakes(serverRecord(serverDoc, 1));
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      json: () => Promise.resolve({ newRevision: 2 }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = createSyncClient('proj1');
+    await client.start();
+
+    // Edit the store — this schedules a debounced flush 1 s out.
+    useProjectStore.getState().setProjectName('Pending edit');
+
+    // Advance the clock by less than DEBOUNCE_MS so the timer hasn't
+    // fired yet — this models a fast view toggle / nav-away within the
+    // debounce window.
+    vi.advanceTimersByTime(300);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Unmount path: stop() should flush the pending change before the
+    // tear-down completes, even though the debounce timer never fired.
+    client.stop();
+    // flush() is async (awaits fetch); drain microtasks so the stub
+    // resolves and we can observe the call. The stop()-issued POST is
+    // already in flight — we're just waiting for the Promise chain to
+    // settle in the fake-timer environment.
+    await vi.runAllTimersAsync();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as { body: string }).body);
+    expect(body.fromRevision).toBe(1);
+    expect(Array.isArray(body.ops)).toBe(true);
+    expect(body.ops.length).toBeGreaterThan(0);
   });
 });
 
@@ -351,4 +401,4 @@ describe('syncClient gesture safety valve', () => {
 // isn't exported. Replicating it here keeps the tests' intent explicit
 // ("advance by the debounce window") and decoupled from the module
 // internals (if the production value changes, tests update in one place).
-const DEBOUNCE = 2000;
+const DEBOUNCE = 1000;

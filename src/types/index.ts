@@ -359,7 +359,8 @@ export type DiagramNodeType =
   | 'fuse'           // DC fuse array
   | 'battery'        // Optional energy storage
   | 'fre'            // Frequency relay / ESS controller
-  | 'gridOutput';    // Grid connection point
+  | 'gridOutput'     // Grid connection point
+  | 'consumer';      // House / on-site load (Verbraucher)
 
 /**
  * Data payload for a diagram node. Contains the display label and optional

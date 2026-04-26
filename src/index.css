@@ -79,6 +79,21 @@
      the atmospheric background gradients. */
   --glow-sun: rgba(96, 165, 250, 0.35);   /* aliased-name kept for back-compat */
   --glow-red: rgba(96, 165, 250, 0.35);
+
+  /* FRE node ink — the FRE diagram node renders its symbol (case body,
+     antenna, "FRE" text, mini switch, buttons) in a purple hue rather
+     than the regular ink. Light shade reads on the dark canvas; the
+     darker shade is swapped in under [data-pdf-export] (further down)
+     so the same symbol prints with strong contrast on white paper. */
+  --fre-ink: #c4b5fd;   /* violet-300 — light purple for the planner */
+
+  /* FRE node background fill — applied to BOTH the case body and the
+     LCD display rectangle so the device reads as one filled object
+     rather than a wireframe with a single recessed screen. The semi-
+     transparent black layers softly over the dark canvas; under
+     [data-pdf-export] this swaps to solid white so the printed PDF
+     gets clean light surfaces inside the violet outline. */
+  --fre-bg: rgba(0, 0, 0, 0.30);
 }
 
 /* ── Global resets ────────────────────────────────────────────────────── */
@@ -372,6 +387,15 @@ html, body, #root {
      dark theme because black on paper fades faster than white on ink. */
   --hairline: rgba(0, 0, 0, 0.08);
   --hairline-strong: rgba(0, 0, 0, 0.18);
+
+  /* FRE node ink swap — light purple (violet-300) is too washy on white
+     paper. Drop to a deep violet (violet-700) so the FRE's case body,
+     antenna, and "FRE" legend keep visual weight in the printed PDF. */
+  --fre-ink: #6d28d9;   /* violet-700 — dark purple for export */
+
+  /* FRE node background fill — flat white inside the violet outline so
+     the case body and display read as printable surfaces on paper. */
+  --fre-bg: #ffffff;
 }
 
 /* Sheet background — flat white with a soft gray dot grid that echoes

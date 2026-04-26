@@ -336,6 +336,7 @@ const de = {
       battery: 'Batterie',
       fre: 'FRE Controller',
       gridOutput: 'Netzeinspeisung',
+      consumer: 'Verbraucher',
     },
     meta: {
       customer:     'Kunde',

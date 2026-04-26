@@ -367,6 +367,7 @@ const en = {
       battery: 'Battery',
       fre: 'FRE Controller',
       gridOutput: 'Grid Output',
+      consumer: 'Consumer',
     },
     meta: {
       // Derived fields — read live from Project state, shown read-only

@@ -56,13 +56,13 @@ const GATED = process.env.RUN_INTEGRATION === '1';
 //
 // Keeps the test body clean ("wait until the store reflects X") without
 // pulling in @testing-library/dom or another polling library. The default
-// timeout is generous (8 s) to absorb the SyncClient's 2 s debounce plus
+// timeout is generous (8 s) to absorb the SyncClient's 1 s debounce plus
 // the full SSE round-trip latency that we see on slow CI.
 //
-// Why 8 s? The SyncClient has a 2 s DEBOUNCE_MS + PB migration/startup
-// adds up to 3-5 s on a cold tmpdir, so 8 s gives 3 s headroom. If this
-// proves too slow under CI, reduce the debounce in syncClient.ts (the
-// real improvement) rather than inflating the timeout here.
+// Why 8 s? The SyncClient has a 1 s DEBOUNCE_MS + PB migration/startup
+// adds up to 3-5 s on a cold tmpdir, so 8 s gives plenty of headroom. If
+// this proves too slow under CI, reduce the debounce in syncClient.ts
+// (the real improvement) rather than inflating the timeout here.
 // ────────────────────────────────────────────────────────────────────────────
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -124,7 +124,7 @@ describe.runIf(GATED)('store + SyncClient integration', () => {
     const { store } = mount;
 
     // Dispatch the name change through the store. The action goes through
-    // undoMiddleware (record policy) and schedules a 2 s debounce in
+    // undoMiddleware (record policy) and schedules a 1 s debounce in
     // SyncClient's store subscription.
     store.getState().setProjectName('after');
 

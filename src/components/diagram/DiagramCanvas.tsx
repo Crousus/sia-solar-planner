@@ -35,6 +35,7 @@ import FuseNode from './nodes/FuseNode';
 import BatteryNode from './nodes/BatteryNode';
 import FreNode from './nodes/FreNode';
 import GridOutputNode from './nodes/GridOutputNode';
+import ConsumerNode from './nodes/ConsumerNode';
 import EditableSmoothStepEdge from './edges/EditableSmoothStepEdge';
 
 // Map of node `type` strings to their React components. React Flow looks up
@@ -48,6 +49,7 @@ const nodeTypes = {
   battery: BatteryNode,
   fre: FreNode,
   gridOutput: GridOutputNode,
+  consumer: ConsumerNode,
 };
 
 // Custom edge renderer registry. `editableSmoothStep` is our smoothstep
@@ -58,11 +60,12 @@ const edgeTypes = {
   editableSmoothStep: EditableSmoothStepEdge,
 };
 
-// Default edge styling — a soft ink-200 hairline on the dark canvas. On a
-// dark background a pure-dark stroke vanishes, so edges are tuned bright
-// enough to read as deliberate lines but not loud enough to fight nodes.
-// Applied uniformly so every connection draws the same weight without
-// per-edge overrides.
+// Default edge styling — pure white on the dark editor canvas, swapped to
+// pure black under [data-pdf-export] (see index.css). Monochrome by design:
+// connections in a single-line diagram carry no per-wire semantic, so they
+// read as crisp uniform conductors rather than competing with the colored
+// node headers for attention. Applied uniformly so every connection draws
+// the same weight without per-edge overrides.
 // `smoothstep` gives orthogonal routing (horizontal + vertical segments)
 // with rounded corners at each turn — the standard schematic/electrical
 // look. Bezier edges (React Flow's default) produce "lasso" loops that
@@ -75,7 +78,7 @@ const defaultEdgeOptions = {
   type: 'editableSmoothStep',
   pathOptions: { borderRadius: 8 },
   style: {
-    stroke: 'rgba(197, 197, 204, 0.75)', // ~var(--ink-200) with a touch of alpha
+    stroke: 'rgba(255, 255, 255, 0.6)',
     strokeWidth: 2,
   } as React.CSSProperties,
 };
@@ -265,7 +268,7 @@ export default function DiagramCanvas() {
         /* Connection line (mid-drag) matches the default edge tone so the
            preview doesn't flash a different weight before committing. */
         .diagram-canvas .react-flow__connection-path {
-          stroke: rgba(197, 197, 204, 0.75);
+          stroke: rgba(255, 255, 255, 0.6);
           stroke-width: 1.25;
           stroke-dasharray: 4 3;
         }
@@ -283,6 +286,30 @@ export default function DiagramCanvas() {
         .diagram-canvas .react-flow__node.selected .diagram-node .react-flow__handle,
         .diagram-canvas .react-flow__node .diagram-node .react-flow__handle[data-connected="true"] {
           opacity: 1;
+        }
+        /* Per-node action buttons (currently only SwitchNode's rotate
+           control). Same hover-reveal pattern as the connection handles
+           so idle nodes stay visually clean — the button is only there
+           to be discovered. pointer-events:none while hidden stops the
+           invisible button from absorbing clicks meant for the canvas
+           behind it. */
+        .diagram-canvas .react-flow__node .diagram-node .diagram-rotate-btn {
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                      transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .diagram-canvas .react-flow__node:hover .diagram-node .diagram-rotate-btn,
+        .diagram-canvas .react-flow__node.selected .diagram-node .diagram-rotate-btn {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .diagram-canvas .react-flow__node .diagram-node .diagram-rotate-btn:hover {
+          background: rgba(30, 30, 33, 0.95);
+          color: var(--ink-50);
+        }
+        .diagram-canvas .react-flow__node .diagram-node .diagram-rotate-btn:active {
+          transform: scale(0.92);
         }
       `}</style>
     </div>

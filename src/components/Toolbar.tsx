@@ -93,7 +93,8 @@ const DIAGRAM_NODE_BUTTONS: ReadonlyArray<{
     | 'diagram.nodes.fuse'
     | 'diagram.nodes.battery'
     | 'diagram.nodes.fre'
-    | 'diagram.nodes.gridOutput';
+    | 'diagram.nodes.gridOutput'
+    | 'diagram.nodes.consumer';
   color: string;
 }> = [
   { type: 'switch',     labelKey: 'diagram.nodes.switch',     color: '#64748b' },
@@ -101,6 +102,7 @@ const DIAGRAM_NODE_BUTTONS: ReadonlyArray<{
   { type: 'battery',    labelKey: 'diagram.nodes.battery',    color: '#059669' },
   { type: 'fre',        labelKey: 'diagram.nodes.fre',        color: '#7c3aed' },
   { type: 'gridOutput', labelKey: 'diagram.nodes.gridOutput', color: '#0284c7' },
+  { type: 'consumer',   labelKey: 'diagram.nodes.consumer',   color: '#e11d48' },
 ];
 
 // Mode definitions. `glyph` is an inline SVG (instead of emoji) so the
@@ -626,7 +628,13 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
                       x: 200 + Math.random() * 200,
                       y: 200 + Math.random() * 100,
                     },
-                    data: { label },
+                    // Empty body label — every node renders the type as a
+                    // small uppercase caption already (e.g. "SWITCH"), so
+                    // pre-filling the editable body with the same word
+                    // would print the type twice. Leaving it blank turns
+                    // the body into an obvious "click here to name this"
+                    // affordance instead.
+                    data: { label: '' },
                   })
                 }
                 className="btn btn-ghost"

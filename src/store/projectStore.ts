@@ -1424,26 +1424,59 @@ export const useProjectStore = create<ProjectStore>()(
           'bootstrapDiagram',
         ),
 
+      // setDiagramNodes / setDiagramEdges / addDiagramNode all need to
+      // tolerate `project.diagram` being undefined. DiagramView's mount
+      // effect calls bootstrapDiagram(), but the toolbar's "add node"
+      // buttons live in App.tsx alongside DiagramView and can fire on
+      // the same paint as the diagram view first appears (or before the
+      // bootstrap effect commits in concurrent / strict-mode renders).
+      // They can also race with sync rehydration / remote patches that
+      // leave `diagram` momentarily missing. Rather than crash on a `!`
+      // dereference, lazily bootstrap a diagram on first write — same
+      // shape buildBootstrapDiagram would have produced — and then
+      // apply the mutation. Idempotent: a no-op once a diagram exists.
       setDiagramNodes: (nodes) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              diagram: { ...s.project.diagram!, nodes },
-            },
-          }),
+          (s) => {
+            const base =
+              s.project.diagram ??
+              buildBootstrapDiagram(
+                s.project.roofs,
+                s.project.panels,
+                s.project.inverters,
+                s.project.panelType,
+                s.project.name,
+              );
+            return {
+              project: {
+                ...s.project,
+                diagram: { ...base, nodes },
+              },
+            };
+          },
           false,
           'setDiagramNodes',
         ),
 
       setDiagramEdges: (edges) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              diagram: { ...s.project.diagram!, edges },
-            },
-          }),
+          (s) => {
+            const base =
+              s.project.diagram ??
+              buildBootstrapDiagram(
+                s.project.roofs,
+                s.project.panels,
+                s.project.inverters,
+                s.project.panelType,
+                s.project.name,
+              );
+            return {
+              project: {
+                ...s.project,
+                diagram: { ...base, edges },
+              },
+            };
+          },
           false,
           'setDiagramEdges',
         ),
@@ -1472,15 +1505,27 @@ export const useProjectStore = create<ProjectStore>()(
 
       addDiagramNode: (node) =>
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              diagram: {
-                ...s.project.diagram!,
-                nodes: [...s.project.diagram!.nodes, node],
+          (s) => {
+            // Same lazy-bootstrap rationale as setDiagramNodes above:
+            // toolbar add-node buttons are reachable before DiagramView's
+            // bootstrap effect has committed, so we cannot rely on
+            // `s.project.diagram` being defined here.
+            const base =
+              s.project.diagram ??
+              buildBootstrapDiagram(
+                s.project.roofs,
+                s.project.panels,
+                s.project.inverters,
+                s.project.panelType,
+                s.project.name,
+              );
+            return {
+              project: {
+                ...s.project,
+                diagram: { ...base, nodes: [...base.nodes, node] },
               },
-            },
-          }),
+            };
+          },
           false,
           'addDiagramNode',
         ),

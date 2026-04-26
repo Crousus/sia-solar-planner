@@ -234,6 +234,34 @@ function collectDiagramTexts(root: HTMLElement): Array<DiagramTextRun & { el: HT
     if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) {
       continue;
     }
+    // Also skip when an ancestor (up to root) hides the subtree. CSS opacity
+    // composes multiplicatively: a wrapper with `opacity: 0` makes its
+    // descendants visually invisible in the rasterised capture, but
+    // getComputedStyle on a descendant still returns that descendant's *own*
+    // opacity. Without this walk, placeholder UI like the edge label's
+    // "double-click" chip — which lives inside an `opacity: 0` wrapper when
+    // the edge has no real label — gets re-emitted as visible PDF text on
+    // top of an otherwise-hidden region. Same logic for display/visibility,
+    // although those are already inherited so the per-element check usually
+    // catches them; we re-check here for symmetry and to cover the rare
+    // case where a child overrides `display: none` to `display: block`.
+    {
+      let hiddenByAncestor = false;
+      let p: HTMLElement | null = el.parentElement;
+      while (p && p !== root) {
+        const pcs = window.getComputedStyle(p);
+        if (
+          pcs.display === 'none' ||
+          pcs.visibility === 'hidden' ||
+          parseFloat(pcs.opacity) === 0
+        ) {
+          hiddenByAncestor = true;
+          break;
+        }
+        p = p.parentElement;
+      }
+      if (hiddenByAncestor) continue;
+    }
 
     // Raw value: input.value when it's a form field, otherwise the
     // element's direct text (collapsed whitespace). Empty inputs produce
@@ -386,6 +414,45 @@ export async function captureDiagramView(el: HTMLElement): Promise<{
   }));
   for (const r of runs) r.el.style.color = 'transparent';
 
+  // 3) Swap edge stroke to print-black inline. Why this isn't done via the
+  //    `[data-pdf-export]` stylesheet override (it tries — see index.css):
+  //    React Flow's BaseEdge renders the edge path as <path style="stroke:
+  //    rgba(255,255,255,0.6); ..."> using the inline `style` prop from
+  //    defaultEdgeOptions. The cascaded computed style with !important
+  //    DOES resolve to the override on the live DOM, but html-to-image
+  //    serialises each cloned element's *own* inline `style` attribute
+  //    verbatim into the foreignObject — bypassing computed-style resolution
+  //    for inline-set properties on SVG elements. Result: the white stroke
+  //    survives into the rasterised PNG and is invisible on the white PDF
+  //    background. Mirroring the text-color swap above (inline `stroke:
+  //    #000` on every edge path) is the simplest robust fix; we restore on
+  //    teardown so the editor view returns to its dark-mode white strokes.
+  const edgePaths = Array.from(
+    el.querySelectorAll<SVGPathElement>(
+      '.react-flow__edge-path, .react-flow__connection-path',
+    ),
+  );
+  const savedStrokes: Array<{ el: SVGPathElement; prev: string }> = edgePaths.map((p) => ({
+    el: p,
+    prev: p.style.stroke,
+  }));
+  for (const p of edgePaths) p.style.stroke = 'rgba(0, 0, 0, 0.7)';
+
+  // Switch node SVGs use the same editor white as edges (matched stroke
+  // tone so the switch reads as part of the wiring system). They draw via
+  // `currentColor` from `style.color` on the <svg>, so swapping `color`
+  // recolours the strokes AND the contact/pivot dots in one move. Same
+  // reasoning as edges: html-to-image preserves the literal inline style,
+  // so we have to swap inline rather than rely on a stylesheet override.
+  const switchSvgs = Array.from(
+    el.querySelectorAll<SVGSVGElement>('svg[data-switch-symbol="true"]'),
+  );
+  const savedSwitchColors: Array<{ el: SVGSVGElement; prev: string }> = switchSvgs.map((s) => ({
+    el: s,
+    prev: s.style.color,
+  }));
+  for (const s of switchSvgs) s.style.color = 'rgba(0, 0, 0, 0.7)';
+
   try {
     const image = await toPng(el, {
       width: 1122,
@@ -413,6 +480,16 @@ export async function captureDiagramView(el: HTMLElement): Promise<{
     for (let i = savedColors.length - 1; i >= 0; i--) {
       const { el: tEl, prev } = savedColors[i];
       tEl.style.color = prev;
+    }
+    // Restore edge strokes the same way.
+    for (let i = savedStrokes.length - 1; i >= 0; i--) {
+      const { el: pEl, prev } = savedStrokes[i];
+      pEl.style.stroke = prev;
+    }
+    // And the switch SVG colors.
+    for (let i = savedSwitchColors.length - 1; i >= 0; i--) {
+      const { el: sEl, prev } = savedSwitchColors[i];
+      sEl.style.color = prev;
     }
     el.removeAttribute('data-pdf-export');
   }

@@ -63,12 +63,12 @@ import { diffProjects, type Op } from './diff';
 import { useProjectStore } from '../store/projectStore';
 import type { Project } from '../types';
 
-// 2 seconds chosen to balance "feels instant to collaborators" against
+// 1 second chosen to balance "feels instant to collaborators" against
 // "batches enough keystrokes into one patch to be efficient". Rapid
 // scrub gestures (vertex drags, slider scrubs) are additionally held
 // via beginGesture/endGesture so the debounce timer never fires mid-
 // gesture — see gesture section below.
-const DEBOUNCE_MS = 2000;
+const DEBOUNCE_MS = 1000;
 
 // Per-tab identifier used by the SSE self-filter (see subscribeSse).
 //
@@ -467,12 +467,12 @@ export function createSyncClient(projectId: string): SyncClient {
   //
   // A "gesture" is a continuous interaction (vertex drag, slider scrub,
   // panel paint-drag) that produces many store writes in rapid succession.
-  // Without these hooks, the 2s debounce would still eventually fire —
+  // Without these hooks, the 1s debounce would still eventually fire —
   // but during the gesture, two bad things could happen:
   //   1. An inbound patch from a collaborator would yank the data out
   //      from under the user's pointer (polygon vertex they're dragging
   //      suddenly moves).
-  //   2. The debounce timer could fire if the gesture paused > 2s,
+  //   2. The debounce timer could fire if the gesture paused > 1s,
   //      uploading a half-committed state.
   // Both are prevented by bracketing gestures with begin/end hooks.
 
@@ -615,8 +615,50 @@ export function createSyncClient(projectId: string): SyncClient {
     },
 
     stop() {
+      // ── Final flush before tear-down ────────────────────────────────
+      //
+      // Why: store changes are debounced (DEBOUNCE_MS = 1 s) so rapid
+      // edits batch into one POST. If the user edits something and then
+      // unmounts the editor inside that 1 s window — by toggling between
+      // roof and diagram views (each view lives at a separate Route, so
+      // the toggle remounts ProjectEditor), navigating away from the
+      // project, or simply closing the tab — the previous teardown path
+      // (clear timer, drop store) would silently discard the edit. The
+      // next mount fetches the pre-edit doc from the server and the
+      // change is gone.
+      //
+      // The fix is to fire one last flush() before tearing down. It's
+      // fire-and-forget by necessity: React's unmount cleanup must run
+      // synchronously, so we can't await the POST. We don't have to,
+      // either — fetch() dispatches the request immediately and returns
+      // a Promise; the network bytes are on the wire by the time control
+      // returns to us. The browser keeps the request alive after this
+      // client's closure becomes unreachable. The success/failure
+      // handlers still run, but they only mutate closure-local vars
+      // (which are detached) and call setStatus on `listeners` (already
+      // empty — ProjectEditor unsubscribes its status listener BEFORE
+      // calling stop, see ProjectEditor.tsx).
+      //
+      // Order matters: flush()'s first line is `if (stopped) return;`,
+      // so we must call flush() BEFORE setting stopped=true, otherwise
+      // the very call we're trying to make would be cancelled.
+      //
+      // Edge: if a POST is already in flight at stop time, flush() will
+      // early-return on its `if (postInFlight) return;` guard, and any
+      // edit made during that POST won't be flushed. This is rare (the
+      // user would need to start an edit, wait <1s for the timer to
+      // expire and flush, then immediately make another edit and unmount
+      // before the in-flight POST returns). Accepting that edge for
+      // simplicity — fixing it would require either an async stop()
+      // (which React unmount can't await) or a deferred flush queue
+      // tracked across component remounts. Both are heavier than the
+      // edge warrants.
+      if (debounceTimer != null) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+        void flush();
+      }
       stopped = true;
-      if (debounceTimer != null) clearTimeout(debounceTimer);
       storeUnsub?.();
       sseUnsub?.();
       windowListenersUnsub?.();
