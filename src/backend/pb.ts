@@ -91,3 +91,79 @@ export function currentUser() {
 export function onAuthChange(cb: (user: unknown) => void) {
   return pb.authStore.onChange((_token, record) => cb(record));
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Sign-out + local data hygiene
+//
+// The app has stored project data in localStorage under `solar-planner-*`
+// keys (notably the legacy `solar-planner-project` blob: the last opened
+// project incl. customer address, notes and the captured map image).
+// Clearing only the auth token on sign-out left that blob behind for the
+// next person on the same machine — and maybeImportLocalStorage would
+// import it into THEIR team. Every sign-out must therefore go through
+// signOutUser(), and installAuthUserGuard() wipes the data whenever a
+// DIFFERENT user authenticates (covers expired sessions, where nobody
+// clicked "sign out").
+//
+// Not cleared: `i18nextLng` (language preference, not user data) and
+// PocketBase's own `pocketbase_auth` (authStore.clear() handles it).
+// ────────────────────────────────────────────────────────────────────────
+
+const APP_KEY_PREFIX = 'solar-planner-';
+const LAST_USER_KEY = 'solar-planner-last-user';
+
+function clearPrefixed(storage: Storage | undefined) {
+  if (!storage) return;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (k && k.startsWith(APP_KEY_PREFIX)) keys.push(k);
+    }
+    for (const k of keys) storage.removeItem(k);
+  } catch {
+    // Storage disabled (privacy mode) — nothing persisted to clear.
+  }
+}
+
+/** Remove every app-owned key from localStorage and sessionStorage. */
+export function clearAppLocalData(): void {
+  clearPrefixed(typeof localStorage !== 'undefined' ? localStorage : undefined);
+  clearPrefixed(typeof sessionStorage !== 'undefined' ? sessionStorage : undefined);
+}
+
+/**
+ * The one sign-out path. Clears app data BEFORE the token so nothing
+ * reacting to the auth change can read (or re-persist) the old user's
+ * data in between.
+ */
+export function signOutUser(): void {
+  clearAppLocalData();
+  pb.authStore.clear();
+}
+
+/**
+ * Wipe app data when a different user signs in than the one last seen
+ * in this browser. Remembers the last user id across sign-outs-by-expiry
+ * (an explicit signOutUser() clears it along with everything else, which
+ * is fine — the data it guards was cleared too). The very first user on
+ * a browser (no record yet) does NOT trigger a wipe, so a genuine
+ * pre-auth draft survives until maybeImportLocalStorage can offer it.
+ *
+ * Call once at app start (AppShell); returns an unsubscribe.
+ */
+export function installAuthUserGuard(): () => void {
+  const remember = (id: string) => {
+    try { localStorage.setItem(LAST_USER_KEY, id); } catch { /* ignore */ }
+  };
+  const check = (record: { id?: string } | null) => {
+    const id = record?.id;
+    if (!id) return; // signed out / expired: keep LAST_USER_KEY
+    let last: string | null = null;
+    try { last = localStorage.getItem(LAST_USER_KEY); } catch { /* ignore */ }
+    if (last && last !== id) clearAppLocalData();
+    remember(id);
+  };
+  check(pb.authStore.record as { id?: string } | null);
+  return pb.authStore.onChange((_token, record) => check(record as { id?: string } | null));
+}

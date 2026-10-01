@@ -40,7 +40,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { PanelModelRecord, ProjectRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
 import type { Project } from '../types';
 import { initialProject, panelTypeFromCatalogRecord } from '../store/projectStore';
@@ -109,7 +109,9 @@ export default function NewProjectPage() {
   }, [teamId, user, navigate, t]);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -167,7 +169,7 @@ export default function NewProjectPage() {
 
   return (
     <PageShell
-      label="FIG_04 · NEW PROJECT"
+      label={t('shell.figNewProject')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="default"

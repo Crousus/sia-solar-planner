@@ -27,7 +27,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import { formatErrorForUser } from '../utils/errorClassify';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
@@ -45,7 +45,9 @@ export default function NewTeamPage() {
   const [error, setError] = useState<string | null>(null);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -78,7 +80,7 @@ export default function NewTeamPage() {
 
   return (
     <PageShell
-      label="FIG_03 · NEW TEAM"
+      label={t('shell.figNewTeam')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="narrow"
@@ -93,7 +95,7 @@ export default function NewTeamPage() {
       </div>
 
       <div className="mb-8">
-        <span className="tech-label">CREATE</span>
+        <span className="tech-label">{t('team.newTeamKicker')}</span>
         <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
           {t('team.newTeam')}
         </h1>

@@ -308,3 +308,123 @@ describe('applyRemotePatch', () => {
     expect(store().past.length).toBe(before); // unchanged → bypass
   });
 });
+
+// ── updateRoof tilt: clamp + re-layout (audit findings 3 & 4) ─────────────
+
+describe('updateRoof tilt', () => {
+  const BIG = [
+    { x: 0, y: 0 },
+    { x: 200, y: 0 },
+    { x: 200, y: 200 },
+    { x: 0, y: 200 },
+  ];
+  const lock = () =>
+    store().lockMap({
+      centerLat: 48, centerLng: 11, zoom: 19, mpp: 0.1,
+      capturedImage: 'x', capturedWidth: 200, capturedHeight: 200,
+    });
+  const cellH = (tiltDeg: number) =>
+    (store().project.panelType.heightM * Math.cos((tiltDeg * Math.PI) / 180)) / 0.1;
+
+  it('clamps tilt into [0, 60]', () => {
+    const id = store().addRoof(BIG);
+    store().updateRoof(id, { tiltDeg: 90 });
+    expect(store().project.roofs[0].tiltDeg).toBe(60);
+    store().updateRoof(id, { tiltDeg: -5 });
+    expect(store().project.roofs[0].tiltDeg).toBe(0);
+    store().updateRoof(id, { tiltDeg: Number.NaN });
+    expect(store().project.roofs[0].tiltDeg).toBe(30);
+  });
+
+  it('re-lays out panel groups along the slope and is reversible', () => {
+    lock();
+    const id = store().addRoof(BIG);
+    store().updateRoof(id, { tiltDeg: 60 });
+    // Anchor + a panel 10 cells further along the slope axis (y — the
+    // square's primary edge is horizontal).
+    store().addPanel(id, 100, 100, 'g1', 'portrait');
+    store().addPanel(id, 100, 100 + 10 * cellH(60), 'g1', 'portrait');
+    const dist = () => {
+      const [a, b] = store().project.panels;
+      return Math.hypot(b.cx - a.cx, b.cy - a.cy);
+    };
+    const depth = store().past.length;
+
+    const res = store().updateRoof(id, { tiltDeg: 0 });
+    expect(dist()).toBeCloseTo(10 * cellH(0), 6);
+    // Flattening pushed the far panel past the roof edge: reported, NOT deleted.
+    expect(res.unfitPanelIds).toEqual([store().project.panels[1].id]);
+    expect(store().project.panels).toHaveLength(2);
+    // Anchor never moves.
+    expect(store().project.panels[0].cy).toBe(100);
+
+    store().updateRoof(id, { tiltDeg: 60 });
+    expect(dist()).toBeCloseTo(10 * cellH(60), 6);
+    // The whole scrub (tilt + panel moves) is one coalesced undo step, and
+    // this one cancelled itself out entirely.
+    expect(store().past.length).toBeLessThanOrEqual(depth + 1);
+  });
+
+  it('tilt change + re-layout is a single undo step', () => {
+    lock();
+    const id = store().addRoof(BIG);
+    store().addPanel(id, 100, 100, 'g1', 'portrait');
+    store().addPanel(id, 100, 100 + cellH(30), 'g1', 'portrait');
+    const before = store().project.panels.map((p) => p.cy);
+    store().updateRoof(id, { tiltDeg: 10 });
+    expect(store().project.panels[1].cy).not.toBeCloseTo(before[1], 3);
+    store().undo();
+    expect(store().project.roofs[0].tiltDeg).toBe(30);
+    expect(store().project.panels.map((p) => p.cy)).toEqual(before);
+  });
+
+  it('non-tilt updates do not move panels', () => {
+    lock();
+    const id = store().addRoof(BIG);
+    store().addPanel(id, 100, 100, 'g1', 'portrait');
+    store().addPanel(id, 100, 130, 'g1', 'portrait');
+    const panels = store().project.panels;
+    const res = store().updateRoof(id, { name: 'renamed' });
+    expect(store().project.panels).toBe(panels);
+    expect(res.unfitPanelIds).toEqual([]);
+  });
+});
+
+// ── Diagram transient-field stripping (audit finding 5) ───────────────────
+
+describe('diagram setters strip React Flow runtime fields', () => {
+  it('setDiagramNodes / addDiagramNode / setDiagramEdges drop selection + measurement', () => {
+    store().setDiagramNodes([
+      {
+        id: 'n1', type: 'switch', position: { x: 1, y: 2 }, data: { label: 'S' },
+        selected: true, dragging: true, measured: { width: 10, height: 10 }, width: 10, height: 10,
+      } as any,
+    ]);
+    store().addDiagramNode({ id: 'n2', type: 'fuse', position: { x: 0, y: 0 }, data: { label: 'F' }, selected: true } as any);
+    store().setDiagramEdges([
+      { id: 'e1', source: 'n1', sourceHandle: 'a', target: 'n2', targetHandle: 'b', selected: true } as any,
+    ]);
+    const d = store().project.diagram!;
+    expect(d.nodes).toEqual([
+      { id: 'n1', type: 'switch', position: { x: 1, y: 2 }, data: { label: 'S' } },
+      { id: 'n2', type: 'fuse', position: { x: 0, y: 0 }, data: { label: 'F' } },
+    ]);
+    expect(d.edges).toEqual([{ id: 'e1', source: 'n1', sourceHandle: 'a', target: 'n2', targetHandle: 'b' }]);
+  });
+});
+
+// ── No localStorage persistence (audit finding 2) ─────────────────────────
+
+describe('persistence', () => {
+  it('never writes the project to localStorage', () => {
+    localStorage.clear();
+    store().addRoof(SQUARE);
+    store().lockMap({
+      centerLat: 48, centerLng: 11, zoom: 19, mpp: 0.1,
+      capturedImage: 'BIG', capturedWidth: 1, capturedHeight: 1,
+    });
+    store().setDiagramNodes([]);
+    expect(localStorage.getItem('solar-planner-project')).toBeNull();
+    expect(localStorage.length).toBe(0);
+  });
+});

@@ -48,12 +48,27 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { InverterModelRecord, PanelModelRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
 import { pushToast } from '../store/toastStore';
 import { formatErrorForUser } from '../utils/errorClassify';
+import { safeHttpUrl } from '../utils/safeUrl';
+
+// ── Ownership gate ─────────────────────────────────────────────────────
+// panel_models / inverter_models are a GLOBAL catalog shared by every
+// team, so the server stamps `created_by` on create and its update/delete
+// rules only let the creator touch a row (others get a 404). Rows with an
+// empty created_by predate that rule and stay editable by anyone signed
+// in. We mirror the rule here purely as UX — hiding buttons that would
+// only produce a confusing "not found" — the server remains the gate.
+// Read through `unknown` so this works whether or not the hand-maintained
+// record mirror in backend/types.ts carries the field yet.
+function canModifyCatalogRow(r: unknown, userId: string | undefined): boolean {
+  const createdBy = (r as { created_by?: unknown }).created_by;
+  return !createdBy || createdBy === userId;
+}
 
 // ── Datasheet import helpers ───────────────────────────────────────────────────
 // These types mirror the JSON the ocr-service returns after LLM extraction.
@@ -208,7 +223,9 @@ export default function CatalogPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -312,19 +329,13 @@ export default function CatalogPage() {
   async function handleDeletePanel(id: string) {
     if (!confirm(t('catalog.deletePanelConfirm'))) return;
     try {
-      // Check for references before deciding between hard vs soft delete.
-      // getList(1, 1) asks for a single row just to read totalItems —
-      // cheap and doesn't pull any doc data back.
-      const refs = await pb.collection('projects').getList(1, 1, {
-        filter: `panel_model="${id}"`,
-      });
-      if (refs.totalItems > 0) {
-        // Soft delete — flip deleted=true so pickers hide it but
-        // existing projects still resolve the expand.
-        await pb.collection('panel_models').update(id, { deleted: true });
-      } else {
-        await pb.collection('panel_models').delete(id);
-      }
+      // A plain DELETE: for regular users the server turns it into a
+      // soft delete (deleted=true, 204) so projects referencing the row
+      // keep resolving it, while pickers and this list (filter
+      // deleted=false) stop showing it. The previous client-side
+      // "referenced? soft : hard" check could only see the caller's own
+      // team's projects and so wasn't a safe basis for a hard delete.
+      await pb.collection('panel_models').delete(id);
       setPanels((prev) => (prev ?? []).filter((p) => p.id !== id));
       if (editingPanelId === id) setEditingPanelId(null);
     } catch (err: unknown) {
@@ -395,8 +406,8 @@ export default function CatalogPage() {
   }
 
   async function handleDeleteInverter(id: string) {
-    // No FK to check for — inverter models are referenced only inside
-    // opaque doc JSON. Always hard delete. The confirm copy mentions
+    // Inverter models are referenced only inside opaque doc JSON. The
+    // server soft-deletes on DELETE (see handleDeletePanel). The confirm copy mentions
     // that linked inverters will simply show "no model" after delete,
     // so the user isn't surprised by downstream UI behavior.
     if (!confirm(t('catalog.deleteInverterConfirm'))) return;
@@ -415,7 +426,7 @@ export default function CatalogPage() {
 
   return (
     <PageShell
-      label="FIG_05 · CATALOG"
+      label={t('shell.figCatalog')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="default"
@@ -492,6 +503,7 @@ export default function CatalogPage() {
               onCancel={cancelPanelEdit}
               onStartEdit={startEditPanel}
               onDelete={handleDeletePanel}
+              userId={user?.id}
               busy={busy}
               formError={formError}
             />
@@ -505,6 +517,7 @@ export default function CatalogPage() {
               onCancel={cancelInverterEdit}
               onStartEdit={startEditInverter}
               onDelete={handleDeleteInverter}
+              userId={user?.id}
               busy={busy}
               formError={formError}
             />
@@ -535,6 +548,8 @@ interface PanelsTabProps {
   onCancel: () => void;
   onStartEdit: (r: PanelModelRecord) => void;
   onDelete: (id: string) => void;
+  /** Current user's id — gates edit/delete via canModifyCatalogRow. */
+  userId: string | undefined;
   busy: boolean;
   formError: string | null;
 }
@@ -705,9 +720,12 @@ function PanelsTab(p: PanelsTabProps) {
                 <input className="input flex-1" type="url" value={p.form.datasheetUrl} onChange={field('datasheetUrl')} placeholder="https://…" maxLength={500} />
                 {/* Inline verify link — opens the URL in a new tab so
                     the user can confirm the datasheet is right. */}
-                {p.form.datasheetUrl.trim() && (
+                {/* Only linkify absolute http(s) URLs (safeHttpUrl) — a
+                    `javascript:` value must never become a clickable href.
+                    The raw text is already visible in the input. */}
+                {safeHttpUrl(p.form.datasheetUrl) && (
                   <a
-                    href={p.form.datasheetUrl.trim()}
+                    href={safeHttpUrl(p.form.datasheetUrl) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-ghost"
@@ -823,9 +841,20 @@ function PanelsTab(p: PanelsTabProps) {
                     {r.efficiencyPct ? ` · ${r.efficiencyPct}%` : ''}
                   </span>
                 </div>
-                {r.datasheetUrl && (
+                {/* Catalog rows are writable by other users, so the URL
+                    is untrusted: link only http(s), otherwise show the raw
+                    value as inert text. */}
+                {r.datasheetUrl && !safeHttpUrl(r.datasheetUrl) && (
+                  <span
+                    className="font-mono text-[11px] text-ink-400 truncate shrink-0 max-w-[160px]"
+                    title={r.datasheetUrl}
+                  >
+                    {r.datasheetUrl}
+                  </span>
+                )}
+                {safeHttpUrl(r.datasheetUrl) && (
                   <a
-                    href={r.datasheetUrl}
+                    href={safeHttpUrl(r.datasheetUrl) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-ink-300 hover:text-sun-300 shrink-0"
@@ -835,14 +864,20 @@ function PanelsTab(p: PanelsTabProps) {
                     ↗
                   </a>
                 )}
-                <div className="flex gap-2 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                  <button onClick={() => p.onStartEdit(r)} className="btn btn-ghost relative" style={{ padding: '6px 11px', fontSize: 13 }}>
-                    {t('catalog.edit')}
-                  </button>
-                  <button onClick={() => p.onDelete(r.id)} className="btn btn-danger relative" style={{ padding: '6px 11px', fontSize: 13 }}>
-                    {t('catalog.delete')}
-                  </button>
-                </div>
+                {canModifyCatalogRow(r, p.userId) ? (
+                  <div className="flex gap-2 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <button onClick={() => p.onStartEdit(r)} className="btn btn-ghost relative" style={{ padding: '6px 11px', fontSize: 13 }}>
+                      {t('catalog.edit')}
+                    </button>
+                    <button onClick={() => p.onDelete(r.id)} className="btn btn-danger relative" style={{ padding: '6px 11px', fontSize: 13 }}>
+                      {t('catalog.delete')}
+                    </button>
+                  </div>
+                ) : (
+                  <span className="chip shrink-0" style={{ fontSize: 10 }} title={t('catalog.readOnlyHint')}>
+                    {t('catalog.readOnly')}
+                  </span>
+                )}
               </div>
             </li>
           ))}
@@ -862,6 +897,8 @@ interface InvertersTabProps {
   onCancel: () => void;
   onStartEdit: (r: InverterModelRecord) => void;
   onDelete: (id: string) => void;
+  /** Current user's id — gates edit/delete via canModifyCatalogRow. */
+  userId: string | undefined;
   busy: boolean;
   formError: string | null;
 }
@@ -1004,9 +1041,12 @@ function InvertersTab(p: InvertersTabProps) {
               <span className="field-label">{t('inverterModel.datasheetUrl')}</span>
               <div className="flex gap-2 items-center">
                 <input className="input flex-1" type="url" value={p.form.datasheetUrl} onChange={field('datasheetUrl')} placeholder="https://…" maxLength={500} />
-                {p.form.datasheetUrl.trim() && (
+                {/* Only linkify absolute http(s) URLs (safeHttpUrl) — a
+                    `javascript:` value must never become a clickable href.
+                    The raw text is already visible in the input. */}
+                {safeHttpUrl(p.form.datasheetUrl) && (
                   <a
-                    href={p.form.datasheetUrl.trim()}
+                    href={safeHttpUrl(p.form.datasheetUrl) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-ghost"
@@ -1097,9 +1137,20 @@ function InvertersTab(p: InvertersTabProps) {
                     {r.efficiencyPct ? ` · ${r.efficiencyPct}%` : ''}
                   </span>
                 </div>
-                {r.datasheetUrl && (
+                {/* Catalog rows are writable by other users, so the URL
+                    is untrusted: link only http(s), otherwise show the raw
+                    value as inert text. */}
+                {r.datasheetUrl && !safeHttpUrl(r.datasheetUrl) && (
+                  <span
+                    className="font-mono text-[11px] text-ink-400 truncate shrink-0 max-w-[160px]"
+                    title={r.datasheetUrl}
+                  >
+                    {r.datasheetUrl}
+                  </span>
+                )}
+                {safeHttpUrl(r.datasheetUrl) && (
                   <a
-                    href={r.datasheetUrl}
+                    href={safeHttpUrl(r.datasheetUrl) ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-ink-300 hover:text-sun-300 shrink-0"
@@ -1109,14 +1160,20 @@ function InvertersTab(p: InvertersTabProps) {
                     ↗
                   </a>
                 )}
-                <div className="flex gap-2 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                  <button onClick={() => p.onStartEdit(r)} className="btn btn-ghost relative" style={{ padding: '6px 11px', fontSize: 13 }}>
-                    {t('catalog.edit')}
-                  </button>
-                  <button onClick={() => p.onDelete(r.id)} className="btn btn-danger relative" style={{ padding: '6px 11px', fontSize: 13 }}>
-                    {t('catalog.delete')}
-                  </button>
-                </div>
+                {canModifyCatalogRow(r, p.userId) ? (
+                  <div className="flex gap-2 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <button onClick={() => p.onStartEdit(r)} className="btn btn-ghost relative" style={{ padding: '6px 11px', fontSize: 13 }}>
+                      {t('catalog.edit')}
+                    </button>
+                    <button onClick={() => p.onDelete(r.id)} className="btn btn-danger relative" style={{ padding: '6px 11px', fontSize: 13 }}>
+                      {t('catalog.delete')}
+                    </button>
+                  </div>
+                ) : (
+                  <span className="chip shrink-0" style={{ fontSize: 10 }} title={t('catalog.readOnlyHint')}>
+                    {t('catalog.readOnly')}
+                  </span>
+                )}
               </div>
             </li>
           ))}

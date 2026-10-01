@@ -1,6 +1,6 @@
 # ADR-014: App-Wide Undo / Redo via Custom Zustand Middleware
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by ADR-015 (§4 snapshot history, §8 persist wrapping, and the localStorage parts of §1/§9)
 - **Date:** 2026-04-21
 - **Requirement:** Give users a reliable Cmd/Ctrl+Z across every project-data mutation — roofs, panels, strings, inverters, drags, renames — without corrupting the captured satellite image, without bloating memory, and without losing history across JSON save/load.
 

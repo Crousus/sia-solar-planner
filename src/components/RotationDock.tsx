@@ -28,6 +28,8 @@
 //     (e.g. reset also snapping a residual fraction). Let the parent decide.
 // ────────────────────────────────────────────────────────────────────────────
 
+import { useTranslation } from 'react-i18next';
+
 interface Props {
   /** Apply a relative rotation in degrees (e.g. -15, +15). */
   onRotate: (deltaDeg: number) => void;
@@ -36,6 +38,7 @@ interface Props {
 }
 
 export default function RotationDock({ onRotate, onReset }: Props) {
+  const { t } = useTranslation();
   return (
     <div className="absolute bottom-6 right-6 z-[600]">
       <div
@@ -46,13 +49,14 @@ export default function RotationDock({ onRotate, onReset }: Props) {
           className="font-mono uppercase tracking-wider px-2"
           style={{ fontSize: 9.5, color: 'var(--ink-400)' }}
         >
-          Rotate
+          {t('editor.rotate')}
         </span>
         <button
           className="btn btn-tool"
           style={{ width: 26, height: 26, padding: 0, justifyContent: 'center', fontSize: 14 }}
           onClick={() => onRotate(-15)}
-          title="Rotate Left 15°"
+          title={t('editor.rotateLeft15')}
+          aria-label={t('editor.rotateLeft15')}
         >
           ↺
         </button>
@@ -60,7 +64,8 @@ export default function RotationDock({ onRotate, onReset }: Props) {
           className="btn btn-tool"
           style={{ width: 26, height: 26, padding: 0, justifyContent: 'center', fontSize: 14 }}
           onClick={() => onRotate(15)}
-          title="Rotate Right 15°"
+          title={t('editor.rotateRight15')}
+          aria-label={t('editor.rotateRight15')}
         >
           ↻
         </button>
@@ -69,9 +74,9 @@ export default function RotationDock({ onRotate, onReset }: Props) {
           className="btn btn-tool"
           style={{ padding: '4px 8px', fontSize: 11 }}
           onClick={onReset}
-          title="Reset Rotation"
+          title={t('editor.resetRotation')}
         >
-          Reset
+          {t('editor.reset')}
         </button>
       </div>
     </div>

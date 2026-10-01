@@ -31,7 +31,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { TeamMemberRecord, TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -58,7 +58,9 @@ export default function TeamBrandingPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -153,7 +155,7 @@ export default function TeamBrandingPage() {
 
   return (
     <PageShell
-      label="FIG_07 · BRANDING"
+      label={t('shell.figBranding')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="narrow"
@@ -168,7 +170,7 @@ export default function TeamBrandingPage() {
       </div>
 
       <div className="mb-8">
-        <span className="tech-label">EXPORTS</span>
+        <span className="tech-label">{t('branding.kicker')}</span>
         <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
           {t('branding.title')}
         </h1>

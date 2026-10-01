@@ -35,6 +35,12 @@ const en = {
     createOne: 'Create one →',
     signInLink: 'Sign in →',
     pendingApproval: 'Account created — an administrator will approve your registration before you can sign in.',
+    pendingApprovalSignIn: 'Your account is still awaiting approval by an administrator. Please try again later.',
+    // Decorative corner markers on the login hero (aria-hidden).
+    authStateSignIn: 'AUTH · 01 SIGN-IN',
+    authStateRegister: 'AUTH · 02 REGISTER',
+    returnToSubmit: '↵ RETURN TO SUBMIT',
+    tagline: 'Planner · precision PV layout',
   },
   account: {
     title: 'Your account',
@@ -44,6 +50,7 @@ const en = {
     save: 'Save',
     saving: 'Saving…',
     saved: 'Saved.',
+    kicker: 'PROFILE',
   },
   branding: {
     title: 'Team branding',
@@ -56,6 +63,7 @@ const en = {
     companyNameLabel: 'Company name',
     companyNamePlaceholder: 'e.g. Acme Solar GmbH',
     readOnly: 'Only team admins can edit branding.',
+    kicker: 'EXPORTS',
   },
   toolbar: {
     lockMap: 'Lock Map',
@@ -78,6 +86,22 @@ const en = {
     exportFailedGeneral: 'Export failed — see console for details.',
     loadFailed: 'Could not read project file: {{message}}',
     loadFailedGeneral: 'Failed to load project: {{message}}',
+    // Tooltips. `{{label}}`/`{{key}}`/`{{shortcut}}` are filled by the caller.
+    modeTitle: '{{label}} — press {{key}}',
+    backToProjects: 'Back to projects',
+    capturingSatellite: 'Capturing satellite view…',
+    clickToUnlock: 'Click to unlock',
+    clickToLock: 'Click to lock and start drawing',
+    basemapProvider: 'Satellite imagery provider',
+    addNode: 'Add {{label}}',
+    hideBackdrop: 'Hide satellite backdrop',
+    showBackdrop: 'Show satellite backdrop',
+    exportTitle: 'Export A4 landscape PDF',
+    undoTitle: 'Undo ({{shortcut}})',
+    redoTitle: 'Redo ({{shortcut}})',
+    saveJson: 'Save project JSON',
+    loadJson: 'Load project JSON',
+    resetTitle: 'Reset entire project',
   },
   sidebar: {
     // View toggle labels — sit at the top of the sidebar and switch the
@@ -122,16 +146,33 @@ const en = {
       '1 placed panel no longer fits under the new dimensions ({{w}} × {{h}} m). Delete it and proceed?',
     panelResizeConfirm_other:
       '{{count}} placed panels no longer fit under the new dimensions ({{w}} × {{h}} m). Delete them and proceed?',
+    tiltUnfitConfirm_one:
+      '1 placed panel no longer fits on the roof at {{tilt}}° tilt. Delete it?',
+    tiltUnfitConfirm_other:
+      '{{count}} placed panels no longer fit on the roof at {{tilt}}° tilt. Delete them?',
     statPanels: 'Panels',
     statKwp: 'kWp',
     orientationPortrait: 'portrait',
     orientationLandscape: 'landscape',
+    deleteInverter: 'Delete inverter',
+    changeColor: 'Change color',
+    activateForLasso: 'Activate for lasso assignment',
+    deleteString: 'Delete string',
   },
   sync: {
     synced: 'Synced',
     syncing: 'Syncing…',
-    offline: 'Offline — changes saved locally',
+    // No local persistence any more: unsent edits live only in this tab's
+    // memory and are flushed when the connection returns.
+    offline: 'Offline — changes will sync on reconnect',
     conflict: 'Conflict',
+    // Added with ADR-016 (sync data-loss fixes).
+    error: 'Sync error — changes not saved',
+    rejectedToast: 'The server rejected your latest changes. They are kept in this tab; reload the page to retry.',
+    unsavedConflict: 'Some edits to the project you just left were not saved because they conflict with a collaborator\'s changes.',
+    unsavedNetwork: 'Your last edits to the project you just left may not have been saved (connection problem).',
+    unsavedRejected: 'The server rejected your last edits to the project you just left.',
+    legacyImportConfirm: 'This browser contains a project "{{name}}" ({{roofs}} roofs, {{panels}} panels) from the earlier offline version of Solar Planner. Import it into your account?',
   },
   conflict: {
     title: 'Changes conflict',
@@ -139,6 +180,7 @@ const en = {
     discardMine: 'Discard mine',
     overwriteTheirs: 'Overwrite theirs',
     working: 'Working…',
+    kicker: 'SYNC · CONFLICT',
   },
   team: {
     yourTeams: 'Your teams',
@@ -187,6 +229,57 @@ const en = {
     revUpdated: 'rev {{rev}} · updated {{stamp}}',
     loading: 'Loading…',
     signOut: 'Sign out',
+    kicker: 'TEAM',
+    indexKicker: '01 · Index',
+    emptyTeamsKicker: 'EMPTY · 00 TEAMS',
+    emptyProjectsKicker: 'EMPTY · 00 PROJECTS',
+    newTeamKicker: 'CREATE',
+    membersKicker: 'TEAM ACCESS',
+    deleteProjectTitle: 'Delete project',
+    roleAdmin: 'admin',
+    roleMember: 'member',
+    inviteNotAdmin: 'Only team admins can invite members.',
+    inviteRateLimited: 'Too many invites in a short time — please wait a minute and try again.',
+  },
+  // Decorative "figure" markers in the dashboard page chrome (PageShell
+  // `label` prop + login hero). Ornamental, aria-hidden, but visible.
+  shell: {
+    figAccess: 'FIG_00 · ACCESS TERMINAL',
+    figWorkspaces: 'FIG_01 · WORKSPACES',
+    figProjects: 'FIG_02 · PROJECTS',
+    figNewTeam: 'FIG_03 · NEW TEAM',
+    figCustomers: 'FIG_03 · CUSTOMERS',
+    figMembers: 'FIG_04 · MEMBERS',
+    figNewProject: 'FIG_04 · NEW PROJECT',
+    figCatalog: 'FIG_05 · CATALOG',
+    figProjectSettings: 'FIG_05 · PROJECT SETTINGS',
+    figAccount: 'FIG_06 · ACCOUNT',
+    figBranding: 'FIG_07 · BRANDING',
+  },
+  // Editor chrome outside the Toolbar/Sidebar: pre-lock rotation widget,
+  // post-lock RotationDock, hint banners, roof-layer confirms, and the
+  // ProjectEditor load/error shells.
+  editor: {
+    rotate: 'Rotate',
+    rotatePreviewHint: 'Rotate the preview before locking. The captured imagery stays axis-aligned; the rotation is applied to the editor view post-lock.',
+    rotateMinus15: 'Rotate −15°',
+    rotatePlus15: 'Rotate +15°',
+    rotateLeft15: 'Rotate left 15°',
+    rotateRight15: 'Rotate right 15°',
+    preLockRotation: 'Pre-lock rotation',
+    resetRotation: 'Reset rotation',
+    reset: 'Reset',
+    // Hint banners are split around an emphasised word so each locale
+    // can keep its own word order: `before` + <em>emphasis</em> + `after`.
+    lockHintBefore: 'Navigate to your location, then',
+    lockHintAfter: 'to start drawing.',
+    splitHintBefore: 'Click another edge of this roof to',
+    splitHintEmphasis: 'split',
+    splitHintAfter: 'it, or press Enter to commit a polyline cut.',
+    deleteRoofWithPanelsConfirm: 'Delete {{name}} and all its panels?',
+    mergeRoofsConfirm: 'Merge “{{a}}” and “{{b}}”? Panels will be reassigned to the larger roof.',
+    openFailed: 'Failed to open project: {{message}}',
+    back: '← Back',
   },
   pdf: {
     // Small-caps kicker above the project name in the page header.
@@ -319,6 +412,8 @@ const en = {
     importNone:        'No fields found — the PDF may be scanned or the format is unsupported',
     importError:       'Import failed: {{message}}',
     importPickVariant: 'Multiple variants found — pick one:',
+    readOnly:          'Read-only',
+    readOnlyHint:      'Only the user who created this entry can edit or delete it.',
   },
   panelModel: {
     sectionLabel:    'Panel model',
@@ -391,6 +486,10 @@ const en = {
       // no value for the field yet.
       emptyDash:    '—',
     },
+    // Rotate control on switch nodes (tooltip + aria-label).
+    rotate90: 'Rotate 90°',
+    // Placeholder shown on an empty edge label chip.
+    edgeLabelPlaceholder: 'double-click',
   },
   // Error / toast namespace. Surfaced by <Toaster/> via pushToast()
   // calls scattered across the app. Kept in its own namespace so a
@@ -424,7 +523,7 @@ const en = {
     // for long enough that we want the user to know edits aren't being
     // saved. The badge already shows "Offline" but a toast adds a louder
     // beat so the user doesn't keep working unaware.
-    syncOffline: 'Connection to the server lost. Your changes are kept locally and will sync when the connection returns.',
+    syncOffline: 'Connection to the server lost. Your unsent changes are kept in this tab and will sync when the connection returns — don’t close or reload the page until then.',
     syncRestored: 'Connection restored — changes saved.',
     // Map / capture-side failures (Toolbar.handleLock).
     mapContainerMissing: 'Map container not found — cannot lock.',
@@ -433,6 +532,8 @@ const en = {
     // Generic delete failure — used by TeamView, CustomersPage,
     // CatalogPage when a row delete returns a server error.
     deleteFailed: 'Delete failed: {{message}}',
+    // aria-label of the toast live region.
+    notificationsRegion: 'Notifications',
   },
   inverterModel: {
     noModelOption:   '— No model —',

@@ -25,7 +25,7 @@
 // import mapping in one place.
 // ────────────────────────────────────────────────────────────────────────
 
-import type { Project } from '../types';
+import type { InverterModelSpec, Project } from '../types';
 
 /** Every PocketBase record carries these auto-fields. */
 export interface BaseRecord {
@@ -139,19 +139,9 @@ export interface PanelModelRecord extends BaseRecord {
  * benign (the picker simply won't resolve it and the inverter falls
  * back to its user-editable name).
  */
-export interface InverterModelRecord extends BaseRecord {
-  manufacturer: string;
-  model: string;
-  maxAcPowerW: number;
-  maxDcPowerW?: number;
-  efficiencyPct?: number;
-  phases?: number;
-  maxStrings?: number;
-  maxInputVoltageV?: number;
-  mpptCount?: number;
-  maxDcCurrentA?: number;
-  stringsPerMppt?: number;
-  datasheetUrl?: string;
+// Spec fields are declared once in types/index.ts (InverterModelSpec) so
+// non-backend code (diagram nodes) can use them without importing here.
+export interface InverterModelRecord extends BaseRecord, InverterModelSpec {
   deleted: boolean;
 }
 

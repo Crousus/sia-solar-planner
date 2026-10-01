@@ -269,3 +269,68 @@ describe('computeDrawingSnap — length snap', () => {
     expect(r.lengthSnapped).toBe(false);
   });
 });
+
+// ── Zoom-aware tolerances + nearest length match ──────────────────────────
+
+describe('computeDrawingSnap — tolerances scale with stage zoom', () => {
+  const existing = roof([
+    { x: 100, y: 100 },
+    { x: 200, y: 100 },
+    { x: 200, y: 200 },
+    { x: 100, y: 200 },
+  ]);
+
+  it('shrinks the world-space point-snap radius when zoomed in', () => {
+    // Cursor 5.83 world px from the corner. At scale 1 that's 5.83 screen
+    // px (< 10 → snaps). At scale 4 it's 23 screen px (> 10 → no snap).
+    const cursor = { x: 105, y: 103 };
+    const anchor = [{ x: 0, y: 0 }];
+    expect(computeDrawingSnap(cursor, anchor, [existing], { enabled: true, scale: 1 }).point)
+      .toEqual({ x: 100, y: 100 });
+    expect(computeDrawingSnap(cursor, anchor, [existing], { enabled: true, scale: 4 }).point)
+      .not.toEqual({ x: 100, y: 100 });
+  });
+
+  it('grows the world-space edge-snap radius when zoomed out', () => {
+    // Cursor 12 world px above the edge y=100: outside 8 px at scale 1,
+    // but only 6 screen px at scale 0.5 → edge snap fires.
+    const cursor = { x: 150, y: 88 };
+    const anchor = [{ x: 500, y: -500 }];
+    const at1 = computeDrawingSnap(cursor, anchor, [existing], { enabled: true, scale: 1 });
+    expect(at1.guides.some((g) => g.kind === 'edge-match')).toBe(false);
+    const atHalf = computeDrawingSnap(cursor, anchor, [existing], { enabled: true, scale: 0.5 });
+    expect(atHalf.guides.some((g) => g.kind === 'edge-match')).toBe(true);
+    expect(atHalf.point.y).toBeCloseTo(100);
+  });
+
+  it('falls back to scale 1 for a zero / NaN scale', () => {
+    const cursor = { x: 105, y: 103 };
+    expect(computeDrawingSnap(cursor, [{ x: 0, y: 0 }], [existing], { enabled: true, scale: 0 }).point)
+      .toEqual({ x: 100, y: 100 });
+    expect(computeDrawingSnap(cursor, [{ x: 0, y: 0 }], [existing], { enabled: true, scale: NaN }).point)
+      .toEqual({ x: 100, y: 100 });
+  });
+});
+
+describe('computeDrawingSnap — length snap picks the nearest length', () => {
+  it('prefers the closest reference length over the first one within tolerance', () => {
+    // Two reference edges far away: lengths 100 (first in edge order) and
+    // 104. A horizontal drag of 103 is within 8 px of both — the old
+    // first-match rule snapped to 100; nearest is 104.
+    const a = roof([
+      { x: 1000, y: 1000 },
+      { x: 1100, y: 1000 }, // 100
+      { x: 1100, y: 1300 },
+      { x: 1000, y: 1300 },
+    ]);
+    const b = roof([
+      { x: 2000, y: 1000 },
+      { x: 2104, y: 1000 }, // 104
+      { x: 2104, y: 1300 },
+      { x: 2000, y: 1300 },
+    ]);
+    const r = computeDrawingSnap({ x: 103, y: 0.5 }, [{ x: 0, y: 0 }], [a, b]);
+    expect(r.lengthSnapped).toBe(true);
+    expect(r.edgeLengthPx).toBeCloseTo(104);
+  });
+});

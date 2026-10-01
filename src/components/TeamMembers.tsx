@@ -24,16 +24,23 @@
 // a server error on invite/remove. Showing the page anyway is OK
 // because the team list link to it is already conditioned on admin.
 //
-// Invite UX: looks up the user by email first. The `users` collection
-// view rule allows authenticated users to look up by exact email; this
-// is intentional to support the invite flow. Without it we'd need a
-// server-side "invite by email" RPC.
+// Invite UX: POST /api/sp/team-members {teamId, email, role}. The lookup
+// e-mail → user id MUST happen server-side: `users.listRule` is
+// superuser-only (so accounts can't be enumerated), which means the old
+// client-side `users.getFirstListItem(email=…)` lookup could never work
+// for a normal admin. The endpoint (server/handlers/team_invite.go) checks
+// that the caller is admin of the team, resolves the address, and creates
+// the membership in one step. Error contract we map to messages:
+//   404 "no user with that email" → address not registered
+//   404 (anything else)            → caller isn't admin / team gone
+//   400 "already a member"         → duplicate invite
+//   429                            → PocketBase rate limiter (20/min)
 // ────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { TeamMemberRecord, UserRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -56,7 +63,9 @@ export default function TeamMembers() {
   const [error, setError] = useState<string | null>(null);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -93,41 +102,47 @@ export default function TeamMembers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamId]);
 
+  // Map the endpoint's status/message pairs (see header comment) to
+  // localised copy. Returns null for anything unrecognised so the caller
+  // falls back to the generic classifier.
+  function inviteErrorMessage(err: unknown): string | null {
+    const status = (err as { status?: unknown })?.status;
+    const message = String(
+      (err as { response?: { message?: unknown } })?.response?.message ?? '',
+    ).toLowerCase();
+    if (status === 429) return t('team.inviteRateLimited');
+    if (status === 404) {
+      return message.includes('no user') ? t('team.noUserWithEmail') : t('team.inviteNotAdmin');
+    }
+    if (status === 400 && message.includes('already')) return t('team.alreadyInTeam');
+    return null;
+  }
+
   async function invite(e: React.FormEvent) {
     e.preventDefault();
     if (!teamId) return;
     setBusy(true);
     setError(null);
     try {
-      // Step 1: find the user by exact email. If none exists we surface
-      // a friendly message rather than the cryptic 404 PocketBase returns.
-      let targetUser: UserRecord;
-      try {
-        targetUser = await pb
-          .collection('users')
-          .getFirstListItem<UserRecord>(`email="${inviteEmail.trim()}"`);
-      } catch {
-        setError(t('team.noUserWithEmail'));
-        return;
-      }
-      // Step 2: client-side dedupe so we don't send a doomed-to-fail
-      // create. The server's unique constraint on (team, user) would
-      // also reject it, but a UI message is friendlier.
-      if (rows?.some((r) => r.user.id === targetUser.id)) {
+      // Client-side dedupe against the already-loaded member list so an
+      // obvious duplicate doesn't cost a rate-limited round-trip. The
+      // server re-checks (400) for the race where someone else added
+      // the user meanwhile.
+      const email = inviteEmail.trim();
+      if (rows?.some((r) => r.user.email?.toLowerCase() === email.toLowerCase())) {
         setError(t('team.alreadyInTeam'));
         return;
       }
-      await pb.collection('team_members').create<TeamMemberRecord>({
-        team: teamId,
-        user: targetUser.id,
-        role: 'member',
+      await pb.send('/api/sp/team-members', {
+        method: 'POST',
+        body: { teamId, email, role: 'member' },
       });
       setInviteEmail('');
       await reload();
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[TeamMembers] invite failed', err);
-      setError(formatErrorForUser(err, t));
+      setError(inviteErrorMessage(err) ?? formatErrorForUser(err, t));
     } finally {
       setBusy(false);
     }
@@ -152,7 +167,7 @@ export default function TeamMembers() {
 
   return (
     <PageShell
-      label="FIG_04 · MEMBERS"
+      label={t('shell.figMembers')}
       userEmail={me?.email}
       onSignOut={signOut}
     >
@@ -166,7 +181,7 @@ export default function TeamMembers() {
       </div>
 
       <div className="mb-8">
-        <span className="tech-label">TEAM ACCESS</span>
+        <span className="tech-label">{t('team.membersKicker')}</span>
         <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
           {t('team.membersTitle')}
         </h1>
@@ -280,7 +295,7 @@ export default function TeamMembers() {
                 className={`chip ${member.role === 'admin' ? 'chip-amber' : ''}`}
                 style={{ fontSize: 10 }}
               >
-                {member.role}
+                {member.role === 'admin' ? t('team.roleAdmin') : t('team.roleMember')}
               </span>
               {/* Hide Remove on the caller's own row to prevent self-removal —
                   which would leave the user on a page they no longer have

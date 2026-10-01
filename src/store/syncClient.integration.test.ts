@@ -243,8 +243,8 @@ describe.runIf(GATED)('syncClient state machine integration', () => {
     // BEFORE the SSE arrived — i.e., with the stale fromRevision=0.
     // The handler should return 409 + currentDoc + currentRevision.
     //
-    // We use OUR deviceId (the SyncClient's, fetched from
-    // sessionStorage via the syncClient module) so the assertion
+    // Conceptually this is OUR (page-scoped, see getDeviceId in
+    // syncClient.ts) stale flush, so the assertion
     // mirrors a real local-stale-flush rather than a third-party POST.
     // But since we're hitting the HTTP endpoint directly (not via
     // SyncClient.flush), the conflict status on the SyncClient itself
@@ -390,10 +390,9 @@ describe.runIf(GATED)('syncClient state machine integration', () => {
     // the dead client is a no-op and the new client leaks.
     mount.syncClient = restartClient;
 
-    // start() also calls loadProject(record.doc) implicitly? No — read
-    // syncClient.start(): it only sets internal state (lastSyncedDoc,
-    // lastKnownRevision) and calls setStatus. It does NOT call
-    // loadProject (the comment notes "ProjectEditor already did it").
+    // start() without an `onLoaded` callback does NOT hydrate the store
+    // (ProjectEditor passes one; this test deliberately doesn't). It only
+    // installs the server baseline (doc + revision).
     // So the store's project.name still reads "rev1-from-foreign" until
     // the next inbound or full-resync triggers loadProject.
     //

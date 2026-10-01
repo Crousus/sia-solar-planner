@@ -19,66 +19,54 @@ package handlers
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
-	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tools/router"
 )
 
-// RegisterHooks wires lifecycle integrations onto the PocketBase app.
-// Called once from main(); idempotent per-boot.
-func RegisterHooks(app *pocketbase.PocketBase) {
-	registerTeamAutoAdmin(app)
-	registerProjectCreator(app)
-	registerPatchTTL(app)
-	registerUserApprovalGate(app)
-}
+// ── teams + team_members ───────────────────────────────────────────────
 
-// After a `teams` record is created via the API, auto-insert a
-// `team_members` row binding the creator as admin. Without this hook, the
-// brand-new team's list rule (member-of) would exclude its own creator,
-// rendering it invisible from the API.
+// registerTeamHooks wires three invariants around teams:
 //
-// Why OnRecordCreateRequest (request-scoped) instead of
-// OnRecordAfterCreateSuccess (model-scoped): in PocketBase v0.23 the
-// RecordEvent emitted by *AfterCreateSuccess hooks does NOT carry the
-// authenticated caller — `Auth` lives on RequestEvent, which is only
-// embedded in *RequestEvent hook events. We need the caller's ID to pick
-// an admin, so we bind at request time, call e.Next() to let the default
-// create handler persist the team, and if that succeeded we then write the
-// team_members row. Non-API creates (Admin UI, migrations, internal code)
-// simply don't fire this hook — consistent with the "skip when caller
-// unknown" branch in the original design.
+//  1. teams.created_by is the authenticated caller, never a client value
+//     (audit: it was client-supplied and spoofable — any user could create
+//     a team "created by" a colleague). Same pattern as projects.created_by.
 //
-// The two writes are NOT in a single transaction — a failure in the
-// member insert tries to roll back by deleting the team. Acceptable risk:
-// if the delete itself fails the worst case is an orphan team that the
-// user can delete and retry.
-func registerTeamAutoAdmin(app *pocketbase.PocketBase) {
+//  2. The creator becomes the team's first admin (team_members row).
+//
+//  3. A team always keeps at least one admin: the last admin can't be
+//     demoted or removed via the API. Otherwise an admin could
+//     accidentally (or a compromised admin deliberately) orphan a team so
+//     that nobody can manage members any more.
+func registerTeamHooks(app core.App) {
+	// Why OnRecordCreateRequest (request-scoped) instead of
+	// OnRecordAfterCreateSuccess (model-scoped): model events don't carry
+	// the authenticated caller — `Auth` lives on RequestEvent, which is
+	// only embedded in *RequestEvent hook events. Non-API creates (admin
+	// UI with a superuser token, migrations, internal code) are handled by
+	// the `isUserCaller` branch below.
 	app.OnRecordCreateRequest("teams").BindFunc(func(e *core.RecordRequestEvent) error {
-		// Run the default create first; bail if it fails so we don't
-		// leave any partial state and so validation errors surface as
-		// usual to the caller.
-		if err := e.Next(); err != nil {
-			return err
+		// Superuser (admin UI) creates keep the submitted created_by: a
+		// superuser id lives in _superusers and can't satisfy the users
+		// relation anyway, and the admin explicitly picked an owner.
+		if !isUserCaller(e.RequestEvent) {
+			return e.Next()
 		}
 
-		// `e.Auth` is the authenticated caller (embedded via RequestEvent).
-		// If it's nil, the create came from an unauthenticated path we
-		// don't expect for teams — skip auto-admin because we don't know
-		// whom to elect. (In practice the collection's createRule should
-		// reject anonymous creates, so this branch is defensive.)
-		if e.Auth == nil {
-			return nil
+		// Set BEFORE e.Next() so the value passes validation (the field is
+		// required) and is what gets persisted. Clients may keep sending
+		// created_by — it's simply overwritten.
+		e.Record.Set("created_by", e.Auth.Id)
+
+		if err := e.Next(); err != nil {
+			return err
 		}
 
 		memberCollection, err := e.App.FindCollectionByNameOrId("team_members")
 		if err != nil {
 			return fmt.Errorf("team_members collection missing: %w", err)
 		}
-
 		member := core.NewRecord(memberCollection)
 		member.Set("team", e.Record.Id)
 		member.Set("user", e.Auth.Id)
@@ -86,13 +74,54 @@ func registerTeamAutoAdmin(app *pocketbase.PocketBase) {
 		if err := e.App.Save(member); err != nil {
 			// Roll back the team creation by deleting it. This keeps the
 			// invariant "every team has at least one admin member" true.
-			// The returned error propagates to the HTTP caller as a 500.
-			e.App.Delete(e.Record)
+			// (Not a single transaction: the default handler has already
+			// committed and written the response by now. Worst case if the
+			// delete also fails is an orphan team only a superuser sees.)
+			if delErr := e.App.Delete(e.Record); delErr != nil {
+				e.App.Logger().Error("team auto-admin rollback failed", "team", e.Record.Id, "error", delErr)
+			}
 			return fmt.Errorf("could not create team_members admin row: %w", err)
 		}
 		return nil
 	})
+
+	// Last-admin guard (update: demotion).
+	app.OnRecordUpdateRequest("team_members").BindFunc(func(e *core.RecordRequestEvent) error {
+		orig := e.Record.Original()
+		if orig.GetString("role") == "admin" && e.Record.GetString("role") != "admin" {
+			if err := ensureAnotherAdmin(e.App, orig.GetString("team"), orig.Id); err != nil {
+				return e.BadRequestError(err.Error(), nil)
+			}
+		}
+		return e.Next()
+	})
+	// Last-admin guard (delete: removal). Cascade deletes triggered by
+	// deleting the team itself don't go through this request hook, so
+	// deleting a whole team still works.
+	app.OnRecordDeleteRequest("team_members").BindFunc(func(e *core.RecordRequestEvent) error {
+		if e.Record.GetString("role") == "admin" {
+			if err := ensureAnotherAdmin(e.App, e.Record.GetString("team"), e.Record.Id); err != nil {
+				return e.BadRequestError(err.Error(), nil)
+			}
+		}
+		return e.Next()
+	})
 }
+
+// ensureAnotherAdmin returns an error unless `team` has at least one admin
+// membership other than `exceptMemberID`.
+func ensureAnotherAdmin(app core.App, team, exceptMemberID string) error {
+	n, err := app.CountRecords("team_members", dbx.HashExp{"team": team, "role": "admin"}, dbx.Not(dbx.HashExp{"id": exceptMemberID}))
+	if err != nil {
+		return fmt.Errorf("could not verify remaining admins")
+	}
+	if n == 0 {
+		return fmt.Errorf("a team must keep at least one admin")
+	}
+	return nil
+}
+
+// ── projects ───────────────────────────────────────────────────────────
 
 // Stamps the authenticated caller onto `projects.created_by` during the
 // create request so the client can't impersonate a different "planner"
@@ -101,70 +130,59 @@ func registerTeamAutoAdmin(app *pocketbase.PocketBase) {
 // identity on a field that feeds the printed PDF would be a soft
 // forgery vector (any team member could produce an export that names a
 // colleague as the planner).
-//
-// Set BEFORE e.Next() so the value is present during validation and
-// persisted by the default create handler. If e.Auth is nil (no
-// authenticated caller — shouldn't happen given the collection's
-// createRule, but defensively handled) we leave the field empty and
-// let the default handler save a row with a dangling planner. The PDF
-// then falls back to "unknown planner" rather than 500-ing.
-func registerProjectCreator(app *pocketbase.PocketBase) {
+func registerProjectCreator(app core.App) {
 	app.OnRecordCreateRequest("projects").BindFunc(func(e *core.RecordRequestEvent) error {
-		if e.Auth != nil {
+		if isUserCaller(e.RequestEvent) {
 			e.Record.Set("created_by", e.Auth.Id)
 		}
 		return e.Next()
 	})
 }
 
-// When the REQUIRE_APPROVAL environment variable is set to "true", new user
-// accounts must be manually approved by a superadmin (via the PocketBase admin
-// UI: set users.approved = true) before they can sign in.
+// ── global catalogs ────────────────────────────────────────────────────
+
+// registerCatalogHooks protects the GLOBAL panel_models / inverter_models
+// catalogs, which every team reads. A write there is a cross-tenant write,
+// so (together with the API rules in migration 1712347100):
 //
-// Why env-var instead of a settings collection:
-//   The gate is a deployment-time policy choice, not a runtime toggle. Tying
-//   it to an env var keeps production and dev identical binaries — dev is
-//   started without the var, prod with it. A settings collection would add a
-//   migration + UI surface for a one-bit decision that changes at deploy time.
-//
-// Hook placement (after e.Next()):
-//   We call e.Next() first so PocketBase performs the password check in the
-//   normal way. If credentials are wrong, PocketBase returns its own "invalid
-//   credentials" error and we pass it through unchanged — the approval message
-//   must not appear for wrong-password attempts (that would confirm the account
-//   exists to an attacker). Only after successful credential verification do we
-//   inspect the approved flag. At that point e.Record is populated by the
-//   default handler and we can read it directly.
-func registerUserApprovalGate(app *pocketbase.PocketBase) {
-	if os.Getenv("REQUIRE_APPROVAL") != "true" {
-		return
+//   - created_by is forced to the caller → update/delete rules can
+//     restrict edits to the creator.
+//   - DELETE from a regular user becomes a soft delete (deleted = true).
+//     Projects reference catalog rows (projects.panel_model, and inverter
+//     ids inside the opaque doc), the whole app is built around
+//     soft-delete, and a hard delete by any signed-in user was the
+//     "anyone can wipe the catalog" finding. Mapping DELETE → soft delete
+//     (rather than just forbidding it) keeps the existing CatalogPage
+//     delete buttons working unchanged. Superusers still hard-delete.
+func registerCatalogHooks(app core.App) {
+	for _, name := range []string{"panel_models", "inverter_models"} {
+		app.OnRecordCreateRequest(name).BindFunc(func(e *core.RecordRequestEvent) error {
+			if isUserCaller(e.RequestEvent) {
+				e.Record.Set("created_by", e.Auth.Id)
+			}
+			return e.Next()
+		})
+		app.OnRecordDeleteRequest(name).BindFunc(func(e *core.RecordRequestEvent) error {
+			if e.HasSuperuserAuth() {
+				return e.Next()
+			}
+			e.Record.Set("deleted", true)
+			if err := e.App.Save(e.Record); err != nil {
+				return e.BadRequestError("could not delete catalog entry", err)
+			}
+			return e.NoContent(http.StatusNoContent)
+		})
 	}
-
-	app.OnRecordAuthWithPasswordRequest("users").BindFunc(func(e *core.RecordAuthWithPasswordRequestEvent) error {
-		// Let the default handler run: verifies credentials and populates e.Record.
-		if err := e.Next(); err != nil {
-			return err // bad credentials — pass through PocketBase's own error
-		}
-
-		// Credentials valid but account not yet approved.
-		if !e.Record.GetBool("approved") {
-			return router.NewApiError(
-				http.StatusForbidden,
-				"Your account is pending approval. An administrator will review your registration.",
-				nil,
-			)
-		}
-
-		return nil
-	})
 }
+
+// ── patches TTL ────────────────────────────────────────────────────────
 
 // Hourly cleanup: delete patches records older than 1 hour. Their only
 // purpose is live SSE fanout to currently-connected clients; offline
 // clients reconnect and full-resync against `doc` at the current
 // revision. Keeping historical patches costs disk and pollutes list
 // queries.
-func registerPatchTTL(app *pocketbase.PocketBase) {
+func registerPatchTTL(app core.App) {
 	app.Cron().MustAdd("trimPatches", "0 * * * *", func() {
 		cutoff := time.Now().Add(-1 * time.Hour).UTC().Format(time.DateTime)
 		_, err := app.DB().NewQuery(

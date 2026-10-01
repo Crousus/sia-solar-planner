@@ -41,14 +41,21 @@ services:
       - pb_data:/app/pb_data
     environment:
       - OCR_SERVICE_URL=http://ocr-service:8001
-      - PDF_SERVICE_URL=http://pdf-service:3002
+      # New sign-ups must be approved by an admin before they can use the
+      # app (see server/handlers/hooks.go). Without this, anyone who finds
+      # the URL can self-register and consume PDF/OCR/LLM resources.
+      - REQUIRE_APPROVAL=true
     depends_on:
       - ocr-service
       - pdf-service
     restart: unless-stopped
-    # No ports exposed to the host — the frontend nginx proxies /api to here.
-    # To access the PocketBase admin UI directly during debugging, temporarily
-    # add:  ports: ["8090:8090"]
+    # No ports exposed to the host — the frontend nginx proxies /api to here
+    # (and deliberately blocks /_/ and the _superusers auth API, see
+    # nginx.conf). To reach the PocketBase admin UI, temporarily add
+    #   ports: ["127.0.0.1:8090:8090"]
+    # (loopback only — never "8090:8090", which publishes the admin UI on
+    # every interface) and open it through an SSH tunnel:
+    #   ssh -L 8090:127.0.0.1:8090 user@server  →  http://localhost:8090/_/
 
   frontend:
     build:

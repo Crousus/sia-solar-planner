@@ -72,6 +72,20 @@ export interface SolarPlanDocProps {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Defence in depth against SSRF / local-file reads. react-pdf's <Image src>
+// is not a passive sink: an object `{uri, method, headers, body}` makes it
+// perform that HTTP request, an http(s) URL makes it fetch, and a bare path
+// makes it `fs.readFile` on the pdf-service host. These props originate in
+// a client-supplied JSON body, so even though pdf-service/server.ts already
+// validates the payload strictly, this component refuses to hand anything
+// but an inline base64 PNG/JPEG data URI to <Image>. A rejected image is
+// simply omitted (the page still renders its text overlay).
+const SAFE_IMAGE_PREFIX_RE = /^data:image\/(png|jpeg);base64,/;
+
+function safeImageSrc(src: unknown): string | null {
+  return typeof src === 'string' && SAFE_IMAGE_PREFIX_RE.test(src) ? src : null;
+}
+
 // Render a CapturedPage as a full-bleed A4 landscape page: background image
 // at page dimensions, text overlaid at extracted positions.
 function CapturedPageView({
@@ -86,13 +100,20 @@ function CapturedPageView({
   children?: React.ReactNode;
 }) {
   const pxToPt = pageW / capture.captureWidth;
+  const bgSrc = safeImageSrc(capture.image);
   return (
     <View style={{ position: 'relative', width: pageW, height: pageH }}>
-      {/* Background: the full captured frame image */}
-      <Image
-        src={capture.image}
-        style={{ position: 'absolute', left: 0, top: 0, width: pageW, height: pageH }}
-      />
+      {/* Background: the full captured frame image.
+          cache={false}: react-pdf's module-level image cache is keyed by the
+          src string and holds up to 30 entries — with multi-MB data URIs
+          that is a memory leak across requests in a long-lived service. */}
+      {bgSrc && (
+        <Image
+          src={bgSrc}
+          cache={false}
+          style={{ position: 'absolute', left: 0, top: 0, width: pageW, height: pageH }}
+        />
+      )}
       {/* Any additional layers inserted by the caller (e.g. plan image) */}
       {children}
       {/* Text overlays: real PDF Text at extracted positions, matching font/color */}
@@ -136,6 +157,10 @@ export function SolarPlanDoc({
   const PAGE_W = 841.89;
   const PAGE_H = 595.28;
 
+  // See safeImageSrc — never pass a non-data-URI src to react-pdf.
+  const planSrc = safeImageSrc(planImageDataUrl);
+  const diagramSrc = diagramCapture ? safeImageSrc(diagramCapture.image) : null;
+
   return (
     <Document>
       {/* ── Page 1: Roof plan ────────────────────────────────────────── */}
@@ -149,9 +174,10 @@ export function SolarPlanDoc({
         >
           <CapturedPageView capture={planFrameCapture} pageW={PAGE_W} pageH={PAGE_H}>
             {/* High-res plan image composited at the measured placeholder rect */}
-            {planImageDataUrl && planImageRectPt && (
+            {planSrc && planImageRectPt && (
               <Image
-                src={planImageDataUrl}
+                src={planSrc}
+                cache={false}
                 style={{
                   position: 'absolute',
                   left: planImageRectPt.x,
@@ -188,11 +214,13 @@ export function SolarPlanDoc({
             style={{ paddingTop: 28, paddingHorizontal: 32, paddingBottom: 32 }}
           >
             <View style={{ position: 'relative', width: CONTENT_W, height: CONTENT_H }}>
-              <Image src={diagramCapture.image} style={{
-                position: 'absolute',
-                left: offsetX, top: offsetY,
-                width: imgW, height: imgH,
-              }} />
+              {diagramSrc && (
+                <Image src={diagramSrc} cache={false} style={{
+                  position: 'absolute',
+                  left: offsetX, top: offsetY,
+                  width: imgW, height: imgH,
+                }} />
+              )}
               {diagramCapture.texts.map((t, i) => {
                 const fontFamily = t.fontFamily === 'mono'
                   ? (t.bold ? 'Courier-Bold' : 'Courier')

@@ -34,7 +34,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { TeamRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -79,19 +79,21 @@ export default function TeamPicker() {
     // which rerenders the tree. The navigate() call moves us to /login
     // proactively so the AuthGuard redirect doesn't briefly render the
     // now-unauthorized TeamPicker.
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
   return (
     <PageShell
-      label="FIG_01 · WORKSPACES"
+      label={t('shell.figWorkspaces')}
       userEmail={user?.email}
       onSignOut={signOut}
     >
       <header className="flex items-end justify-between mb-8">
         <div>
-          <span className="tech-label">01 · Index</span>
+          <span className="tech-label">{t('team.indexKicker')}</span>
           <h1 className="mt-1 font-editorial text-[48px] leading-[1.05] tracking-tight text-ink-50">
             {t('team.yourTeams')}
           </h1>
@@ -157,7 +159,7 @@ export default function TeamPicker() {
                 'radial-gradient(ellipse 50% 50% at 50% 0%, rgba(255,99,99,0.15), transparent 70%)',
             }}
           />
-          <span className="tech-label relative">EMPTY · 00 TEAMS</span>
+          <span className="tech-label relative">{t('team.emptyTeamsKicker')}</span>
           <h2 className="relative mt-3 font-editorial text-[32px] text-ink-50 leading-none">
             {t('team.noTeamsTitle')}
           </h2>

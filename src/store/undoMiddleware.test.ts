@@ -24,7 +24,14 @@ import {
   applyUndo,
   applyRedo,
   assertReferentialIntegrity,
+  diffSlices,
+  composeEntries,
+  invertEntry,
+  applyEntry,
+  entriesFromSnapshots,
+  deepEqual,
   type HistoryState,
+  type HistoryEntry,
   type UndoableSlice,
 } from './undoMiddleware';
 
@@ -153,12 +160,15 @@ describe('cleanUiRefs', () => {
 });
 
 describe('record policy', () => {
-  it('pushes a snapshot before applying a record-path mutation', () => {
+  it('pushes a delta entry for a record-path mutation', () => {
     const store = makeStore();
     store.getState().setName('new-name');
     const state = store.getState();
     expect(state.past.length).toBe(1);
-    expect(state.past[0].name).toBe('p'); // pre-mutation name
+    // ADR-015: entries are deltas, not snapshots — only the changed
+    // scalar is recorded, with both sides.
+    expect(state.past[0].name).toEqual({ before: 'p', after: 'new-name' });
+    expect(state.past[0].roofs).toBeUndefined();
     expect(state.project.name).toBe('new-name');
     expect(state.future).toEqual([]);
   });
@@ -215,7 +225,10 @@ describe('coalescing', () => {
       nowRef.t += 100;
       store.getState().setRoofName('r1', 'd');
       expect(store.getState().past.length).toBe(1);
-      expect((store.getState().past[0].roofs[0] as any).name).toBe('a'); // original
+      // Coalesced entry keeps the EARLIEST before and the LATEST after.
+      expect(store.getState().past[0].roofs).toEqual([
+        { op: 'update', id: 'r1', fields: { name: { before: 'a', after: 'd' } } },
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -356,69 +369,223 @@ describe('coalescing', () => {
 });
 
 describe('applyUndo / applyRedo', () => {
-  const baseSlice = (name: string): UndoableSlice => ({
+  const ui = {
+    selectedRoofId: null,
+    activeStringId: null,
+    selectedInverterId: null,
+    activePanelGroupId: null,
+    splitCandidateRoofId: null,
+  };
+  const project = (name: string, extra: Record<string, unknown> = {}) => ({
     name,
     panelType: { id: 'pt' },
     roofs: [],
     panels: [],
     strings: [],
     inverters: [],
+    mapState: { locked: true },
+    ...extra,
   });
+  const rename = (before: string, after: string): HistoryEntry => ({ name: { before, after } });
 
-  it('applyUndo pops past → pushes current onto future → returns restored slice', () => {
+  it('applyUndo pops past → applies the inverse delta → moves the entry to future', () => {
+    const e1 = rename('v1', 'v2');
+    const e2 = rename('v2', 'current');
     const state = {
-      past: [baseSlice('v1'), baseSlice('v2')],
-      future: [] as UndoableSlice[],
+      past: [e1, e2],
+      future: [] as HistoryEntry[],
       lastActionSig: { action: 'x', key: null, at: 0 },
-      project: {
-        name: 'current',
-        panelType: { id: 'pt' },
-        roofs: [],
-        panels: [],
-        strings: [],
-        inverters: [],
-        mapState: { locked: true },
-      },
-      selectedRoofId: null,
-      activeStringId: null,
-      selectedInverterId: null,
-      activePanelGroupId: null,
-      splitCandidateRoofId: null,
+      project: project('current'),
+      ...ui,
     };
     const next = applyUndo(state as any);
     expect(next).not.toBeNull();
     expect(next!.project.name).toBe('v2');
     expect(next!.project.mapState).toEqual({ locked: true }); // mapState preserved
-    expect(next!.past.length).toBe(1);
-    expect(next!.future.length).toBe(1);
-    expect(next!.future[0].name).toBe('current');
+    expect(next!.past).toEqual([e1]);
+    // The SAME entry object moves to future — deltas are direction-agnostic.
+    expect(next!.future![0]).toBe(e2);
     expect(next!.lastActionSig).toBeNull();
   });
 
   it('applyUndo returns null when past is empty', () => {
-    const state = {
-      past: [] as UndoableSlice[],
-      future: [] as UndoableSlice[],
-      lastActionSig: null,
-      project: { name: 'x', panelType: { id: 'pt' }, roofs: [], panels: [], strings: [], inverters: [], mapState: {} },
-      selectedRoofId: null, activeStringId: null, selectedInverterId: null, activePanelGroupId: null, splitCandidateRoofId: null,
-    };
+    const state = { past: [], future: [], lastActionSig: null, project: project('x'), ...ui };
     expect(applyUndo(state as any)).toBeNull();
   });
 
-  it('applyRedo pops future → pushes current onto past → returns restored slice', () => {
-    const state = {
-      past: [] as UndoableSlice[],
-      future: [baseSlice('redo-target')],
-      lastActionSig: null,
-      project: { name: 'current', panelType: { id: 'pt' }, roofs: [], panels: [], strings: [], inverters: [], mapState: {} },
-      selectedRoofId: null, activeStringId: null, selectedInverterId: null, activePanelGroupId: null, splitCandidateRoofId: null,
-    };
+  it('applyRedo pops future → applies the delta forward → pushes onto past', () => {
+    const e = rename('current', 'redo-target');
+    const state = { past: [], future: [e], lastActionSig: null, project: project('current'), ...ui };
     const next = applyRedo(state as any);
     expect(next).not.toBeNull();
     expect(next!.project.name).toBe('redo-target');
-    expect(next!.past.length).toBe(1);
-    expect(next!.future.length).toBe(0);
+    expect(next!.past).toEqual([e]);
+    expect(next!.future!.length).toBe(0);
+  });
+
+  it('skips a scalar revert when a collaborator changed it since', () => {
+    // Alice renamed p → a; Bob then renamed it to b. Alice's undo must
+    // not clobber Bob's newer name.
+    const state = { past: [rename('p', 'a')], future: [], lastActionSig: null, project: project('b'), ...ui };
+    const next = applyUndo(state as any);
+    expect(next!.project.name).toBe('b');
+    // Still moves the entry so redo/undo stay symmetric.
+    expect(next!.future!.length).toBe(1);
+  });
+
+  it('returns the same project reference when the undo changes nothing', () => {
+    const p = project('b');
+    const state = { past: [rename('p', 'a')], future: [], lastActionSig: null, project: p, ...ui };
+    expect(applyUndo(state as any)!.project).toBe(p);
+  });
+});
+
+// ── Delta engine (ADR-015) ────────────────────────────────────────────────
+
+describe('delta engine', () => {
+  type R = { id: string; name: string; tiltDeg?: number };
+  type P = { id: string; roofId: string; stringId: string | null; indexInString: number | null; cx?: number };
+  const slice = (over: Partial<UndoableSlice> = {}): UndoableSlice => ({
+    name: 'p',
+    panelType: { id: 'pt' },
+    roofs: [],
+    panels: [],
+    strings: [],
+    inverters: [],
+    ...over,
+  });
+  const r = (id: string, name = id, extra: Partial<R> = {}): R => ({ id, name, ...extra });
+  const panel = (id: string, roofId: string, stringId: string | null = null, indexInString: number | null = null): P =>
+    ({ id, roofId, stringId, indexInString });
+
+  it('diffSlices records adds, removes (with anchors) and field-level updates', () => {
+    const r1 = r('r1');
+    const before = slice({ roofs: [r1, r('r2', 'two')] });
+    const after = slice({ roofs: [r1, r('r2', 'TWO'), r('r3')] });
+    expect(diffSlices(before, after)!.roofs).toEqual([
+      { op: 'update', id: 'r2', fields: { name: { before: 'two', after: 'TWO' } } },
+      { op: 'add', id: 'r3', entity: r('r3'), anchor: 'r2' },
+    ]);
+    const removed = diffSlices(after, before)!;
+    expect(removed.roofs).toContainEqual({ op: 'remove', id: 'r3', entity: r('r3'), anchor: 'r2' });
+  });
+
+  it('diffSlices returns null for value-equal slices with new references', () => {
+    const a = slice({ roofs: [r('r1')] });
+    const b = slice({ roofs: [r('r1')] }); // new objects, same content
+    expect(diffSlices(a, b)).toBeNull();
+  });
+
+  it('undo of an add keeps an entity a collaborator added afterwards', () => {
+    // Alice adds R1 (step). Bob's R2 arrives via remote patch (not in history).
+    const entry = diffSlices(slice(), slice({ roofs: [r('r1')] }))!;
+    const current = slice({ roofs: [r('r1'), r('r2')] });
+    const undone = applyEntry(current, invertEntry(entry));
+    expect((undone.roofs as R[]).map((x) => x.id)).toEqual(['r2']);
+  });
+
+  it('undo of an update does not resurrect an entity a collaborator deleted', () => {
+    const entry = diffSlices(slice({ roofs: [r('r1', 'a')] }), slice({ roofs: [r('r1', 'b')] }))!;
+    const undone = applyEntry(slice({ roofs: [] }), invertEntry(entry));
+    expect(undone.roofs).toEqual([]);
+  });
+
+  it('field-level merge: undo reverts only the fields the step changed', () => {
+    // Alice changed tilt; Bob then renamed the same roof.
+    const entry = diffSlices(
+      slice({ roofs: [r('r1', 'a', { tiltDeg: 30 })] }),
+      slice({ roofs: [r('r1', 'a', { tiltDeg: 45 })] }),
+    )!;
+    const current = slice({ roofs: [r('r1', 'Bob', { tiltDeg: 45 })] });
+    const undone = applyEntry(current, invertEntry(entry));
+    expect(undone.roofs).toEqual([r('r1', 'Bob', { tiltDeg: 30 })]);
+  });
+
+  it('undo of a delete re-inserts at the anchor position', () => {
+    const before = slice({ roofs: [r('a'), r('b'), r('c')] });
+    const after = slice({ roofs: [r('a'), r('c')] });
+    const entry = diffSlices(before, after)!;
+    const undone = applyEntry(after, invertEntry(entry));
+    expect((undone.roofs as R[]).map((x) => x.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('re-inserted panels whose roof is gone are dropped; dangling stringIds are nulled', () => {
+    // Step: Alice deleted panels p1 (on r1, string s1) and p2 (on r2).
+    const before = slice({
+      roofs: [r('r1'), r('r2')],
+      strings: [{ id: 's1', inverterId: null }],
+      panels: [panel('p1', 'r1', 's1', 1), panel('p2', 'r2')],
+    });
+    const after = slice({ ...before, panels: [] });
+    const entry = diffSlices(before, after)!;
+    // Meanwhile Bob deleted roof r2 and string s1.
+    const current = slice({ roofs: [r('r1')], strings: [], panels: [] });
+    const undone = applyEntry(current, invertEntry(entry));
+    expect(undone.panels).toEqual([panel('p1', 'r1', null, null)]);
+  });
+
+  it('undo of addRoof cascades to panels a collaborator put on that roof', () => {
+    const entry = diffSlices(slice(), slice({ roofs: [r('r1')] }))!;
+    const current = slice({ roofs: [r('r1')], panels: [panel('bob', 'r1')] });
+    const undone = applyEntry(current, invertEntry(entry));
+    expect(undone.roofs).toEqual([]);
+    expect(undone.panels).toEqual([]);
+  });
+
+  it('calls renumberStrings with strings whose membership changed', () => {
+    const before = slice({ strings: [{ id: 's1' }], panels: [panel('p1', 'r1', 's1', 1)] });
+    const after = slice({ ...before, panels: [] });
+    const seen: string[][] = [];
+    applyEntry(
+      { ...before, panels: [], roofs: [r('r1')] },
+      invertEntry(diffSlices(before, after)!),
+      { renumberStrings: (ps, ids) => { seen.push([...ids]); return ps; } },
+    );
+    expect(seen).toEqual([['s1']]);
+  });
+
+  it('composeEntries keeps earliest before / latest after and cancels add+remove', () => {
+    const e1 = diffSlices(slice({ roofs: [r('r1', 'a')] }), slice({ roofs: [r('r1', 'b')] }))!;
+    const e2 = diffSlices(slice({ roofs: [r('r1', 'b')] }), slice({ roofs: [r('r1', 'c')] }))!;
+    expect(composeEntries(e1, e2)!.roofs).toEqual([
+      { op: 'update', id: 'r1', fields: { name: { before: 'a', after: 'c' } } },
+    ]);
+    // Back to the start → the composition is empty.
+    const back = diffSlices(slice({ roofs: [r('r1', 'c')] }), slice({ roofs: [r('r1', 'a')] }))!;
+    expect(composeEntries(composeEntries(e1, e2)!, back)).toBeNull();
+    const add = diffSlices(slice(), slice({ roofs: [r('x')] }))!;
+    const del = diffSlices(slice({ roofs: [r('x')] }), slice())!;
+    expect(composeEntries(add, del)).toBeNull();
+  });
+
+  it('composition never captures a remote change made mid-streak', () => {
+    // Local step 1: rename r1 a→b. Remote: add r2 (not recorded). Local
+    // step 2 (coalesced): rename r1 b→c — diffed around its own set(), so
+    // r2 is already in both its before and after.
+    const e1 = diffSlices(slice({ roofs: [r('r1', 'a')] }), slice({ roofs: [r('r1', 'b')] }))!;
+    const e2 = diffSlices(
+      slice({ roofs: [r('r1', 'b'), r('r2')] }),
+      slice({ roofs: [r('r1', 'c'), r('r2')] }),
+    )!;
+    const merged = composeEntries(e1, e2)!;
+    const undone = applyEntry(slice({ roofs: [r('r1', 'c'), r('r2')] }), invertEntry(merged));
+    expect(undone.roofs).toEqual([r('r1', 'a'), r('r2')]);
+  });
+
+  it('entriesFromSnapshots converts legacy v2 stacks into equivalent deltas', () => {
+    const s0 = slice({ name: 'a' });
+    const s1 = slice({ name: 'b' });
+    const cur = slice({ name: 'c' });
+    const f0 = slice({ name: 'd' });
+    const { past, future } = entriesFromSnapshots([s0, s1], [f0], cur);
+    expect(past).toEqual([{ name: { before: 'a', after: 'b' } }, { name: { before: 'b', after: 'c' } }]);
+    expect(future).toEqual([{ name: { before: 'c', after: 'd' } }]);
+  });
+
+  it('deepEqual treats undefined-valued keys as absent', () => {
+    expect(deepEqual({ a: 1, b: undefined }, { a: 1 })).toBe(true);
+    expect(deepEqual([1, { x: [2] }], [1, { x: [2] }])).toBe(true);
+    expect(deepEqual({ a: 1 }, { a: 2 })).toBe(false);
   });
 });
 
@@ -503,7 +670,7 @@ describe('depth cap', () => {
       expect(store.getState().past.length).toBe(MAX_PAST);
       // The oldest snapshot captured the original name 'p' — with one
       // overflow, that one was dropped.
-      expect(store.getState().past[0].name).not.toBe('p');
+      expect(store.getState().past[0].name?.before).not.toBe('p');
     } finally {
       vi.unstubAllGlobals();
     }

@@ -18,7 +18,9 @@
 // Project serializer.
 //
 // Owns the JSON save/load format and all schema migrations that run at the
-// persistence boundary (file import AND Zustand localStorage rehydration).
+// persistence boundary (file import AND every `loadProject` — i.e. each
+// time a doc arrives from the server). Zustand localStorage persistence
+// was removed in ADR-015; the server is the source of truth.
 // Previously this logic lived inline in Toolbar.tsx, which meant:
 //   - The v2 envelope shape (`{ version, project, history }`) was asserted
 //     only by inline `parsed.version === 2` checks behind an `as Project`
@@ -28,41 +30,54 @@
 //     `Panel.orientation` fallback was scattered across 5 call sites).
 //
 // This module is pure: no React, no store, no DOM. That lets the store's
-// `onRehydrateStorage` callback call `migrateProject` without pulling in
-// anything else, and lets tests exercise import/export without a stage.
+// `loadProject` call `migrateProject` without pulling in anything else,
+// and lets tests exercise import/export without a stage. It must not
+// import from `store/*` (AGENTS.md layering rule) — the history types it
+// needs live in types/index.ts for exactly that reason.
 //
 // Format history:
 //   v1 — raw `Project` at the root of the JSON document. Written before
 //        undo/redo shipped (ADR-014). Still read because exports from
 //        older builds are in users' hands.
 //   v2 — envelope `{ version: 2, project, history: { past, future } }`
-//        that round-trips the undo stacks alongside the project. See
-//        commit f5f0ac2 + ADR-014.
+//        where past/future are full UndoableSlice SNAPSHOTS. See commit
+//        f5f0ac2 + ADR-014. Still read; history is handed to loadProject
+//        tagged `kind: 'snapshots'` and converted to deltas there.
+//   v3 — same envelope, `version: 3`, past/future are id-keyed DELTA
+//        entries (HistoryEntry, ADR-015). Written by current builds.
 // ────────────────────────────────────────────────────────────────────────────
 
-import type { Project, Panel } from '../types';
-import type { UndoableSlice } from '../store/undoMiddleware';
+import type {
+  Project,
+  Panel,
+  Roof,
+  Diagram,
+  DiagramNode,
+  DiagramEdge,
+  UndoableSlice,
+  HistoryEntry,
+  LoadableHistory,
+} from '../types';
+import { MIN_ROOF_TILT_DEG, MAX_ROOF_TILT_DEG, DEFAULT_ROOF_TILT_DEG } from '../types';
 
-/** v2 wire format. `history` is non-optional on writes; it's optional on
+/** v3 wire format. `history` is non-optional on writes; it's optional on
  *  reads for tolerance to truncated files (see `deserializeProject`). */
-export interface ExportPayloadV2 {
-  version: 2;
+export interface ExportPayloadV3 {
+  version: 3;
   project: Project;
   history: {
-    past: UndoableSlice[];
-    future: UndoableSlice[];
+    past: HistoryEntry[];
+    future: HistoryEntry[];
   };
 }
 
-/** Result of deserializing either a v1 or v2 payload. `history` is absent
+/** Result of deserializing a v1, v2 or v3 payload. `history` is absent
  *  for v1 imports — callers (loadProject) treat `undefined` as "empty
- *  stacks", matching the pre-envelope contract. */
+ *  stacks", matching the pre-envelope contract. v2 history arrives as
+ *  `{ kind: 'snapshots', ... }`; loadProject converts it. */
 export interface DeserializedPayload {
   project: Project;
-  history?: {
-    past: UndoableSlice[];
-    future: UndoableSlice[];
-  };
+  history?: LoadableHistory;
 }
 
 /** Thrown when the input isn't a JSON object at all, or is missing the
@@ -86,62 +101,147 @@ export class ProjectDeserializationError extends Error {
  */
 export function serializeProject(state: {
   project: Project;
-  past: UndoableSlice[];
-  future: UndoableSlice[];
-}): ExportPayloadV2 {
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+}): ExportPayloadV3 {
   return {
-    version: 2,
+    version: 3,
     project: state.project,
     history: { past: state.past, future: state.future },
   };
 }
 
 /**
- * Data migration: fill `Panel.orientation` from the owning roof's default
- * for any panel that lacks one.
+ * Clamp a roof tilt into the supported range (see MAX_ROOF_TILT_DEG in
+ * types/index.ts for why the range exists and why it is 0–60).
+ * Non-finite input (NaN from a corrupted doc, ±Infinity) falls back to the
+ * default pitch rather than to a range edge — an edge value would look
+ * like a deliberate choice.
  *
- * Before this migration existed, `Panel.orientation` was optional and five
- * consumer sites handled the missing case with `p.orientation ?? roof.panelOrientation`.
- * That scattered the fallback and meant every new consumer had to
- * remember to do it. Running migration at the serialization boundary
- * (and at Zustand rehydration) lets the `Panel.orientation` type become
- * required and kills all five fallback sites.
- *
- * A panel whose owning roof id is unknown (e.g. cascaded-deleted roof in
- * corrupted data) falls back to 'portrait' — an arbitrary choice but
- * consistent with `addRoof`'s default and with what the downstream
- * rendering code already did before this migration.
+ * Exported so the store's updateRoof clamps with exactly the same rule as
+ * the persistence boundary.
  */
-export function migrateProject(p: Project): Project {
-  // Build a lookup once; keeps the panel pass O(n).
-  const roofOrientation = new Map<string, 'portrait' | 'landscape'>();
-  for (const r of p.roofs) roofOrientation.set(r.id, r.panelOrientation);
-
-  let changed = false;
-  const migratedPanels: Panel[] = p.panels.map((panel) => {
-    if (panel.orientation) return panel;
-    changed = true;
-    return {
-      ...panel,
-      orientation: roofOrientation.get(panel.roofId) ?? 'portrait',
-    };
-  });
-
-  // Preserve reference identity when nothing needed migrating — Zustand
-  // uses `===` on sub-trees to short-circuit selector re-renders, and
-  // returning a new object every rehydrate would invalidate every
-  // subscriber for no reason.
-  return changed ? { ...p, panels: migratedPanels } : p;
+export function clampTilt(tiltDeg: number): number {
+  if (typeof tiltDeg !== 'number' || !Number.isFinite(tiltDeg)) return DEFAULT_ROOF_TILT_DEG;
+  return Math.min(MAX_ROOF_TILT_DEG, Math.max(MIN_ROOF_TILT_DEG, tiltDeg));
 }
 
 /**
- * Same orientation fill, applied to the panels inside one history slice.
+ * React Flow decorates nodes/edges with runtime-only fields as the user
+ * interacts: `selected`, `dragging`, `measured`, `width`/`height` (the
+ * app has no NodeResizer, so these are measurement artefacts, not user
+ * intent), `resizing`, `positionAbsolute` (v11), `internals`. None belong
+ * in the persisted doc: they bloat it, and — worse — every selection
+ * click or drag frame would become a JSON Patch sent to the server and
+ * fanned out to collaborators, making Alice's selection appear in Bob's
+ * view. DiagramCanvas is expected to keep these in local React state and
+ * hand the store stripped nodes; stripping here is the safety net.
+ */
+const TRANSIENT_NODE_KEYS = [
+  'selected',
+  'dragging',
+  'measured',
+  'width',
+  'height',
+  'resizing',
+  'positionAbsolute',
+  'internals',
+] as const;
+const TRANSIENT_EDGE_KEYS = ['selected'] as const;
+
+function stripKeys<T extends object>(obj: T, keys: readonly string[]): T {
+  let out: Record<string, unknown> | null = null;
+  for (const k of keys) {
+    if (k in obj) {
+      if (!out) out = { ...(obj as Record<string, unknown>) };
+      delete out[k];
+    }
+  }
+  // Same reference when nothing was transient — keeps selectors quiet.
+  return (out ?? obj) as T;
+}
+
+/** Strip React Flow runtime fields from one node (same ref if clean). */
+export function stripDiagramNode(n: DiagramNode): DiagramNode {
+  return stripKeys(n, TRANSIENT_NODE_KEYS);
+}
+
+/** Strip React Flow runtime fields from one edge (same ref if clean). */
+export function stripDiagramEdge(e: DiagramEdge): DiagramEdge {
+  return stripKeys(e, TRANSIENT_EDGE_KEYS);
+}
+
+/** Map with reference preservation: returns the input array when every
+ *  element came back identical. */
+function mapStable<T>(arr: T[], fn: (x: T) => T): T[] {
+  let changed = false;
+  const out = arr.map((x) => {
+    const y = fn(x);
+    if (y !== x) changed = true;
+    return y;
+  });
+  return changed ? out : arr;
+}
+
+function migrateDiagram(d: Diagram): Diagram {
+  // Tolerate malformed docs (missing arrays) — the diagram view
+  // bootstraps lazily, so we only clean what is there.
+  const nodes = Array.isArray(d.nodes) ? mapStable(d.nodes, stripDiagramNode) : d.nodes;
+  const edges = Array.isArray(d.edges) ? mapStable(d.edges, stripDiagramEdge) : d.edges;
+  return nodes === d.nodes && edges === d.edges ? d : { ...d, nodes, edges };
+}
+
+/**
+ * Data migration run at every persistence boundary (loadProject, JSON
+ * import). Idempotent; returns the SAME reference when nothing needed
+ * changing. Steps:
  *
- * History slices use `unknown[]` for their sub-arrays (see UndoableSlice)
- * because the middleware stays Project-agnostic; here we know the shape
- * well enough to migrate, but we cast narrowly instead of tightening
- * UndoableSlice globally (which would create a circular import between
- * undoMiddleware and types).
+ *   1. Fill `Panel.orientation` from the owning roof's default for any
+ *      panel that lacks one. Before this migration existed the field was
+ *      optional and five consumer sites carried
+ *      `p.orientation ?? roof.panelOrientation`; running it here lets the
+ *      type be required. A panel whose roof id is unknown falls back to
+ *      'portrait' — consistent with addRoof's default.
+ *   2. Clamp `Roof.tiltDeg` into [MIN_ROOF_TILT_DEG, MAX_ROOF_TILT_DEG]
+ *      (an imported 90° roof would otherwise produce zero-height cells).
+ *   3. Strip React Flow runtime fields from diagram nodes/edges.
+ */
+export function migrateProject(p: Project): Project {
+  // ── Roof tilt clamp ──────────────────────────────────────────────────
+  const roofs: Roof[] = mapStable(p.roofs, (r) => {
+    const t = clampTilt(r.tiltDeg);
+    return t === r.tiltDeg ? r : { ...r, tiltDeg: t };
+  });
+
+  // ── Panel orientation back-fill ──────────────────────────────────────
+  // Build a lookup once; keeps the panel pass O(n).
+  const roofOrientation = new Map<string, 'portrait' | 'landscape'>();
+  for (const r of roofs) roofOrientation.set(r.id, r.panelOrientation);
+  const panels: Panel[] = mapStable(p.panels, (panel) =>
+    panel.orientation
+      ? panel
+      : { ...panel, orientation: roofOrientation.get(panel.roofId) ?? 'portrait' },
+  );
+
+  // ── Diagram transient-field strip ────────────────────────────────────
+  const diagram = p.diagram ? migrateDiagram(p.diagram) : p.diagram;
+
+  // Preserve reference identity when nothing needed migrating — Zustand
+  // uses `===` on sub-trees to short-circuit selector re-renders, and
+  // returning a new object on every load would invalidate every
+  // subscriber for no reason.
+  if (roofs === p.roofs && panels === p.panels && diagram === p.diagram) return p;
+  return { ...p, roofs, panels, ...(diagram ? { diagram } : {}) };
+}
+
+/**
+ * Same orientation fill, applied to the panels inside one LEGACY (v2)
+ * history snapshot, before loadProject diffs consecutive snapshots into
+ * delta entries. Without it, the diff would record a phantom
+ * "orientation: undefined → portrait" update on every panel.
+ *
+ * Snapshot sub-arrays are `unknown[]` (see UndoableSlice) because the
+ * middleware stays Project-agnostic; we cast narrowly here.
  */
 function migrateSlice(slice: UndoableSlice): UndoableSlice {
   const roofs = slice.roofs as Array<{ id: string; panelOrientation: 'portrait' | 'landscape' }>;
@@ -168,7 +268,10 @@ function migrateSlice(slice: UndoableSlice): UndoableSlice {
  * Parse a raw JSON value into a `Project` plus optional undo history.
  *
  * Accepts:
- *   - v2 envelope: `{ version: 2, project, history: { past, future } }`
+ *   - v3 envelope: `{ version: 3, project, history: { past, future } }`
+ *     with delta entries
+ *   - v2 envelope: same, `version: 2`, snapshot history (tagged
+ *     `kind: 'snapshots'` in the result for loadProject to convert)
  *   - v1 legacy: a bare `Project` object
  *
  * Throws `ProjectDeserializationError` if the input can't be identified
@@ -186,12 +289,12 @@ export function deserializeProject(raw: unknown): DeserializedPayload {
 
   const obj = raw as Record<string, unknown>;
 
-  // v2 dispatch. We check both `version === 2` AND that `project` is an
+  // v2/v3 dispatch. We check both the version AND that `project` is an
   // object, because in principle a v1 file could have a stray `version`
   // property (from some future field) and we don't want to mis-route.
-  if (obj.version === 2) {
+  if (obj.version === 2 || obj.version === 3) {
     if (obj.project === null || typeof obj.project !== 'object') {
-      throw new ProjectDeserializationError('v2 payload is missing `project`.');
+      throw new ProjectDeserializationError(`v${obj.version} payload is missing \`project\`.`);
     }
     const project = migrateProject(obj.project as Project);
 
@@ -204,9 +307,26 @@ export function deserializeProject(raw: unknown): DeserializedPayload {
       Array.isArray(historyRaw.past) &&
       Array.isArray(historyRaw.future)
     ) {
+      // Entries must at least be objects; anything else means a hand-
+      // edited / corrupted file — drop the history rather than feed junk
+      // into the undo engine (the project itself still loads).
+      const allObjects = [...historyRaw.past, ...historyRaw.future].every(
+        (e) => e !== null && typeof e === 'object',
+      );
+      if (!allObjects) return { project };
+      if (obj.version === 3) {
+        return {
+          project,
+          history: {
+            past: historyRaw.past as HistoryEntry[],
+            future: historyRaw.future as HistoryEntry[],
+          },
+        };
+      }
       return {
         project,
         history: {
+          kind: 'snapshots',
           past: (historyRaw.past as UndoableSlice[]).map(migrateSlice),
           future: (historyRaw.future as UndoableSlice[]).map(migrateSlice),
         },
@@ -219,7 +339,7 @@ export function deserializeProject(raw: unknown): DeserializedPayload {
   // hand a totally wrong document (e.g. a random JSON array) downstream.
   if (!('roofs' in obj) || !('panels' in obj) || !('mapState' in obj)) {
     throw new ProjectDeserializationError(
-      'Unrecognized project file shape — expected v1 Project or v2 envelope.',
+      'Unrecognized project file shape — expected v1 Project or v2/v3 envelope.',
     );
   }
   return { project: migrateProject(raw as Project) };

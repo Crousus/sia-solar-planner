@@ -50,6 +50,7 @@ import type { Point } from '../types';
 import { useProjectStore } from '../store/projectStore';
 import { computeDrawingSnap, type SnapGuide } from '../utils/drawingSnap';
 import { pointOnPolygonBoundary } from '../utils/polygonCut';
+import { isEditableTarget } from '../utils/dom';
 
 // Widened snap shape: when we're NOT in draw-roof mode, `point` is the raw
 // cursor (possibly null), not a snapped Point. RoofLayer tolerates a null
@@ -120,15 +121,12 @@ export function useDrawingController({
   // Escape = universal cancel; Shift = disable snapping modifier;
   // Enter = commit in-progress cut if last vertex lies on candidate roof.
   // Ignored when a typing context has focus so sidebar inputs keep Enter
-  // as "submit" and Escape as "blur".
+  // as "submit" and Escape as "blur". `isEditableTarget` also covers
+  // contentEditable (diagram node/edge labels) — the old input/textarea/
+  // select check let Enter/Escape in a label reach the roof tool.
   useEffect(() => {
-    const isTypingContext = (target: EventTarget | null) =>
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement;
-
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingContext(e.target)) return;
+      if (isEditableTarget(e.target)) return;
       if (e.key === 'Escape') {
         setDrawingPoints([]);
         setIsPainting(false);
@@ -168,11 +166,24 @@ export function useDrawingController({
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Shift') setShiftHeld(false);
     };
+    // If the window loses focus while Shift is down (Cmd+Tab, clicking
+    // into devtools, an alert()), the keyup goes to another window and
+    // never reaches us — snapping would stay disabled until the user
+    // happened to tap Shift again. Treat blur / tab-hide as "all modifier
+    // keys released"; the next real keydown re-arms it.
+    const releaseModifiers = () => setShiftHeld(false);
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') releaseModifiers();
+    };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', releaseModifiers);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', releaseModifiers);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
     // drawingPoints intentionally in deps so Enter sees the current polyline.
     // setToolMode/setSplitCandidateRoof are stable Zustand refs.
@@ -183,8 +194,10 @@ export function useDrawingController({
     if (toolMode !== 'draw-roof' || !cursor) {
       return { point: cursor, guides: [], edgeLengthPx: 0, lengthSnapped: false, angleSnapped: false };
     }
-    return computeDrawingSnap(cursor, drawingPoints, roofs, { enabled: !shiftHeld });
-  }, [toolMode, cursor, drawingPoints, roofs, shiftHeld]);
+    // Pass the stage scale so snap tolerances are screen-pixel based (the
+    // magnet feels the same at every zoom level).
+    return computeDrawingSnap(cursor, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale });
+  }, [toolMode, cursor, drawingPoints, roofs, shiftHeld, stageScale]);
 
   // ── Pointer helpers ──────────────────────────────────────────────────
   // World-space pointer via the inverted absolute transform — this folds
@@ -229,7 +242,7 @@ export function useDrawingController({
     if (toolMode === 'draw-roof') {
       // Snap the committed vertex through the same pipeline as the preview
       // so the visual and the stored vertex never disagree.
-      const snap = computeDrawingSnap(pos, drawingPoints, roofs, { enabled: !shiftHeld });
+      const snap = computeDrawingSnap(pos, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale });
       const snapped = snap.point ?? pos;
 
       // Boundary-hit test: does the snapped point lie on any existing
@@ -272,10 +285,14 @@ export function useDrawingController({
       }
 
       // Case 3: click near the first vertex → close as a new roof.
+      // 12 SCREEN px (converted to world px via the stage scale) so closing
+      // the ring is equally easy at any zoom level, matching the snap
+      // tolerances above. stageScale is guarded > 0 by useViewport's clamp.
       if (drawingPoints.length >= 3) {
         const first = drawingPoints[0];
         const dist = Math.hypot(first.x - snapped.x, first.y - snapped.y);
-        if (dist < 12) {
+        const closeTolWorld = 12 / (stageScale > 0 ? stageScale : 1);
+        if (dist < closeTolWorld) {
           addRoof(drawingPoints);
           setDrawingPoints([]);
           setSplitCandidateRoof(null);
@@ -298,6 +315,7 @@ export function useDrawingController({
     drawingPoints,
     roofs,
     shiftHeld,
+    stageScale,
     splitCandidateRoofId,
     setSplitCandidateRoof,
     splitRoof,

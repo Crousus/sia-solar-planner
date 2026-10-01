@@ -36,6 +36,10 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { useState } from 'react';
+// i18next directly (not useTranslation): these strings are only needed
+// inside event handlers, at click time, so a module-level `t` reads the
+// current language without subscribing this Konva layer to re-renders.
+import i18next from 'i18next';
 import { Group, Line, Circle, Text, Path } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { polygonCentroid } from '../utils/geometry';
@@ -179,7 +183,7 @@ export default function RoofLayer({
                 }
                 e.cancelBubble = true;
                 if (toolMode === 'delete') {
-                  if (confirm(`Delete ${roof.name} and all its panels?`)) deleteRoof(roof.id);
+                  if (confirm(i18next.t('editor.deleteRoofWithPanelsConfirm', { name: roof.name }))) deleteRoof(roof.id);
                 } else {
                   setSelectedRoof(roof.id);
                 }
@@ -357,7 +361,7 @@ export default function RoofLayer({
                         );
                         if (hasPanels) {
                           const ok = window.confirm(
-                            `Merge "${roof.name}" and "${other.name}"? Panels will be reassigned to the larger roof.`,
+                            i18next.t('editor.mergeRoofsConfirm', { a: roof.name, b: other.name }),
                           );
                           if (!ok) return;
                         }
@@ -370,7 +374,7 @@ export default function RoofLayer({
                       if (result.kind === 'degenerate') {
                         // Matching confirm text with the roof-fill delete
                         // path so users see a consistent destructive prompt.
-                        if (confirm(`Delete ${roof.name} and all its panels?`)) {
+                        if (confirm(i18next.t('editor.deleteRoofWithPanelsConfirm', { name: roof.name }))) {
                           deleteRoof(roof.id);
                         }
                         return;
@@ -409,7 +413,7 @@ export default function RoofLayer({
                       );
                       if (hasPanels) {
                         const ok = window.confirm(
-                          `Merge "${roof.name}" and "${other.name}"? Panels will be reassigned to the larger roof.`,
+                          i18next.t('editor.mergeRoofsConfirm', { a: roof.name, b: other.name }),
                         );
                         if (!ok) return;
                       }

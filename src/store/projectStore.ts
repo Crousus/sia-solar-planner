@@ -15,23 +15,27 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ────────────────────────────────────────────────────────────────────────────
-// Zustand store — the single source of truth for all persisted state.
+// Zustand store — the in-memory working copy of the open project.
 //
 // Design choices:
 //   - One big store, not several. The app is small enough that splitting it
 //     adds more plumbing than it saves; selector-based subscription already
 //     gives us fine-grained re-renders.
-//   - `project` is persisted to localStorage via the `persist` middleware.
-//     UI-only state (toolMode, selection) is intentionally NOT persisted:
-//     we don't want a "half-drawn polygon" to survive a refresh, and these
-//     fields would make the JSON export dirty.
+//   - NOTHING is persisted to localStorage (ADR-015). The PocketBase server
+//     is the source of truth: ProjectEditor loads the doc via loadProject
+//     and syncClient pushes local diffs / applies remote patches. The old
+//     zustand `persist` middleware wrote the full doc — including the
+//     multi-MB base64 captured map image — synchronously on EVERY set()
+//     (UI clicks, every diagram-drag frame), threw QuotaExceededError past
+//     ~5 MB after state had already mutated (breaking loadProject and
+//     applyRemotePatch), shared one key across tabs, and leaked the last
+//     project to the next account on the machine.
 //   - All mutations go through actions defined here. Components never mutate
 //     the store directly — this keeps persistence, cascades, and renumbering
 //     centralized and hard to forget.
 // ────────────────────────────────────────────────────────────────────────────
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import type {
   Project,
   Roof,
@@ -46,11 +50,26 @@ import type {
   DiagramNodeData,
   DiagramEdge,
   DiagramMeta,
+  HistoryEntry,
+  LoadableHistory,
 } from '../types';
-import { STRING_COLORS } from '../types';
-import { panelDisplaySize, roofPrimaryAngle, rotatePoint, polygonArea, isInsidePolygon, simplifyCollinear } from '../utils/geometry';
+import { STRING_COLORS, DEFAULT_ROOF_TILT_DEG } from '../types';
+import {
+  panelDisplaySize,
+  roofPrimaryAngle,
+  rotatePoint,
+  polygonArea,
+  isInsidePolygon,
+  simplifyCollinear,
+  panelFitsOnRoof,
+} from '../utils/geometry';
 import { splitPolygon, findSharedEdge, mergePolygons } from '../utils/polygonCut';
-import { migrateProject } from '../utils/projectSerializer';
+import {
+  migrateProject,
+  clampTilt,
+  stripDiagramNode,
+  stripDiagramEdge,
+} from '../utils/projectSerializer';
 // Backend-sync imports. `applyProjectPatch` is the RFC 6902 patcher that
 // syncClient will feed with inbound SSE ops. Deliberately a top-of-file
 // ESM import rather than the plan's `require('../backend/diff')` lazy
@@ -69,9 +88,19 @@ import {
   setCoalesceKey,
   buildSlice,
   cleanUiRefs,
+  entriesFromSnapshots,
+  type ApplyHistoryOptions,
   type HistoryState,
-  type UndoableSlice,
 } from './undoMiddleware';
+
+/**
+ * Legacy localStorage key once written by zustand `persist`. The store no
+ * longer reads or writes it (ADR-015); it is exported only as the
+ * canonical name for backend/migrateLocalStorage.ts, which still imports
+ * pre-auth drafts from it once. (That module currently keeps its own copy
+ * of the string to avoid pulling the store into the login bundle.)
+ */
+export const LEGACY_PROJECT_STORAGE_KEY = 'solar-planner-project';
 
 /**
  * Short random-ish id. Good enough for a personal tool — we don't need
@@ -216,10 +245,11 @@ export const initialProject: Project = {
 };
 
 /**
- * UI-only slice — intentionally excluded from persistence via `partialize`
- * (see bottom of file). Keeping this separate from `project` is important:
+ * UI-only slice — never part of the synced/exported `project`. Keeping
+ * this separate from `project` is important:
  *   - JSON export shouldn't include "what mode was I in when I hit save"
- *   - localStorage shouldn't restore a stuck tool mode on refresh
+ *   - syncClient diffs `project` only; UI state must not leak to
+ *     collaborators
  */
 interface UIState {
   toolMode: ToolMode;
@@ -243,8 +273,7 @@ interface UIState {
    * Kept in the store (rather than KonvaOverlay local state) because
    * App.tsx's hint banner also needs to read it — and plumbing a prop
    * through would mean changing KonvaOverlay's interface unnecessarily.
-   * Excluded from persistence via the existing `partialize` which
-   * only persists `project`.
+   * Not part of `project`, so never synced or exported.
    */
   splitCandidateRoofId: string | null;
   // ── Catalog context for the currently-open project ────────────────
@@ -315,7 +344,19 @@ interface ProjectStore extends UIState, HistoryState {
   }) => void;
   unlockMap: () => void;
   addRoof: (polygon: Point[]) => string;
-  updateRoof: (id: string, changes: Partial<Roof>) => void;
+  /**
+   * Merge `changes` into a roof. `tiltDeg` is clamped to the supported
+   * range. When the tilt actually changes, every panel group on the roof
+   * is re-laid out along the slope axis (cell height ∝ cos(tilt)) in the
+   * SAME undoable step — see the implementation comment.
+   *
+   * Returns the ids of panels on the roof that do not fit after the
+   * change (corner outside the polygon or overlapping a neighbour). They
+   * are deliberately NOT deleted — callers (Sidebar) can warn and offer
+   * `deletePanels(unfitPanelIds)`, mirroring the panel-type-resize guard.
+   * Empty for non-tilt changes.
+   */
+  updateRoof: (id: string, changes: Partial<Roof>) => { unfitPanelIds: string[] };
   deleteRoof: (id: string) => void;
   /** Split a roof along a polyline cut. Returns true if the split
    *  succeeded, false if the cut was invalid (and the store is
@@ -361,7 +402,9 @@ interface ProjectStore extends UIState, HistoryState {
   setSplitCandidateRoof: (id: string | null) => void;
   setMapProvider: (provider: 'esri' | 'bayern') => void;
   toggleBackground: () => void;
-  loadProject: (p: Project, history?: { past: UndoableSlice[]; future: UndoableSlice[] }) => void;
+  /** Replace the project (server load / JSON import). `history` may be
+   *  delta stacks (v3) or legacy snapshot stacks (v2, converted here). */
+  loadProject: (p: Project, history?: LoadableHistory) => void;
   resetProject: () => void;
   /**
    * Apply a remote patch (RFC 6902 ops) to the current project.
@@ -441,15 +484,20 @@ interface ProjectStore extends UIState, HistoryState {
   addDiagramNode: (node: DiagramNode) => void;
 }
 
+/**
+ * Options handed to the pure undo/redo engine. The engine restores
+ * referential integrity generically but leaves wiring-order policy to the
+ * store, so we inject our renumberStrings (see its doc at the bottom).
+ */
+const HISTORY_APPLY_OPTIONS: ApplyHistoryOptions = {
+  renumberStrings: (panels, affected) => renumberStrings(panels as Panel[], affected),
+};
+
 export const useProjectStore = create<ProjectStore>()(
-  persist(
-    // `undoable` wraps INSIDE `persist` on purpose: the persistence layer's
-    // `partialize` below narrows the saved state to `{ project }`, which
-    // means the history stacks (past/future) intentionally do NOT survive
-    // a page reload. That matches user intent — undo history beyond the
-    // current session would be surprising — and also keeps the captured
-    // satellite image (which can be multi-MB base64) from being duplicated
-    // into every history entry on disk.
+    // No `persist` wrapper (ADR-015) — see the header comment. History
+    // stacks are in-memory only, so a reload always starts with a clean
+    // undo history (ADR-014's "refresh = fresh session" constraint is
+    // preserved trivially).
     undoable((set, get) => ({
       project: initialProject,
       toolMode: 'idle',
@@ -473,10 +521,10 @@ export const useProjectStore = create<ProjectStore>()(
       // on the store's state (rather than in closure) so (a) React can
       // subscribe to them for a live-updating "Undo" button enabled-state
       // and (b) devtools / JSON inspection can see the stack depth. Typed
-      // as `UndoableSlice[]` explicitly because the empty-array literal
+      // as `HistoryEntry[]` explicitly because the empty-array literal
       // would otherwise widen to `never[]` and break future pushes.
-      past: [] as UndoableSlice[],
-      future: [] as UndoableSlice[],
+      past: [] as HistoryEntry[],
+      future: [] as HistoryEntry[],
       // `lastActionSig` — see undoMiddleware.ts for the full design; in
       // short: signature of the most-recently-pushed history entry, used
       // to decide whether the next record-path mutation coalesces into it.
@@ -562,8 +610,8 @@ export const useProjectStore = create<ProjectStore>()(
       //
       // We also drop the captured image: it's stale the moment the user
       // starts panning Leaflet again, and carrying a ~1-3 MB base64 blob
-      // forward for no reason bloats localStorage (which is capped ~5 MB).
-      // Re-locking will re-capture.
+      // forward for no reason bloats the synced doc. Re-locking will
+      // re-capture.
       //
       // Because MapState is now a discriminated union (MapStateUnlocked |
       // MapStateLocked), we construct the unlocked variant explicitly
@@ -605,7 +653,7 @@ export const useProjectStore = create<ProjectStore>()(
           id,
           name: `Roof ${get().project.roofs.length + 1}`,
           polygon,
-          tiltDeg: 30,                 // reasonable default pitch for typical homes
+          tiltDeg: DEFAULT_ROOF_TILT_DEG, // reasonable default pitch; already within the clamp range
           panelOrientation: 'portrait',// most common; user can toggle
         };
         set(
@@ -620,19 +668,45 @@ export const useProjectStore = create<ProjectStore>()(
       },
 
       updateRoof: (id, changes) => {
+        // Clamp BEFORE comparing with the old tilt: a slider (0–60) can't
+        // exceed the range, but programmatic callers can, and a clamped
+        // 90 → 60 on an already-60 roof must be a no-op, not a re-layout.
+        const normalized: Partial<Roof> =
+          changes.tiltDeg !== undefined ? { ...changes, tiltDeg: clampTilt(changes.tiltDeg) } : changes;
+        // Out-param written inside the reducer. The reducer runs
+        // synchronously inside set(), so it's populated by the time we
+        // return.
+        let unfitPanelIds: string[] = [];
         // Coalesce by roof id — rapid drags of the same roof (vertex
-        // handles, name retype, tilt scrub) collapse into one step.
+        // handles, name retype, tilt scrub) collapse into one step. The
+        // tilt re-layout happens in the SAME set() as the tilt write, so a
+        // whole slider scrub (tilt + every panel move it caused) is one
+        // undo step.
         setCoalesceKey(set as any, 'updateRoof', id);
         set(
-          (s) => ({
-            project: {
-              ...s.project,
-              roofs: s.project.roofs.map((r) => (r.id === id ? { ...r, ...changes } : r)),
-            },
-          }),
+          (s) => {
+            const oldRoof = s.project.roofs.find((r) => r.id === id);
+            if (!oldRoof) return s;
+            const newRoof: Roof = { ...oldRoof, ...normalized };
+            const roofs = s.project.roofs.map((r) => (r.id === id ? newRoof : r));
+            let panels = s.project.panels;
+            if (normalized.tiltDeg !== undefined && newRoof.tiltDeg !== oldRoof.tiltDeg) {
+              const relayout = relayoutRoofForTilt(
+                s.project.panels,
+                oldRoof,
+                newRoof,
+                s.project.panelType,
+                s.project.mapState.metersPerPixel,
+              );
+              panels = relayout.panels;
+              unfitPanelIds = relayout.unfitPanelIds;
+            }
+            return { project: { ...s.project, roofs, panels } };
+          },
           false,
           'updateRoof',
         );
+        return { unfitPanelIds };
       },
 
       // Cascading delete: panels on this roof go with it. Any strings that
@@ -919,8 +993,9 @@ export const useProjectStore = create<ProjectStore>()(
       // roof stroke) is less surprising than silent deletions. The user
       // can nudge or remove them after seeing the result.
       //
-      // cy values change → affected strings need renumbering because the
-      // wiring order sort is (−cy, cx).
+      // Wiring order is NOT geometric (see renumberStrings): every member
+      // keeps its indexInString, so the renumberStrings call below is a
+      // defensive compaction, not a re-sort.
       updateGroupOrientation: (groupId, orientation) =>
         set(
           (s) => {
@@ -949,7 +1024,7 @@ export const useProjectStore = create<ProjectStore>()(
           }
 
           // anchor.orientation is always set — addPanel writes it at creation
-          // and migrateProject backfills any legacy panel on rehydrate/import.
+          // and migrateProject backfills any legacy panel on load/import.
           const oldOrientation = anchor.orientation;
           if (oldOrientation === orientation) return s; // no-op
 
@@ -986,8 +1061,9 @@ export const useProjectStore = create<ProjectStore>()(
             };
           });
 
-          // Renumber any strings whose member panels moved — cy changes
-          // reshuffle the bottom-to-top wiring order.
+          // Defensive renumber of the strings whose members moved. Indices
+          // are preserved (order = paint order, not position), so this only
+          // compacts gaps if a prior bug left any.
           const affected = new Set<string>();
           for (const p of groupPanels) {
             if (p.stringId) affected.add(p.stringId);
@@ -1019,9 +1095,9 @@ export const useProjectStore = create<ProjectStore>()(
       // panel by the same delta shifts the effective grid origin by
       // that same delta.
       //
-      // cy changes → string wiring order depends on cy (see
-      // renumberStrings), so we renumber every string that had a
-      // member in this group.
+      // Wiring order does NOT depend on position (see renumberStrings —
+      // it preserves the user's paint order), so the renumber call below
+      // keeps every index; it's a defensive compaction only.
       //
       // NOT coalesced (no `setCoalesceKey` call). A `moveGroup` call
       // represents a SETTLED drag — KonvaOverlay sums pointer deltas in
@@ -1430,7 +1506,7 @@ export const useProjectStore = create<ProjectStore>()(
       // buttons live in App.tsx alongside DiagramView and can fire on
       // the same paint as the diagram view first appears (or before the
       // bootstrap effect commits in concurrent / strict-mode renders).
-      // They can also race with sync rehydration / remote patches that
+      // They can also race with a server (re)load / remote patches that
       // leave `diagram` momentarily missing. Rather than crash on a `!`
       // dereference, lazily bootstrap a diagram on first write — same
       // shape buildBootstrapDiagram would have produced — and then
@@ -1447,10 +1523,14 @@ export const useProjectStore = create<ProjectStore>()(
                 s.project.panelType,
                 s.project.name,
               );
+            // Safety net: strip React Flow runtime fields (selected,
+            // dragging, measured, …) so they never reach the synced doc.
+            // DiagramCanvas is expected to keep them in local state and
+            // pass stripped nodes already; see stripDiagramNode.
             return {
               project: {
                 ...s.project,
-                diagram: { ...base, nodes },
+                diagram: { ...base, nodes: nodes.map(stripDiagramNode) },
               },
             };
           },
@@ -1470,10 +1550,11 @@ export const useProjectStore = create<ProjectStore>()(
                 s.project.panelType,
                 s.project.name,
               );
+            // Same safety net as setDiagramNodes (edge `selected`).
             return {
               project: {
                 ...s.project,
-                diagram: { ...base, edges },
+                diagram: { ...base, edges: edges.map(stripDiagramEdge) },
               },
             };
           },
@@ -1522,7 +1603,7 @@ export const useProjectStore = create<ProjectStore>()(
             return {
               project: {
                 ...s.project,
-                diagram: { ...base, nodes: [...base.nodes, node] },
+                diagram: { ...base, nodes: [...base.nodes, stripDiagramNode(node)] },
               },
             };
           },
@@ -1557,6 +1638,18 @@ export const useProjectStore = create<ProjectStore>()(
         // panel already has an orientation, so there's no cost for the
         // common path.
         const migrated = migrateProject(p);
+        // Legacy v2 exports carry full snapshots; convert them to delta
+        // entries against the (migrated) project being loaded, so the rest
+        // of the engine only ever deals with one history format.
+        let stacks: { past: HistoryEntry[]; future: HistoryEntry[] };
+        if (history === undefined) {
+          stacks = { past: [], future: [] };
+        } else if ('kind' in history && history.kind === 'snapshots') {
+          stacks = entriesFromSnapshots(history.past, history.future, buildSlice(migrated));
+        } else {
+          const h = history as { past: HistoryEntry[]; future: HistoryEntry[] };
+          stacks = { past: h.past, future: h.future };
+        }
         set(
           {
             project: migrated,
@@ -1565,19 +1658,11 @@ export const useProjectStore = create<ProjectStore>()(
             activeStringId: null,
             selectedInverterId: null,
             activePanelGroupId: null,
-            past: history?.past ?? [],
-            future: history?.future ?? [],
+            past: stacks.past,
+            future: stacks.future,
             lastActionSig: null,
-            // Spelling note: `history?.past.length` (single `?.`), not
-            // `history?.past?.length`. The type says `past` is non-optional
-            // inside `history`, so once `history` is defined `past` is an
-            // array and `.length` is safe. The `?? 0` handles the outer
-            // `history === undefined` case. This derivation reads differently
-            // from `undo`/`redo`'s `next.past!.length > 0` because those
-            // operate on a `Partial<S>` return from `applyUndo`/`applyRedo`,
-            // whereas here we're reading the caller-supplied history object.
-            canUndo: (history?.past.length ?? 0) > 0,
-            canRedo: (history?.future.length ?? 0) > 0,
+            canUndo: stacks.past.length > 0,
+            canRedo: stacks.future.length > 0,
           },
           false,
           'loadProject',
@@ -1629,6 +1714,13 @@ export const useProjectStore = create<ProjectStore>()(
       // has diverged from the server's assumed baseline, and replaying
       // subsequent ops on top would compound the divergence.
       //
+      // Interaction with undo (ADR-015): history entries are id-keyed
+      // deltas, independent of the surrounding state, so they stay valid
+      // after any remote patch — a later undo applies its inverse to
+      // whatever the project looks like then, touching only the entities
+      // and fields the local step changed. Remote ops therefore never
+      // enter history AND never get clobbered by it.
+      //
       // We only touch `project` here: UI state (selection, toolMode)
       // stays as-is because the remote edit is happening to the
       // underlying data, not to Alice's cursor. If a remote delete
@@ -1661,7 +1753,10 @@ export const useProjectStore = create<ProjectStore>()(
       //      the on-canvas panel rectangles re-render immediately. The
       //      PB call is async; waiting for it before touching the
       //      store would feel laggy.
-      //   2. We PATCH projects.panel_model second. If it fails (network
+      //   2. We set projects.panel_model second, via the narrow
+      //      /api/sp/set-panel-model endpoint (projects.updateRule is
+      //      null, so a direct collection update can never succeed for a
+      //      regular user — the old direct PATCH always 403'd). If it fails (network
       //      hiccup, 404, etc.), the local doc is already updated —
       //      that's acceptable: the panelType value itself is correct
       //      data. The FK will reconcile on next load via
@@ -1677,7 +1772,7 @@ export const useProjectStore = create<ProjectStore>()(
       // relation column on the projects ROW, NOT a field inside
       // `doc.*`. The /api/sp/patch endpoint is JSON-Patch over the
       // opaque doc blob — it has no notion of the surrounding row
-      // fields. Same reason customers.setCustomer did a direct PATCH.
+      // fields. Same reason the customer link uses /api/sp/set-customer.
       setPanelModelFromCatalog: async (model) => {
         const newPanelType: PanelType = panelTypeFromCatalogRecord(model);
         // Step 1: local-first update. Uses the existing updatePanelType
@@ -1690,8 +1785,9 @@ export const useProjectStore = create<ProjectStore>()(
           // Step 2: FK PATCH. We don't await the network call in a way
           // that blocks the UI — the await just sequences the step-3
           // state update and error propagation.
-          await pb.collection('projects').update(projectId, {
-            panel_model: model.id,
+          await pb.send('/api/sp/set-panel-model', {
+            method: 'POST',
+            body: { projectId, panelModelId: model.id },
           });
         }
         // Step 3: flip sidebar into catalog-display mode.
@@ -1768,7 +1864,7 @@ export const useProjectStore = create<ProjectStore>()(
       //     is fragile compared to the first-class DEV flag.
       undo: () => {
         const state = get();
-        const next = applyUndo(state);
+        const next = applyUndo(state, HISTORY_APPLY_OPTIONS);
         // `applyUndo` returns null when there is nothing to undo (empty
         // `past` stack). Early-return so we don't fire a listener
         // notification for a non-event — React consumers wouldn't re-
@@ -1806,7 +1902,7 @@ export const useProjectStore = create<ProjectStore>()(
       },
       redo: () => {
         const state = get();
-        const next = applyRedo(state);
+        const next = applyRedo(state, HISTORY_APPLY_OPTIONS);
         // Symmetric with `undo`: `applyRedo` returns null when the `future`
         // stack is empty (nothing was undone yet, or we already ran out of
         // redo steps). Early-return so we don't fire a no-op notification.
@@ -1828,34 +1924,103 @@ export const useProjectStore = create<ProjectStore>()(
         }
       },
     })),
-    {
-      // localStorage key. Kept short and namespaced so it doesn't clash.
-      name: 'solar-planner-project',
-      // `partialize` strips out ephemeral fields before writing to storage,
-      // so refresh doesn't persist (eg) an accidental tool mode. Note that
-      // history (past/future/lastActionSig) is also excluded by virtue of
-      // not being listed here — see the comment at the `undoable(...)`
-      // wrapper above.
-      partialize: (s) => ({ project: s.project }),
-      // Run the Panel.orientation migration when rehydrating from
-      // localStorage. Users whose last session predates the migration
-      // have panels without an `orientation` field on disk; without
-      // this step they'd rehydrate into a project that violates the
-      // (now required) Panel.orientation type and downstream code would
-      // silently render with `undefined`. migrateProject is idempotent:
-      // it returns the same object when every panel already has an
-      // orientation, so the steady-state cost is one Map construction.
-      onRehydrateStorage: () => (state) => {
-        if (state?.project) {
-          state.project = migrateProject(state.project);
-        }
-      },
-    }
-  )
 );
 
 /**
+ * Re-lay out every panel group on a roof after its tilt changed.
+ *
+ * Why this is needed: on-screen cell height is `H · cos(tilt) / mpp`
+ * (panelDisplaySize — the single source of truth for the tilt model). The
+ * panels' stored centres were spaced for the OLD cell height: making the
+ * roof flatter grows the cells so neighbours overlap (and edge rows poke
+ * out of the polygon); making it steeper shrinks them so gaps open.
+ *
+ * Approach — same frame math as updateGroupOrientation, but SCALING
+ * instead of re-gridding: per group, rotate each panel into the roof-local
+ * frame around the group's anchor (its first panel, matching the
+ * placement-time convention), multiply the along-slope offset by
+ * `newH / oldH`, rotate back. Only the slope axis changes; the along-ridge
+ * width doesn't depend on tilt. For on-grid panels this is identical to
+ * "keep grid indices (gx, gy), re-emit with the new cell" — offset k·oldH
+ * becomes k·newH — but it also preserves off-grid positions (merged roofs,
+ * free-form group moves) proportionally instead of snapping them, and it
+ * is exactly reversible: scrubbing 30° → 50° → 30° returns every panel to
+ * where it started (up to float rounding). The ratio is the same for both
+ * orientations (cos(new)/cos(old)), but we derive it via panelDisplaySize
+ * per group so the tilt model stays defined in one place.
+ *
+ * Panels that don't fit afterwards are REPORTED, not deleted. Deleting
+ * inside the reducer would be destructive during a slider scrub (scrub
+ * flatter, panels vanish, scrub back — they don't return) and would
+ * contradict the established "invalid states are visible, not silently
+ * corrected" convention of updateGroupOrientation / moveGroup. The caller
+ * gets the ids and can confirm-then-delete, like the panel-type resize
+ * guard in Sidebar.
+ *
+ * String numbering is unaffected: wiring order is paint order, not
+ * position (see renumberStrings), so no renumber is needed.
+ */
+function relayoutRoofForTilt(
+  panels: Panel[],
+  oldRoof: Roof,
+  newRoof: Roof,
+  panelType: PanelType,
+  mpp: number,
+): { panels: Panel[]; unfitPanelIds: string[] } {
+  // Nothing to scale against before the map is locked / calibrated.
+  if (!(mpp > 0)) return { panels, unfitPanelIds: [] };
+  const roofPanels = panels.filter((p) => p.roofId === newRoof.id);
+  if (roofPanels.length === 0) return { panels, unfitPanelIds: [] };
+
+  // Group anchors: first panel of each group in array order.
+  const anchors = new Map<string, Panel>();
+  for (const p of roofPanels) if (!anchors.has(p.groupId)) anchors.set(p.groupId, p);
+
+  // The polygon doesn't change with tilt, so neither does the frame angle.
+  const angle = roofPrimaryAngle(newRoof.polygon);
+  const moved = new Map<string, { cx: number; cy: number }>();
+  for (const [groupId, anchor] of anchors) {
+    const oldH = panelDisplaySize(panelType, anchor.orientation, oldRoof.tiltDeg, mpp).h;
+    const newH = panelDisplaySize(panelType, anchor.orientation, newRoof.tiltDeg, mpp).h;
+    // Guard a degenerate OLD height (a pre-clamp 90° roof from a remote
+    // patch → cos ≈ 1e-14): the ratio would explode and fling panels to
+    // infinity. Leave such a group where it is; it will be reported as
+    // unfit below if it overlaps.
+    if (!(oldH > 1e-6) || !Number.isFinite(newH)) continue;
+    const k = newH / oldH;
+    const origin = { x: anchor.cx, y: anchor.cy };
+    for (const p of roofPanels) {
+      if (p.groupId !== groupId || p === anchor) continue;
+      const local = rotatePoint({ x: p.cx, y: p.cy }, -angle, origin);
+      const scaled = { x: local.x, y: origin.y + (local.y - origin.y) * k };
+      const world = rotatePoint(scaled, angle, origin);
+      moved.set(p.id, { cx: world.x, cy: world.y });
+    }
+  }
+
+  const nextPanels = moved.size === 0
+    ? panels
+    : panels.map((p) => {
+        const m = moved.get(p.id);
+        return m ? { ...p, cx: m.cx, cy: m.cy } : p;
+      });
+
+  // Fit check against the NEW roof (its tiltDeg drives the cell size) and
+  // the post-layout siblings on the same roof — same invariants as
+  // placement (corners inside polygon, no centre within 0.7 × min cell).
+  const siblings = nextPanels.filter((p) => p.roofId === newRoof.id);
+  const unfitPanelIds = siblings
+    .filter((p) => !panelFitsOnRoof(p, newRoof, panelType, p.orientation, mpp, siblings))
+    .map((p) => p.id);
+  return { panels: nextPanels, unfitPanelIds };
+}
+
+/**
  * Re-number `indexInString` for all panels belonging to the given strings.
+ *
+ * NOT a geometric sort. (Older docs, incl. AGENTS.md at the time of
+ * writing, describe a (descending cy, ascending cx) sort — that was the
+ * previous implementation and is no longer what this does.)
  *
  * Ordering policy — "preserve the sequence the user added them":
  *   - Panels that already have an `indexInString` keep their relative

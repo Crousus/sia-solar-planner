@@ -1,0 +1,135 @@
+# CI for the four deployables in this repo. One job per service so a
+# failure points straight at the component; they run in parallel.
+#
+# Versions track the Dockerfiles: node:22-alpine (frontend + pdf-service),
+# python:3.12-slim (ocr-service), and Go from server/go.mod (go-version-file
+# also honours a `toolchain` directive, so a PocketBase/Go bump in go.mod
+# needs no edit here).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc -b
+      - name: Unit tests
+        run: npx vitest run
+      - name: Build
+        run: npx vite build
+      # Runtime deps only: dev-tooling advisories (bundler, test runner)
+      # don't ship to users. Fails on high/critical.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  pdf-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            pdf-service/package-lock.json
+      # The root install is needed for type resolution only: server.ts
+      # imports ../src/pdf/SolarPlanDoc.tsx, whose type imports resolve
+      # against the repo-root node_modules (see pdf-service/tsconfig.json).
+      - name: Install root dependencies (types)
+        run: npm ci
+      - name: Install pdf-service dependencies
+        working-directory: pdf-service
+        run: npm ci
+      - name: Typecheck
+        working-directory: pdf-service
+        run: npm run typecheck
+      - name: Tests
+        working-directory: pdf-service
+        run: npm test
+
+  ocr-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ocr-service/requirements.txt
+      - name: Install dependencies
+        working-directory: ocr-service
+        run: pip install -r requirements.txt pytest pip-audit
+      # Known-vulnerable pins fail the build (the Python side has no
+      # lockfile-level audit otherwise).
+      - name: Audit dependencies
+        working-directory: ocr-service
+        run: pip-audit -r requirements.txt
+      # test_main.py needs no network, poppler, tesseract or LLM keys.
+      - name: Tests
+        working-directory: ocr-service
+        run: python -m pytest test_main.py
+
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Vet
+        run: go vet ./...
+      - name: Tests
+        run: go test ./...
+      # Same output name as the Dockerfile / AGENTS.md (`go build ./...`
+      # would not produce the binary).
+      - name: Build
+        run: go build -o pocketbase .
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # Frontend store + SyncClient against a real PocketBase built from this
+  # commit's server/ and pb_migrations — the only place the client and the
+  # server's access rules are exercised together. pbHarness.ts spawns
+  # server/pocketbase with a throwaway data dir per suite.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Build PocketBase
+        working-directory: server
+        run: go build -o pocketbase .
+      - run: npm ci
+      - name: Integration tests
+        run: npm run test:integration

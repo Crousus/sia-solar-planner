@@ -38,10 +38,12 @@
 // Behavior is unchanged — every control still maps 1:1 to a store action.
 // ────────────────────────────────────────────────────────────────────────────
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '../store/projectStore';
 import { polygonArea, panelFitsOnRoof } from '../utils/geometry';
+import { safeHttpUrl } from '../utils/safeUrl';
 import type { PanelType } from '../types';
 import PanelModelPicker from './PanelModelPicker';
 import InverterModelPicker from './InverterModelPicker';
@@ -57,7 +59,21 @@ interface SidebarProps {
 
 export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
   const { t } = useTranslation();
-  const project = useProjectStore((s) => s.project);
+  // Shallow-compared slice of exactly the doc fields the sidebar reads.
+  // Selecting the whole `project` re-rendered the entire sidebar on every
+  // doc change — including each diagram-drag frame and meta keystroke,
+  // none of which the sidebar displays.
+  const project = useProjectStore(
+    useShallow((s) => ({
+      name: s.project.name,
+      roofs: s.project.roofs,
+      panels: s.project.panels,
+      strings: s.project.strings,
+      inverters: s.project.inverters,
+      panelType: s.project.panelType,
+      mapState: s.project.mapState,
+    })),
+  );
   const setProjectName = useProjectStore((s) => s.setProjectName);
   const updatePanelType = useProjectStore((s) => s.updatePanelType);
   const deletePanels = useProjectStore((s) => s.deletePanels);
@@ -115,6 +131,31 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
   const currentOrientation = orientationTargetsGroup
     ? activeGroupPanelsOnRoof[0].orientation
     : (selectedRoof?.panelOrientation ?? 'portrait');
+
+  // ── Tilt-change fit guard ──────────────────────────────────────────
+  // updateRoof re-lays out the roof's panels for a new tilt (rows get
+  // closer/farther as cos(tilt) changes) and reports panels that no
+  // longer fit. They are kept by the store; here we warn and offer to
+  // delete them, mirroring the panel-type resize guard below. The ids are
+  // parked in a ref during scrubbing and only acted on at release.
+  const pendingTiltUnfitRef = useRef<{ roofId: string; ids: string[] } | null>(null);
+  const confirmTiltUnfit = () => {
+    const pending = pendingTiltUnfitRef.current;
+    pendingTiltUnfitRef.current = null;
+    if (!pending || pending.ids.length === 0) return;
+    // Re-read fresh state: a remote patch or another edit may have removed
+    // some of these panels between the last scrub step and the release.
+    const state = useProjectStore.getState();
+    const alive = new Set(state.project.panels.map((p) => p.id));
+    const ids = pending.ids.filter((id) => alive.has(id));
+    if (ids.length === 0) return;
+    const roof = state.project.roofs.find((r) => r.id === pending.roofId);
+    const ok = confirm(t('sidebar.tiltUnfitConfirm', { count: ids.length, tilt: String(roof?.tiltDeg ?? '') }));
+    if (ok) deletePanels(ids);
+  };
+
+  // Sanitised datasheet link (null unless it's an absolute http(s) URL).
+  const datasheetHref = safeHttpUrl(project.panelType.datasheetUrl);
 
   // Hero stats. Derived, not stored — recomputed on every render is trivial.
   const totalPanels = panels.length;
@@ -327,9 +368,14 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                     {project.panelType.efficiencyPct ? ` · ${project.panelType.efficiencyPct}%` : ''}
                   </div>
                 </div>
-                {project.panelType.datasheetUrl && (
+                {/* datasheetUrl comes from the shared project doc, which any
+                    team member can rewrite via a patch. Only linkify an
+                    absolute http(s) URL — a `javascript:` value here would
+                    be stored XSS. Anything else is shown as inert text so
+                    the user can still see (and fix) what was entered. */}
+                {datasheetHref ? (
                   <a
-                    href={project.panelType.datasheetUrl}
+                    href={datasheetHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-ink-300 hover:text-sun-300 shrink-0"
@@ -338,7 +384,14 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                   >
                     ↗
                   </a>
-                )}
+                ) : project.panelType.datasheetUrl ? (
+                  <span
+                    className="font-mono text-[10px] text-ink-400 shrink-0 truncate max-w-[6rem]"
+                    title={project.panelType.datasheetUrl}
+                  >
+                    {project.panelType.datasheetUrl}
+                  </span>
+                ) : null}
               </div>
               <button
                 className="btn btn-ghost w-full justify-center"
@@ -498,7 +551,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                         e.stopPropagation();
                         if (confirm(t('sidebar.deleteInverterConfirm', { name: inv.name }))) deleteInverter(inv.id);
                       }}
-                      title="Delete inverter"
+                      title={t('sidebar.deleteInverter')}
                     >
                       ×
                     </button>
@@ -606,7 +659,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                         value={str.color}
                         onChange={(e) => updateString(str.id, { color: e.target.value })}
-                        title="Change color"
+                        title={t('sidebar.changeColor')}
                       />
                       <div
                         className="w-full h-full rounded"
@@ -626,7 +679,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                         setActiveString(str.id);
                         setToolMode('assign-string');
                       }}
-                      title="Activate for lasso assignment"
+                      title={t('sidebar.activateForLasso')}
                       style={{ color: isActive ? 'var(--ink-50)' : 'var(--ink-200)' }}
                     >
                       {str.label}
@@ -644,7 +697,7 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                           deleteString(str.id);
                         }
                       }}
-                      title="Delete string"
+                      title={t('sidebar.deleteString')}
                     >
                       ×
                     </button>
@@ -749,7 +802,19 @@ export default function Sidebar({ activeView, setActiveView }: SidebarProps) {
                   // CSS var `--val` drives the filled portion of the track.
                   // Range is 0-60, so normalize to a percentage.
                   style={{ ['--val' as string]: `${(selectedRoof.tiltDeg / 60) * 100}%` }}
-                  onChange={(e) => updateRoof(selectedRoof.id, { tiltDeg: parseInt(e.target.value) })}
+                  onChange={(e) => {
+                    const { unfitPanelIds } = updateRoof(selectedRoof.id, { tiltDeg: parseInt(e.target.value) });
+                    // Remember the result of the LATEST scrub step only; the
+                    // warning is deferred to release (see confirmTiltUnfit).
+                    pendingTiltUnfitRef.current = { roofId: selectedRoof.id, ids: unfitPanelIds };
+                  }}
+                  // Pointer release / keyboard step end = "user settled on a
+                  // value". Confirming here rather than in onChange keeps a
+                  // slider scrub from firing a confirm() per intermediate
+                  // degree.
+                  onPointerUp={confirmTiltUnfit}
+                  onKeyUp={confirmTiltUnfit}
+                  onBlur={confirmTiltUnfit}
                 />
                 {/* Tick row — gives the slider a measuring-tape quality
                     without needing real ticks (which would fight the

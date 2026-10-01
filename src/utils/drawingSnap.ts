@@ -40,7 +40,7 @@
 //      explain WHY the snap happened — e.g. "parallel to this edge",
 //      "length matches this edge", "angle direction".
 //
-// Philosophy: tolerances are tight (3° / 8 px) because the user will
+// Philosophy: tolerances are tight (3° / 8 screen px) because the user will
 // expect raw cursor control most of the time. The snap should feel like
 // a gentle magnet, not a drag on the cursor.
 // ────────────────────────────────────────────────────────────────────────────
@@ -77,7 +77,14 @@ export type SnapResult = {
   angleSnapped: boolean;
 };
 
-/** Tolerances — tuned for "magnet" feel, not sticky. */
+/** Tolerances — tuned for "magnet" feel, not sticky.
+ *
+ *  The *_PX values are SCREEN pixels. computeDrawingSnap divides them by
+ *  the stage scale (opts.scale) to get world-pixel tolerances, so the
+ *  magnet feels the same at every zoom level. Previously they were applied
+ *  in world pixels directly: zoomed in 4× the magnet shrank to 2 screen px
+ *  (practically unusable), zoomed out to 0.25× it grew to 32+ screen px
+ *  and grabbed everything. The angle tolerance is scale-invariant already. */
 const ANGLE_TOL_DEG = 3;
 const LENGTH_TOL_PX = 8;
 const POINT_SNAP_TOL_PX = 10;
@@ -121,6 +128,11 @@ function nearestOnSegment(p: Point, a: Point, b: Point): Point {
  */
 type EdgeRef = { a: Point; b: Point; angle: number; length: number };
 
+function isUsableEdge(a: Point, b: Point): boolean {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  return Number.isFinite(len) && len > 1e-9;
+}
+
 function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
   const edges: EdgeRef[] = [];
   // Committed roofs: every closed polygon edge is a candidate reference.
@@ -128,6 +140,9 @@ function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
     for (let i = 0; i < roof.polygon.length; i++) {
       const a = roof.polygon[i];
       const b = roof.polygon[(i + 1) % roof.polygon.length];
+      // Zero-length / non-finite edges carry no direction or length to
+      // snap to (atan2(0,0) = 0 would inject a bogus "horizontal" ref).
+      if (!isUsableEdge(a, b)) continue;
       edges.push({
         a,
         b,
@@ -140,6 +155,7 @@ function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
   for (let i = 0; i < drawingPoints.length - 1; i++) {
     const a = drawingPoints[i];
     const b = drawingPoints[i + 1];
+    if (!isUsableEdge(a, b)) continue;
     edges.push({
       a,
       b,
@@ -160,13 +176,24 @@ function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
  *   opts.enabled   — if false, return raw cursor with no guides
  *                    (caller passes `!shiftKey` to implement "hold Shift
  *                    to disable snapping" behavior)
+ *   opts.scale     — current stage scale (screen px per world px). Pixel
+ *                    tolerances are defined in screen px and divided by
+ *                    this. Defaults to 1 (world == screen) for callers and
+ *                    tests that don't care about zoom.
  */
 export function computeDrawingSnap(
   cursor: Point,
   drawingPoints: Point[],
   roofs: Roof[],
-  opts: { enabled: boolean } = { enabled: true }
+  opts: { enabled: boolean; scale?: number } = { enabled: true }
 ): SnapResult {
+  // Guard against 0 / negative / NaN scale (pre-measure render) — fall
+  // back to 1 rather than producing Infinity tolerances.
+  const scale = opts.scale !== undefined && Number.isFinite(opts.scale) && opts.scale > 0 ? opts.scale : 1;
+  const pointTol = POINT_SNAP_TOL_PX / scale;
+  const edgeTol = EDGE_SNAP_TOL_PX / scale;
+  const lengthTol = LENGTH_TOL_PX / scale;
+
   // Nothing to snap against yet.
   if (drawingPoints.length === 0) {
     return { point: cursor, guides: [], edgeLengthPx: 0, lengthSnapped: false, angleSnapped: false };
@@ -200,7 +227,7 @@ export function computeDrawingSnap(
   const edges = collectEdges(drawingPoints, roofs);
 
   // ── 1. Point Snap (Corners) ──────────────────────────────────────────
-  let bestPointDist = POINT_SNAP_TOL_PX;
+  let bestPointDist = pointTol;
   let pointSnapPoint: Point | null = null;
 
   for (const edge of edges) {
@@ -229,7 +256,7 @@ export function computeDrawingSnap(
   }
 
   // ── 2. Edge Snap (Lines) ─────────────────────────────────────────────
-  let bestEdgeDist = EDGE_SNAP_TOL_PX;
+  let bestEdgeDist = edgeTol;
   let edgeSnapPoint: Point | null = null;
   let edgeSnapRef: EdgeRef | null = null;
 
@@ -316,14 +343,19 @@ export function computeDrawingSnap(
 
   // ── Length snap ──────────────────────────────────────────────────────
   // If snappedLen is close to any existing edge's length, jump to it exactly.
+  // Pick the NEAREST matching length, not the first one in edge order: with
+  // several similar edges (e.g. 100 px and 104 px) the first-match rule
+  // could yank a 103 px drag down to 100 when 104 was right there.
   let lengthRefEdge: EdgeRef | undefined;
+  let bestLengthDiff = lengthTol;
   for (const edge of edges) {
-    if (Math.abs(edge.length - snappedLen) < LENGTH_TOL_PX) {
-      snappedLen = edge.length;
+    const diff = Math.abs(edge.length - snappedLen);
+    if (diff < bestLengthDiff) {
+      bestLengthDiff = diff;
       lengthRefEdge = edge;
-      break;
     }
   }
+  if (lengthRefEdge) snappedLen = lengthRefEdge.length;
   const lengthSnapped = lengthRefEdge !== undefined;
 
   const snappedPoint = {

@@ -54,7 +54,9 @@ export default defineConfig({
       // parity with unit tests in case it gains content later).
       './src/test-setup.ts',
     ],
-    include: ['**/*.integration.test.ts'],
+    // Scoped to src/ for the same reason as vitest.config.ts: sibling services
+    // (pdf-service/, ocr-service/, server/) carry their own test toolchains.
+    include: ['src/**/*.integration.test.ts'],
     // Exclude worktree directories — those are separate git worktrees with
     // their own dependencies and test configurations. Including them here
     // would boot extra PocketBase subprocesses and likely fail because the

@@ -37,7 +37,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { CustomerRecord, TeamRecord, TeamMemberRecord } from '../backend/types';
 import type { ProjectAddress } from '../types';
 import { useAuthUser } from './AppShell';
@@ -99,7 +99,9 @@ export default function CustomersPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -257,7 +259,7 @@ export default function CustomersPage() {
 
   return (
     <PageShell
-      label="FIG_03 · CUSTOMERS"
+      label={t('shell.figCustomers')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="default"

@@ -18,8 +18,7 @@
 
 import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
-import type { DiagramNodeData } from '../../../types';
-import type { InverterModelRecord } from '../../../backend/types';
+import type { DiagramNodeData, InverterModelSpec } from '../../../types';
 import { useProjectStore } from '../../../store/projectStore';
 import BaseNode from './BaseNode';
 
@@ -50,7 +49,7 @@ const InverterIcon = () => (
  * These are European grid standards; non-EU deployments would need a
  * locale-aware voltage constant here.
  */
-function computeAcCurrentA(m: InverterModelRecord): number {
+function computeAcCurrentA(m: InverterModelSpec): number {
   const phases = m.phases ?? 3;
   const voltage = phases === 1 ? 230 : 400;
   const denom = phases === 1 ? voltage : voltage * Math.sqrt(3);

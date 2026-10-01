@@ -48,4 +48,17 @@ describe('locales', () => {
       expect((val as string).length, `${key} must be non-empty`).toBeGreaterThan(0);
     }
   });
+
+  // A translation that drops or renames a `{{placeholder}}` silently
+  // renders the raw braces (or loses the value) at runtime — the type
+  // check only covers keys, not values — so compare the placeholder sets.
+  it('de uses the same {{interpolation}} placeholders as en', () => {
+    const get = (obj: object, key: string): string =>
+      key.split('.').reduce<unknown>((o, k) => (o as Record<string, unknown>)[k], obj) as string;
+    const placeholders = (s: string) =>
+      [...s.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1]).sort();
+    for (const key of collectLeafKeys(en)) {
+      expect(placeholders(get(de, key)), `${key} placeholders`).toEqual(placeholders(get(en, key)));
+    }
+  });
 });

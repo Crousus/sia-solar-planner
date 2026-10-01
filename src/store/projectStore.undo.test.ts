@@ -16,7 +16,11 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useProjectStore } from './projectStore';
-import type { UndoableSlice } from './undoMiddleware';
+import type { HistoryEntry, UndoableSlice } from './undoMiddleware';
+
+const SQ = [
+  { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 },
+];
 
 describe('projectStore undo/redo integration', () => {
   beforeEach(() => {
@@ -128,21 +132,8 @@ describe('loadProject/resetProject history behavior', () => {
 
   it('loadProject(project, {past, future}) restores both stacks', () => {
     const initial = useProjectStore.getState().project;
-    // The strict `PanelType` interface doesn't structurally satisfy the
-    // slice's looser `{ id: string } & Record<string, unknown>` constraint
-    // (interfaces lack the implicit string index signature that type aliases
-    // gain), so we cast through `unknown` to `UndoableSlice` — the runtime
-    // shape matches exactly and the middleware treats slices as opaque
-    // blobs anyway. This is a test-only concession, not a real-code code-smell.
-    const fakeSlice = {
-      name: 'old',
-      panelType: initial.panelType,
-      roofs: [],
-      panels: [],
-      strings: [],
-      inverters: [],
-    } as unknown as UndoableSlice;
-    useProjectStore.getState().loadProject(initial, { past: [fakeSlice], future: [fakeSlice] });
+    const entry: HistoryEntry = { name: { before: 'old', after: initial.name } };
+    useProjectStore.getState().loadProject(initial, { past: [entry], future: [entry] });
     expect(useProjectStore.getState().past.length).toBe(1);
     expect(useProjectStore.getState().future.length).toBe(1);
     // Restoring non-empty history must also arm the mirrors — this is what
@@ -150,6 +141,27 @@ describe('loadProject/resetProject history behavior', () => {
     // in the right state for the restored stack depths.
     expect(useProjectStore.getState().canUndo).toBe(true);
     expect(useProjectStore.getState().canRedo).toBe(true);
+    useProjectStore.getState().undo();
+    expect(useProjectStore.getState().project.name).toBe('old');
+  });
+
+  it('loadProject converts legacy v2 snapshot history into working deltas', () => {
+    const initial = { ...useProjectStore.getState().project, name: 'now' };
+    // The strict `PanelType` interface doesn't structurally satisfy the
+    // slice's looser index-signature type, so cast through `unknown` —
+    // test-only concession; the runtime shape matches buildSlice output.
+    const snapshot = {
+      name: 'old',
+      panelType: initial.panelType,
+      roofs: [],
+      panels: [],
+      strings: [],
+      inverters: [],
+    } as unknown as UndoableSlice;
+    useProjectStore.getState().loadProject(initial, { kind: 'snapshots', past: [snapshot], future: [] });
+    expect(useProjectStore.getState().past).toEqual([{ name: { before: 'old', after: 'now' } }]);
+    useProjectStore.getState().undo();
+    expect(useProjectStore.getState().project.name).toBe('old');
   });
 });
 
@@ -235,5 +247,116 @@ describe('JSON round-trip with history', () => {
     }
     expect(useProjectStore.getState().past).toEqual([]);
     expect(useProjectStore.getState().future).toEqual([]);
+  });
+});
+
+// ── Collaboration safety (ADR-015) ────────────────────────────────────────
+// These encode the HIGH-severity audit finding: undo used to restore whole
+// arrays from a snapshot, so Alice's Ctrl-Z deleted Bob's concurrently-
+// arrived roof (and the sync diff then deleted it on the server).
+
+describe('undo is local-only in effect', () => {
+  const s = () => useProjectStore.getState();
+  beforeEach(() => {
+    s().resetProject();
+  });
+
+  it('undo after a remote add keeps the remote entity', () => {
+    const aliceRoof = s().addRoof(SQ);
+    // Bob's roof arrives over SSE.
+    s().applyRemotePatch([
+      { op: 'add', path: '/roofs/-', value: { id: 'bob', name: 'Bob', polygon: SQ, tiltDeg: 30, panelOrientation: 'portrait' } },
+    ]);
+    s().undo();
+    expect(s().project.roofs.map((r) => r.id)).toEqual(['bob']);
+    expect(s().project.roofs.find((r) => r.id === aliceRoof)).toBeUndefined();
+    // Redo brings Alice's roof back without touching Bob's.
+    s().redo();
+    expect(s().project.roofs.map((r) => r.id).sort()).toEqual([aliceRoof, 'bob'].sort());
+  });
+
+  it('undo of a delete does not resurrect panels a collaborator removed meanwhile', () => {
+    const rid = s().addRoof([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }]);
+    s().addPanel(rid, 10, 10, 'g1', 'portrait');
+    // Alice renames the roof (its own step: different action than
+    // addPanel, so no coalescing), then Bob deletes the roof remotely.
+    s().updateRoof(rid, { name: 'Renamed' });
+    s().applyRemotePatch([
+      { op: 'remove', path: '/panels/0' },
+      { op: 'remove', path: '/roofs/0' },
+    ]);
+    s().undo(); // reverts the rename → roof is gone, must stay gone
+    expect(s().project.roofs).toEqual([]);
+    expect(s().project.panels).toEqual([]);
+  });
+
+  it('undo reverts only the local field when a collaborator edited another field', () => {
+    const rid = s().addRoof(SQ);
+    s().updateRoof(rid, { tiltDeg: 45 });
+    s().applyRemotePatch([{ op: 'replace', path: '/roofs/0/name', value: 'Bob was here' }]);
+    s().undo(); // undoes the tilt step (its own entry: different action than addRoof)
+    const roof = s().project.roofs.find((r) => r.id === rid);
+    // Tilt back to 30; Bob's name — a field the step never touched — survives.
+    expect(roof?.tiltDeg).toBe(30);
+    expect(roof?.name).toBe('Bob was here');
+  });
+
+  it('remote patches never enter history and history stays usable after them', () => {
+    s().setProjectName('Alice');
+    const depth = s().past.length;
+    s().applyRemotePatch([{ op: 'add', path: '/inverters/-', value: { id: 'inv-bob', name: 'Bob inv' } }]);
+    expect(s().past.length).toBe(depth);
+    s().undo();
+    expect(s().project.name).toBe('Untitled Project');
+    expect(s().project.inverters.map((i) => i.id)).toEqual(['inv-bob']);
+  });
+
+  it('undo of addString unassigns panels a collaborator assigned to it', () => {
+    const rid = s().addRoof([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }]);
+    s().addPanel(rid, 10, 10, 'g1', 'portrait');
+    const sid = s().addString();
+    s().applyRemotePatch([
+      { op: 'replace', path: '/panels/0/stringId', value: sid },
+      { op: 'replace', path: '/panels/0/indexInString', value: 1 },
+    ]);
+    s().undo(); // undo addString
+    expect(s().project.strings).toEqual([]);
+    expect(s().project.panels[0].stringId).toBeNull();
+    expect(s().project.panels[0].indexInString).toBeNull();
+    expect(s().activeStringId).toBeNull();
+  });
+
+  it('undo of deletePanel restores the panel and its wiring index', () => {
+    const rid = s().addRoof([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }]);
+    s().addPanel(rid, 10, 10, 'g1', 'portrait');
+    s().addPanel(rid, 30, 10, 'g1', 'portrait');
+    s().addPanel(rid, 50, 10, 'g1', 'portrait');
+    const sid = s().addString();
+    const ids = s().project.panels.map((p) => p.id);
+    s().assignPanelsToString(ids, sid);
+    s().deletePanel(ids[1]);
+    expect(s().project.panels.map((p) => p.indexInString)).toEqual([1, 2]);
+    s().undo();
+    expect(s().project.panels.map((p) => p.id)).toEqual(ids);
+    expect(s().project.panels.map((p) => p.indexInString)).toEqual([1, 2, 3]);
+  });
+
+  it('coalescing still collapses a rapid updateRoof streak into one step', () => {
+    const rid = s().addRoof(SQ);
+    const depth = s().past.length;
+    s().updateRoof(rid, { name: 'a' });
+    s().updateRoof(rid, { name: 'ab' });
+    s().updateRoof(rid, { name: 'abc' });
+    expect(s().past.length).toBe(depth + 1);
+    s().undo();
+    expect(s().project.roofs[0].name).toBe('Roof 1');
+  });
+
+  it('a streak that returns to its start leaves no history entry', () => {
+    const rid = s().addRoof(SQ);
+    const depth = s().past.length;
+    s().updateRoof(rid, { name: 'x' });
+    s().updateRoof(rid, { name: 'Roof 1' });
+    expect(s().past.length).toBe(depth);
   });
 });

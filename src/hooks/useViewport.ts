@@ -51,6 +51,7 @@
 import { useEffect, useRef, useState, useCallback, type RefObject } from 'react';
 import type Konva from 'konva';
 import type { Point } from '../types';
+import { isEditableTarget } from '../utils/dom';
 
 // Wheel-zoom step. 1.05 gives a gentle, controllable zoom at standard
 // scroll granularity. Larger values feel jumpy; smaller values mean the
@@ -207,14 +208,13 @@ export function useViewport({
   // Space is a legitimate character in form inputs, so we ignore the key
   // when a typing context has focus — otherwise the sidebar text fields
   // would stutter every time the user pressed space.
+  // `isEditableTarget` also covers contentEditable (diagram labels): the
+  // old input/textarea/select-only check called preventDefault() on Space
+  // there, so labels couldn't contain spaces.
   const [spaceHeld, setSpaceHeld] = useState(false);
   useEffect(() => {
-    const isTypingContext = (target: EventTarget | null) =>
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingContext(e.target)) return;
+      if (isEditableTarget(e.target)) return;
       if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault();
         setSpaceHeld(true);
@@ -223,11 +223,23 @@ export function useViewport({
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === ' ' || e.code === 'Space') setSpaceHeld(false);
     };
+    // Losing focus mid-press (Cmd+Tab while holding Space) means the keyup
+    // lands in another window; without this, spaceHeld stuck at true and
+    // every later left-click panned instead of drawing until Space was
+    // pressed again. Blur / tab-hide = "key released".
+    const release = () => setSpaceHeld(false);
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') release();
+    };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', release);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', release);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 

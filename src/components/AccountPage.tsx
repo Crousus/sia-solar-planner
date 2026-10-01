@@ -31,7 +31,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { UserRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -60,7 +60,9 @@ export default function AccountPage() {
   }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -95,7 +97,7 @@ export default function AccountPage() {
 
   return (
     <PageShell
-      label="FIG_06 · ACCOUNT"
+      label={t('shell.figAccount')}
       userEmail={user.email}
       onSignOut={signOut}
       width="narrow"
@@ -110,7 +112,7 @@ export default function AccountPage() {
       </div>
 
       <div className="mb-8">
-        <span className="tech-label">PROFILE</span>
+        <span className="tech-label">{t('account.kicker')}</span>
         <h1 className="mt-1 font-editorial text-[44px] leading-[1.05] tracking-tight text-ink-50">
           {t('account.title')}
         </h1>

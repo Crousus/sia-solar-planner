@@ -32,8 +32,9 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18next from 'i18next';
 import type { TFunction } from 'i18next';
+import { safeDataImageUrl } from '../utils/safeUrl';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { ProjectRecord, TeamRecord, TeamMemberRecord, CustomerRecord } from '../backend/types';
 import { useAuthUser } from './AppShell';
 import { PageShell } from './PageShell';
@@ -56,7 +57,9 @@ export default function TeamView() {
   async function signOut() {
     // Same pattern as TeamPicker — clear auth then navigate proactively
     // to avoid rendering an unauthorized route for a tick.
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -132,7 +135,7 @@ export default function TeamView() {
 
   return (
     <PageShell
-      label="FIG_02 · PROJECTS"
+      label={t('shell.figProjects')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="wide"
@@ -185,7 +188,7 @@ export default function TeamView() {
             </div>
             <div className="flex items-end justify-between gap-4">
               <div className="min-w-0">
-                <span className="tech-label">TEAM</span>
+                <span className="tech-label">{t('team.kicker')}</span>
                 <h1
                   // `break-words` instead of truncate — a team name is
                   // brand-like; hiding characters with an ellipsis erodes
@@ -299,7 +302,7 @@ export default function TeamView() {
                     'radial-gradient(ellipse 50% 50% at 50% 0%, rgba(255,99,99,0.12), transparent 70%)',
                 }}
               />
-              <span className="tech-label relative">EMPTY · 00 PROJECTS</span>
+              <span className="tech-label relative">{t('team.emptyProjectsKicker')}</span>
               <h2 className="relative mt-3 font-editorial text-[34px] text-ink-50 leading-none">
                 {t('team.emptyProjectsTitle')}
               </h2>
@@ -339,9 +342,11 @@ export default function TeamView() {
                 // Only locked projects have a captured backdrop — the
                 // base64 dataURL lives on mapState when `locked === true`.
                 // Narrowed here so TS understands capturedImage exists.
+                // safeDataImageUrl: the doc is collaborator-writable, so
+                // only accept the data: URI the app itself produces.
                 const thumb =
                   p.doc?.mapState?.locked === true
-                    ? p.doc.mapState.capturedImage
+                    ? safeDataImageUrl(p.doc.mapState.capturedImage)
                     : null;
                 return (
                   <li key={p.id}>
@@ -446,7 +451,7 @@ export default function TeamView() {
                         <button
                           onClick={() => deleteProject(p.id)}
                           className="btn btn-danger relative shrink-0 self-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                          title="Delete project"
+                          title={t('team.deleteProjectTitle')}
                           style={{ padding: '6px 11px', fontSize: 13 }}
                         >
                           {t('team.deleteProject')}

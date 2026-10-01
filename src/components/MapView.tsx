@@ -35,7 +35,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { MapContainer, TileLayer, WMSTileLayer, useMap } from 'react-leaflet';
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useProjectStore } from '../store/projectStore';
 
 // ESRI's public satellite tile URL. Free for personal use, no API key.
@@ -155,10 +155,18 @@ export default function MapView({ onMapReady, rotation = 0 }: Props) {
     }
   }, [shellSize.w, shellSize.h]);
 
-  const handleMapReady = (m: L.Map) => {
-    mapInstanceRef.current = m;
-    onMapReady(m);
-  };
+  // Must be referentially stable: MapBinder's effect depends on it, and
+  // App's onMapReady force-rerenders App (→ MapView). An inline closure
+  // here re-fired the effect on every render, looping App ↔ MapView
+  // ~30×/s for as long as the map was unlocked ("Maximum update depth
+  // exceeded"). App's own onMapReady is already a stable useCallback.
+  const handleMapReady = useCallback(
+    (m: L.Map) => {
+      mapInstanceRef.current = m;
+      onMapReady(m);
+    },
+    [onMapReady],
+  );
 
   // Rotator dimensions. A square of side = sqrt(w² + h²) (main's
   // diagonal) centered on main guarantees full coverage at ANY rotation

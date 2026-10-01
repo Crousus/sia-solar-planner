@@ -102,7 +102,19 @@ function RegisterMark({ corner }: { corner: 'tl' | 'tr' | 'bl' | 'br' }) {
   );
 }
 
-export default function DiagramView() {
+interface DiagramViewProps {
+  /**
+   * Offscreen PDF-export render (mounted by pdf/pdfExport.tsx in a
+   * temporary React root when the user exports from the roof view, so the
+   * PDF always gets its block-diagram page). Skips the bootstrap effect —
+   * the exporter decides whether a diagram exists — and makes the canvas a
+   * static snapshot that reports `onReady` once laid out.
+   */
+  exportMode?: boolean;
+  onReady?: () => void;
+}
+
+export default function DiagramView({ exportMode = false, onReady }: DiagramViewProps = {}) {
   const { t } = useTranslation();
   // Bootstrap on first mount — if the project doesn't yet have a diagram
   // (e.g. legacy projects created before this feature), the store action
@@ -115,8 +127,9 @@ export default function DiagramView() {
   const projectName = useProjectStore((s) => s.project.name);
 
   useEffect(() => {
+    if (exportMode) return;
     bootstrapDiagram();
-  }, [bootstrapDiagram]);
+  }, [bootstrapDiagram, exportMode]);
 
   return (
     // Outer: dark "drafting table" with the app's atmospheric blue bloom.
@@ -236,7 +249,7 @@ export default function DiagramView() {
               flex escape hatch so the child isn't stretched by its
               intrinsic content height. */}
           <div className="flex-1 min-h-0">
-            <DiagramCanvas />
+            <DiagramCanvas exportMode={exportMode} onReady={onReady} />
           </div>
 
           <DiagramMetaTable />

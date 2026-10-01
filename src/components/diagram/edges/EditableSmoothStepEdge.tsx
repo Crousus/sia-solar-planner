@@ -41,6 +41,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -60,6 +61,7 @@ export default function EditableSmoothStepEdge({
   style,
   selected,
 }: EdgeProps) {
+  const { t } = useTranslation();
   // Persistent label offset in flow-space pixels. Read from edge.data so
   // it round-trips through the store. Fallback to 0/0 for edges that
   // predate the feature.
@@ -270,7 +272,7 @@ export default function EditableSmoothStepEdge({
             </div>
           ) : (
             <div style={chipStyle(selected, false)}>
-              {labelText || <span style={{ opacity: 0.55 }}>double-click</span>}
+              {labelText || <span style={{ opacity: 0.55 }}>{t('diagram.edgeLabelPlaceholder')}</span>}
             </div>
           )}
         </div>

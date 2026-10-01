@@ -35,6 +35,7 @@ import { Link } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { BrandMark } from './BrandMark';
 import LanguageToggle from './LanguageToggle';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   /** Content rendered in the main column. */
@@ -63,6 +64,7 @@ export function PageShell({
   onSignOut,
   width = 'default',
 }: Props) {
+  const { t } = useTranslation();
   // Max-width tokens map to a three-step scale. Keeping them explicit here
   // rather than exposing raw Tailwind classes means the pages can't drift
   // to arbitrary widths and the layout stays coherent. We keep both the
@@ -147,7 +149,7 @@ export function PageShell({
                   className="btn btn-ghost text-[13px]"
                   style={{ padding: '7px 13px' }}
                 >
-                  Sign out
+                  {t('team.signOut')}
                 </button>
               )}
             </>

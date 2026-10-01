@@ -31,7 +31,8 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { describe, it, expect } from 'vitest';
-import { diffProjects, applyProjectPatch } from './diff';
+import { diffProjects, applyProjectPatch, rebaseProject, toJsonDoc, jsonEqual } from './diff';
+import type { Panel } from '../types';
 import type { Project } from '../types';
 // Pulled in for the applyRemotePatch store-action test below. The store
 // is a singleton module-level instance (zustand's `create` returns one);
@@ -151,5 +152,92 @@ describe('applyRemotePatch store action', () => {
     const after = store.getState();
     expect(after.project.name).toBe('From Server');
     expect(after.past.length).toBe(pastLen); // history untouched
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// rebaseProject — id-aware three-way merge used by the sync client to
+// carry unsent local edits across a server baseline change (ADR-016).
+// ────────────────────────────────────────────────────────────────────────
+function panel(id: string, cx = 0): Panel {
+  return {
+    id, roofId: 'r1', groupId: 'g1', cx, cy: 0,
+    stringId: null, indexInString: null, orientation: 'portrait',
+  };
+}
+
+describe('rebaseProject', () => {
+  it('keeps both sides when they touched different fields', () => {
+    const base = fixture();
+    const theirs = { ...base, name: 'Theirs' };
+    const mine = { ...base, panelType: { ...base.panelType, wattPeak: 450 } };
+    const { doc, conflicts } = rebaseProject(base, theirs, mine);
+    expect(conflicts).toEqual([]);
+    expect(doc.name).toBe('Theirs');
+    expect(doc.panelType.wattPeak).toBe(450);
+  });
+
+  it('merges entity arrays by id, not index (remote delete + local edit)', () => {
+    // The scenario that index-based patches get wrong: they delete
+    // panels[0]; we edit panels[2]. An index-based replay would edit
+    // the panel that is now at index 2 (p4) instead of p3.
+    const base = { ...fixture(), panels: [panel('p1'), panel('p2'), panel('p3'), panel('p4')] };
+    const theirs = { ...base, panels: base.panels.slice(1) };
+    const mine = { ...base, panels: base.panels.map((p) => (p.id === 'p3' ? { ...p, cx: 99 } : p)) };
+    const { doc, conflicts } = rebaseProject(base, theirs, mine);
+    expect(conflicts).toEqual([]);
+    expect(doc.panels.map((p) => p.id)).toEqual(['p2', 'p3', 'p4']);
+    expect(doc.panels.find((p) => p.id === 'p3')!.cx).toBe(99);
+    expect(doc.panels.find((p) => p.id === 'p4')!.cx).toBe(0);
+  });
+
+  it('keeps concurrent additions from both sides without duplicates', () => {
+    const base = { ...fixture(), panels: [panel('p1')] };
+    const theirs = { ...base, panels: [...base.panels, panel('bob')] };
+    const mine = { ...base, panels: [...base.panels, panel('alice')] };
+    const { doc, conflicts } = rebaseProject(base, theirs, mine);
+    expect(conflicts).toEqual([]);
+    expect(doc.panels.map((p) => p.id)).toEqual(['p1', 'bob', 'alice']);
+  });
+
+  it('honours local deletes and remote deletes', () => {
+    const base = { ...fixture(), panels: [panel('p1'), panel('p2'), panel('p3')] };
+    const theirs = { ...base, panels: [panel('p1'), panel('p3')] };   // they removed p2
+    const mine = { ...base, panels: [panel('p1'), panel('p2')] };     // we removed p3
+    const { doc, conflicts } = rebaseProject(base, theirs, mine);
+    expect(conflicts).toEqual([]);
+    expect(doc.panels.map((p) => p.id)).toEqual(['p1']);
+  });
+
+  it('reports a conflict and keeps mine when both changed the same leaf', () => {
+    const base = fixture();
+    const { doc, conflicts } = rebaseProject(base, { ...base, name: 'B' }, { ...base, name: 'A' });
+    expect(conflicts).toEqual(['/name']);
+    expect(doc.name).toBe('A');
+  });
+
+  it('identical concurrent changes are not conflicts', () => {
+    const base = fixture();
+    const { conflicts } = rebaseProject(base, { ...base, name: 'Same' }, { ...base, name: 'Same' });
+    expect(conflicts).toEqual([]);
+  });
+
+  it('treats undefined keys as absent', () => {
+    const base = fixture();
+    const mine = { ...base, meta: undefined } as unknown as typeof base;
+    expect(jsonEqual(base, mine)).toBe(true);
+    expect(rebaseProject(base, { ...base, name: 'T' }, mine).conflicts).toEqual([]);
+  });
+});
+
+describe('toJsonDoc', () => {
+  it('strips undefined keys and preserves untouched subtrees by identity', () => {
+    const a = fixture();
+    const withUndef = { ...a, meta: undefined } as unknown as typeof a;
+    const norm = toJsonDoc(withUndef);
+    expect('meta' in norm).toBe(false);
+    expect(norm.panelType).toBe(a.panelType);
+    // No-op path returns the same reference.
+    expect(toJsonDoc(a)).toBe(a);
   });
 });

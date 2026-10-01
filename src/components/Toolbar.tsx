@@ -43,7 +43,18 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useProjectStore } from '../store/projectStore';
 import { metersPerPixel } from '../utils/calibration';
-import { exportPdf, prefetchPdfExport } from '../utils/pdfExport';
+// The export orchestrator lives behind a dynamic import: everything under
+// src/pdf/ is meant to be reachable only via a lazy boundary (see
+// composeStageImage.ts), so the editor chunk doesn't carry export code
+// until the user hovers / clicks Export.
+const loadPdfExport = () => import('../pdf/pdfExport');
+const exportPdf: typeof import('../pdf/pdfExport').exportPdf = async (...args) =>
+  (await loadPdfExport()).exportPdf(...args);
+const prefetchPdfExport = () => {
+  void loadPdfExport().then((m) => m.prefetchPdfExport());
+};
+import { KonvaExportFrame } from './KonvaOverlay';
+import DiagramView from './DiagramView';
 import {
   serializeProject,
   deserializeProject,
@@ -186,8 +197,10 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
   const setMapProvider = useProjectStore((s) => s.setMapProvider);
   const lockMap = useProjectStore((s) => s.lockMap);
   const unlockMap = useProjectStore((s) => s.unlockMap);
-  const project = useProjectStore((s) => s.project);
-  const inverterModelCache = useProjectStore((s) => s.inverterModelCache);
+  // NB: no whole-`project` selector here — the toolbar only needs the
+  // project at export/save time and reads it via getState() then.
+  // Subscribing to `s.project` re-rendered the toolbar on every doc
+  // change (each diagram drag frame, every keystroke in a field).
   const loadProject = useProjectStore((s) => s.loadProject);
   const resetProject = useProjectStore((s) => s.resetProject);
   const addString = useProjectStore((s) => s.addString);
@@ -316,16 +329,56 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
   };
 
   const handleExport = async () => {
-    // Two possible capture sources — either can legitimately be absent
-    // depending on which view is active:
-    //   - `.konva-overlay`         → roof plan (only mounted on activeView 'roof')
-    //   - `[data-diagram-view]`    → electrical block diagram (only on activeView 'diagram')
-    // The PDF tolerates missing roof plan too (see exportPdf); only if BOTH
-    // are missing do we bail. In practice one of them is always mounted
-    // because the toolbar is rendered inside App which always picks a view.
-    const stageEl = document.querySelector('.konva-overlay') as HTMLElement | null;
+    // The PDF always gets BOTH pages (roof plan + block diagram) when the
+    // project has material for them, regardless of which view is active.
+    // App mounts only one view at a time, so for the other page we hand
+    // exportPdf an offscreen-render recipe (see pdf/pdfExport.tsx). The
+    // mounted view is still captured from the live DOM, which keeps the
+    // user's current pan/zoom for that page.
+    const store = useProjectStore.getState();
+
+    // Block diagram: if it was never opened, bootstrap it now (one solar
+    // generator per roof, one inverter per inverter — the same thing
+    // opening the diagram view does) so the export has a page 2. Skipped
+    // when there is nothing to bootstrap from, so an early export of an
+    // empty project doesn't freeze an empty diagram into the doc.
+    if (!store.project.diagram && (store.project.roofs.length > 0 || store.project.inverters.length > 0)) {
+      store.bootstrapDiagram();
+    }
+    // Read fresh state AFTER the bootstrap (and at export time rather than
+    // via a render-time selector, so the toolbar doesn't subscribe to the
+    // whole project just for this click).
+    const { project, inverterModelCache } = useProjectStore.getState();
+
+    // Mounted sources. `.konva-overlay` only counts on the roof view.
+    const stageEl =
+      activeView === 'roof' ? (document.querySelector('.konva-overlay') as HTMLElement | null) : null;
     const diagramEl = document.querySelector('[data-diagram-view]') as HTMLElement | null;
-    if (!stageEl && !diagramEl) {
+
+    // Offscreen recipes for whichever page isn't mounted.
+    const ms = project.mapState;
+    const roofOffscreen =
+      !stageEl && ms.locked && ms.capturedWidth > 0 && ms.capturedHeight > 0
+        ? {
+            width: ms.capturedWidth,
+            height: ms.capturedHeight,
+            render: (onReady: () => void) => (
+              <KonvaExportFrame width={ms.capturedWidth} height={ms.capturedHeight} onReady={onReady} />
+            ),
+          }
+        : undefined;
+    const diagramOffscreen =
+      !diagramEl && (project.diagram?.nodes.length ?? 0) > 0
+        ? {
+            // DiagramView wraps the 1122×794 sheet in padded scroll chrome;
+            // give it room so nothing reflows. Only the sheet is captured.
+            width: 1200,
+            height: 900,
+            render: (onReady: () => void) => <DiagramView exportMode onReady={onReady} />,
+          }
+        : undefined;
+
+    if (!stageEl && !diagramEl && !roofOffscreen && !diagramOffscreen) {
       pushToast('error', t('toolbar.exportFailed'));
       return;
     }
@@ -339,7 +392,12 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
       teamId: getActiveProjectTeamId(),
       creatorId: getActiveProjectCreatorId(),
     };
-    const ok = await exportPdf(project, stageEl, inverterModelCache, brandingCtx);
+    const ok = await exportPdf(
+      project,
+      { stageEl, diagramEl, roofOffscreen, diagramOffscreen },
+      inverterModelCache,
+      brandingCtx,
+    );
     if (!ok) pushToast('error', t('toolbar.exportFailedGeneral'));
   };
 
@@ -430,7 +488,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           }
           setToolMode(active ? 'idle' : m.mode);
         }}
-        title={disabled ? t('toolbar.lockFirst') : `${t(m.labelKey)} — press ${m.key}`}
+        title={disabled ? t('toolbar.lockFirst') : t('toolbar.modeTitle', { label: t(m.labelKey), key: m.key })}
       >
         <span className="opacity-90">{m.glyph}</span>
         <span>{t(m.labelKey)}</span>
@@ -474,7 +532,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
         }}
         onClick={handleBackToProjects}
-        title="Back to projects"
+        title={t('toolbar.backToProjects')}
       >
         {/* Left chevron — invisible at rest, slides in and becomes visible
             on hover to hint that this is a navigation control. */}
@@ -521,7 +579,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
       <button
         disabled={isLocking}
         onClick={handleLock}
-        title={isLocking ? 'Capturing satellite view…' : locked ? 'Click to unlock' : 'Click to lock and start drawing'}
+        title={isLocking ? t('toolbar.capturingSatellite') : locked ? t('toolbar.clickToUnlock') : t('toolbar.clickToLock')}
         className={`btn relative ${locked ? 'btn-primary' : 'btn-ghost'} ${isLocking ? 'opacity-70 cursor-wait' : ''}`}
         style={{
           padding: '7px 14px',
@@ -575,7 +633,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           style={{ width: 'auto', padding: '6px 26px 6px 10px', fontSize: 12 }}
           value={mapProvider}
           onChange={(e) => setMapProvider(e.target.value as 'esri' | 'bayern')}
-          title="Satellite imagery provider"
+          title={t('toolbar.basemapProvider')}
         >
           <option value="esri">{t('toolbar.basemapEsri')}</option>
           <option value="bayern">{t('toolbar.basemapBayern')}</option>
@@ -639,7 +697,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
                 }
                 className="btn btn-ghost"
                 style={{ padding: '6px 10px 6px 8px', fontSize: 11.5 }}
-                title={`Add ${label}`}
+                title={t('toolbar.addNode', { label })}
               >
                 {/* 7px identity dot — the type's accent hue as a tiny
                     round pilot light, matching the node's header color
@@ -707,7 +765,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           className={`btn btn-tool ${locked && showBackground ? 'text-sun-300' : ''}`}
           onClick={toggleBackground}
           disabled={!locked}
-          title={!locked ? 'Lock the map first' : showBackground ? 'Hide satellite backdrop' : 'Show satellite backdrop'}
+          title={!locked ? t('toolbar.lockFirst') : showBackground ? t('toolbar.hideBackdrop') : t('toolbar.showBackdrop')}
         >
           {/* Backdrop eye icon — the closed-eye state for hidden reads
               naturally as "off". */}
@@ -747,7 +805,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           // user hovers, leaves, hovers again.
           onMouseEnter={prefetchPdfExport}
           onFocus={prefetchPdfExport}
-          title="Export A4 landscape PDF"
+          title={t('toolbar.exportTitle')}
         >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
             <path
@@ -772,7 +830,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           className="btn btn-tool"
           onClick={undo}
           disabled={!canUndo}
-          title={`Undo (${undoLabel})`}
+          title={t('toolbar.undoTitle', { shortcut: undoLabel })}
         >
           ↶ {t('toolbar.undo')}
         </button>
@@ -780,12 +838,12 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           className="btn btn-tool"
           onClick={redo}
           disabled={!canRedo}
-          title={`Redo (${redoLabel})`}
+          title={t('toolbar.redoTitle', { shortcut: redoLabel })}
         >
           ↷ {t('toolbar.redo')}
         </button>
 
-        <button className="btn btn-tool" onClick={handleSave} title="Save project JSON">
+        <button className="btn btn-tool" onClick={handleSave} title={t('toolbar.saveJson')}>
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
             <path
               d="M3 3h7l3 3v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
@@ -797,7 +855,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           </svg>
         </button>
 
-        <button className="btn btn-tool" onClick={handleLoad} title="Load project JSON">
+        <button className="btn btn-tool" onClick={handleLoad} title={t('toolbar.loadJson')}>
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
             <path
               d="M2 5h4l1.5 1.5H14v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5Z"
@@ -810,7 +868,7 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
 
         <div className="divider-v mx-1" />
 
-        <button className="btn btn-danger" onClick={handleReset} title="Reset entire project">
+        <button className="btn btn-danger" onClick={handleReset} title={t('toolbar.resetTitle')}>
           {t('toolbar.reset')}
         </button>
       </div>

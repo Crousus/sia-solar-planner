@@ -44,7 +44,7 @@ import {
   Routes,
   Route,
 } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { installAuthUserGuard, pb } from '../backend/pb';
 import type { UserRecord } from '../backend/types';
 import { pushToast } from '../store/toastStore';
 import { classifyError, headlineForCategory } from '../utils/errorClassify';
@@ -55,10 +55,7 @@ import TeamPicker from './TeamPicker';
 import NewTeamPage from './NewTeamPage';
 import TeamView from './TeamView';
 import TeamMembers from './TeamMembers';
-import NewProjectPage from './NewProjectPage';
-import ProjectSettingsPage from './ProjectSettingsPage';
 import CustomersPage from './CustomersPage';
-import CatalogPage from './CatalogPage';
 import AccountPage from './AccountPage';
 import TeamBrandingPage from './TeamBrandingPage';
 
@@ -70,6 +67,15 @@ import TeamBrandingPage from './TeamBrandingPage';
 // page the user is likely to open before the editor stays eager so
 // there's no flash-of-spinner on the common warm path.
 const ProjectEditor = lazy(() => import('./ProjectEditor'));
+// Also lazy: the two pages that embed ProjectMetaForm's Leaflet address
+// preview (NewProject, ProjectSettings) and the catalog (datasheet import
+// UI). Eager, they put all of Leaflet (~150 kB) and the catalog forms
+// into the first-load bundle for /login and /teams, where none of it is
+// used. They share the editor's background-only fallback via the
+// <Suspense> around <Routes> below.
+const NewProjectPage = lazy(() => import('./NewProjectPage'));
+const ProjectSettingsPage = lazy(() => import('./ProjectSettingsPage'));
+const CatalogPage = lazy(() => import('./CatalogPage'));
 
 /**
  * React-friendly view onto pb.authStore. Re-renders on login/logout.
@@ -173,9 +179,16 @@ function useGlobalErrorToasts() {
 
 export default function AppShell() {
   useGlobalErrorToasts();
+  // Wipe app-owned localStorage when a different user signs in than the
+  // last one seen in this browser (see installAuthUserGuard in pb.ts).
+  // Mounted at the root so it is registered before LoginPage can call
+  // authWithPassword — the wipe must happen before the post-login
+  // legacy-import check reads localStorage.
+  useEffect(() => installAuthUserGuard(), []);
   return (
     <BrowserRouter>
       <Toaster />
+      <Suspense fallback={<EditorLoadingShell />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<AuthGuard><TeamPicker /></AuthGuard>} />
@@ -191,38 +204,41 @@ export default function AppShell() {
         */}
         <Route path="/teams/:teamId/projects/new" element={<AuthGuard><NewProjectPage /></AuthGuard>} />
         {/*
-          Project editor (Task 9). The dynamic segment is the PB record id
-          of the project row. ProjectEditor handles fetch/loadProject on
-          mount and resetProject on unmount; the underlying <App/> stays
-          server-agnostic.
+          Project editor. The editor has two views — roof plan and block
+          diagram — addressed as /p/:id and /p/:id/diagram so reload,
+          deep-link and back/forward preserve the view. App.tsx reads
+          `location.pathname` to pick the pane.
+
+          ONE layout route with two element-less children, NOT two
+          sibling routes: with siblings, toggling the view swapped which
+          route matched, which unmounted and remounted ProjectEditor —
+          stop()/resetProject()/refetch on every toggle, wiping undo
+          history, flashing blank, and racing the remount's GET against
+          the previous mount's final flush (the next diff could then
+          revert the edit on the server). A parent route's element stays
+          mounted while only the matched child changes. ProjectEditor
+          renders no <Outlet/>; the children exist purely so exactly
+          these two URLs match (anything else under /p/:id still 404s as
+          before, and /p/:id/settings keeps its own route below).
         */}
-        {/*
-          The editor has two views — roof plan (default) and block diagram.
-          Both mount the same ProjectEditor; App.tsx reads the URL to pick
-          which pane to render. Having it in the path (rather than local
-          state) means reloading / deep-linking / back-forward all preserve
-          the current view without extra persistence wiring.
-        */}
-        {['/p/:projectId', '/p/:projectId/diagram'].map((path) => (
-          <Route
-            key={path}
-            path={path}
-            element={
-              <AuthGuard>
-                {/* Suspense boundary only wraps the editor route — all
-                    other pages import eagerly and never suspend. A plain
-                    full-screen shell is used as the fallback rather than
-                    a spinner component because the editor chunk is small
-                    over local dev and cached on repeat visits; a
-                    lightweight placeholder is less jarring than a
-                    gratuitous spinner that flashes for 50 ms. */}
-                <Suspense fallback={<EditorLoadingShell />}>
-                  <ProjectEditor />
-                </Suspense>
-              </AuthGuard>
-            }
-          />
-        ))}
+        <Route
+          path="/p/:projectId"
+          element={
+            <AuthGuard>
+              {/* Suspense boundary only wraps the editor route — all
+                  other pages import eagerly and never suspend. A plain
+                  full-screen shell is the fallback rather than a spinner:
+                  on a warm cache it's invisible, and a gratuitous
+                  spinner flashing for 50 ms is more jarring. */}
+              <Suspense fallback={<EditorLoadingShell />}>
+                <ProjectEditor />
+              </Suspense>
+            </AuthGuard>
+          }
+        >
+          <Route index element={null} />
+          <Route path="diagram" element={null} />
+        </Route>
         {/*
           Settings page for a project — name, client, address, notes.
           Lives at /p/:id/settings so breadcrumbs read naturally
@@ -252,6 +268,7 @@ export default function AppShell() {
         */}
         <Route path="/teams/:teamId/branding" element={<AuthGuard><TeamBrandingPage /></AuthGuard>} />
       </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

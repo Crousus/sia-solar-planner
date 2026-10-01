@@ -54,8 +54,10 @@ import {
   panelFitsOnRoof,
   getPanelGroupDimensions,
   distance,
+  rectanglesOverlap,
 } from './geometry';
 import type { Point, Roof, PanelType } from '../types';
+import { MAX_ROOF_TILT_DEG } from '../types';
 
 // ── Shared fixtures ────────────────────────────────────────────────────────
 
@@ -361,6 +363,57 @@ describe('roofPrimaryAngle', () => {
   it('returns 0 for a degenerate (single-point) polygon', () => {
     expect(roofPrimaryAngle([{ x: 0, y: 0 }])).toBe(0);
   });
+
+  it('ignores zero-length edges (duplicate vertices) and never returns NaN', () => {
+    const dup: Point[] = [
+      { x: 0, y: 0 },
+      { x: 0, y: 0 }, // duplicate
+      { x: 0, y: 30 },
+      { x: 10, y: 30 },
+      { x: 10, y: 0 },
+    ];
+    expect(roofPrimaryAngle(dup)).toBeCloseTo(Math.PI / 2);
+    // All vertices identical → no usable edge → 0, not NaN.
+    expect(roofPrimaryAngle([{ x: 1, y: 1 }, { x: 1, y: 1 }, { x: 1, y: 1 }])).toBe(0);
+    // A NaN vertex poisons only its two edges; the rest still decide.
+    const withNaN: Point[] = [
+      { x: 0, y: 0 },
+      { x: 40, y: 0 },
+      { x: NaN, y: 5 },
+      { x: 0, y: 10 },
+    ];
+    const a = roofPrimaryAngle(withNaN);
+    expect(Number.isFinite(a)).toBe(true);
+    expect(a).toBeCloseTo(0);
+  });
+
+  it('merges exactly-collinear consecutive edges into one straight run', () => {
+    // Trapezoid whose 30-long bottom side is split by a redundant vertex at
+    // x=15 (as a split/merge can leave behind). Each half (15) is shorter
+    // than the ~20.6-long slanted sides, so a per-edge pick would wrongly
+    // align the panel grid with a slanted side.
+    const split: Point[] = [
+      { x: 0, y: 0 },
+      { x: 15, y: 0 },
+      { x: 30, y: 0 },
+      { x: 25, y: 20 },
+      { x: 5, y: 20 },
+    ];
+    expect(roofPrimaryAngle(split)).toBeCloseTo(0);
+  });
+
+  it('merges a collinear run that wraps around index 0', () => {
+    // Same trapezoid, but the redundant vertex is vertex 0 — the long run
+    // spans the last edge and the first edge of the ring.
+    const wrap: Point[] = [
+      { x: 15, y: 0 },
+      { x: 30, y: 0 },
+      { x: 25, y: 20 },
+      { x: 5, y: 20 },
+      { x: 0, y: 0 },
+    ];
+    expect(roofPrimaryAngle(wrap)).toBeCloseTo(0);
+  });
 });
 
 // ── panelDisplaySize ──────────────────────────────────────────────────────
@@ -403,13 +456,29 @@ describe('panelDisplaySize', () => {
     expect(h).toBeCloseTo(4);
   });
 
-  it('tilt 90° collapses the slope axis to zero (degenerate but mathematically right)', () => {
-    // Not a realistic roof tilt, but verifies the formula's continuity.
-    // No code path special-cases the result; callers (snapPanelToGrid)
-    // refuse zero-area panels via cellH > 0 guard, but THIS function
-    // happily returns h=0.
-    const { h } = panelDisplaySize(PANEL_1x2, 'portrait', 90, 1);
-    expect(h).toBeCloseTo(0);
+  it('clamps tilt above the max (incl. ≥ 90°) so the slope axis never collapses', () => {
+    // cos(90°) = 0 would give zero-height cells (and >90° a negative
+    // height). panelDisplaySize clamps to MAX_ROOF_TILT_DEG (the store's
+    // write clamp) instead, so 90° and 120° both read as the max tilt.
+    const at90 = panelDisplaySize(PANEL_1x2, 'portrait', 90, 1);
+    const at120 = panelDisplaySize(PANEL_1x2, 'portrait', 120, 1);
+    const atMax = panelDisplaySize(PANEL_1x2, 'portrait', MAX_ROOF_TILT_DEG, 1);
+    expect(at90.h).toBeGreaterThan(0);
+    expect(at90.h).toBeCloseTo(atMax.h);
+    expect(at120.h).toBeCloseTo(atMax.h);
+    expect(at90.w).toBeCloseTo(1);
+  });
+
+  it('treats negative / non-finite tilt as flat', () => {
+    expect(panelDisplaySize(PANEL_1x2, 'portrait', -30, 1).h).toBeCloseTo(2);
+    expect(panelDisplaySize(PANEL_1x2, 'portrait', NaN, 1).h).toBeCloseTo(2);
+  });
+
+  it('returns a zero size (not Infinity/NaN) for an uncalibrated mpp or bad panel dims', () => {
+    expect(panelDisplaySize(PANEL_1x2, 'portrait', 0, 0)).toEqual({ w: 0, h: 0 });
+    expect(panelDisplaySize(PANEL_1x2, 'portrait', 0, NaN)).toEqual({ w: 0, h: 0 });
+    expect(panelDisplaySize({ ...PANEL_1x2, widthM: NaN }, 'portrait', 0, 1)).toEqual({ w: 0, h: 0 });
+    expect(panelDisplaySize({ ...PANEL_1x2, heightM: -1 }, 'landscape', 0, 1)).toEqual({ w: 0, h: 0 });
   });
 });
 
@@ -478,9 +547,8 @@ describe('snapPanelToGrid', () => {
     expect(result).toBeNull();
   });
 
-  it('rejects placement when a sibling panel is closer than 0.7 × min(cellW, cellH)', () => {
-    // cellW=1, cellH=2 → min*0.7 = 0.7. Sibling at the snap target itself
-    // (10,10) → distance 0 < 0.7 → rejected.
+  it('rejects placement when a sibling panel occupies the snap target', () => {
+    // Sibling at the snap target itself (10,10) → full overlap → rejected.
     const roof = makeRoof();
     const result = snapPanelToGrid(
       { x: 10, y: 10 },
@@ -496,7 +564,7 @@ describe('snapPanelToGrid', () => {
   it('allows placement at one full grid cell away from a sibling', () => {
     // The grid spacing is `cellW` along the axis (1px here for portrait
     // 1m × 2m at mpp=1). Sibling at (10,10), cursor at (11.1, 10.2) → snap
-    // candidate (11, 10), distance 1 > 0.7 → accepted.
+    // candidate (11, 10): edges touch exactly, no interior overlap → accepted.
     const roof = makeRoof();
     const result = snapPanelToGrid(
       { x: 11.1, y: 10.2 },
@@ -679,5 +747,216 @@ describe('distance', () => {
     const a = { x: 1, y: 2 };
     const b = { x: 7, y: 11 };
     expect(distance(a, b)).toBeCloseTo(distance(b, a));
+  });
+});
+
+// ── rectanglesOverlap (SAT) ───────────────────────────────────────────────
+
+describe('rectanglesOverlap', () => {
+  it('detects interior overlap and ignores edge-touching rectangles', () => {
+    const a = panelCorners({ x: 0, y: 0 }, 0, 2, 1);
+    const touching = panelCorners({ x: 2, y: 0 }, 0, 2, 1);
+    const overlapping = panelCorners({ x: 1.5, y: 0 }, 0, 2, 1);
+    const apart = panelCorners({ x: 5, y: 0 }, 0, 2, 1);
+    expect(rectanglesOverlap(a, touching)).toBe(false);
+    expect(rectanglesOverlap(a, overlapping)).toBe(true);
+    expect(rectanglesOverlap(a, apart)).toBe(false);
+  });
+
+  it('handles rotated rectangles (separating axis from either shape)', () => {
+    // A 45°-rotated square whose corner pokes into an axis-aligned one.
+    const square = panelCorners({ x: 0, y: 0 }, 0, 2, 2);
+    const diamondHit = panelCorners({ x: 2.2, y: 0 }, Math.PI / 4, 2, 2); // reaches x ≈ 0.79
+    const diamondMiss = panelCorners({ x: 2.6, y: 0 }, Math.PI / 4, 2, 2); // reaches x ≈ 1.19
+    expect(rectanglesOverlap(square, diamondHit)).toBe(true);
+    expect(rectanglesOverlap(square, diamondMiss)).toBe(false);
+  });
+
+  it('allows sub-tolerance penetration (float jitter) but not more', () => {
+    const a = panelCorners({ x: 0, y: 0 }, 0, 2, 1);
+    const jitter = panelCorners({ x: 1.99, y: 0 }, 0, 2, 1); // 0.01 overlap
+    expect(rectanglesOverlap(a, jitter, 0.02)).toBe(false);
+    expect(rectanglesOverlap(a, jitter, 0)).toBe(true);
+  });
+});
+
+// ── True-footprint overlap in snap / fit checks ───────────────────────────
+
+describe('panel overlap uses real footprints (not centre distance)', () => {
+  // A 1.0 × 1.7 m panel: landscape cell = 1.7 wide × 1.0 tall at tilt 0,
+  // mpp 0.1 → 17 × 10 px. Big roof so containment never interferes.
+  const PANEL: PanelType = { id: 'p', name: 'p', widthM: 1, heightM: 1.7, wattPeak: 400 };
+  const bigRoof = makeRoof({
+    polygon: [
+      { x: 0, y: 0 },
+      { x: 200, y: 0 },
+      { x: 200, y: 200 },
+      { x: 0, y: 200 },
+    ],
+  });
+
+  it('rejects two landscape panels offset 0.8 m along the long axis (old heuristic accepted it)', () => {
+    // Centre distance 8 px > 0.7 × min(17, 10) = 7 px, so the legacy check
+    // passed — yet the rectangles overlap by 0.9 m. snap=false so the
+    // candidate lands exactly where we ask (different group origin).
+    const existing = [{ x: 100, y: 100, orientation: 'landscape' as const }];
+    const result = snapPanelToGrid(
+      { x: 108, y: 100 },
+      bigRoof,
+      PANEL,
+      'landscape',
+      0.1,
+      existing,
+      null,
+      false,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('accepts an edge-touching landscape neighbour', () => {
+    const existing = [{ x: 100, y: 100, orientation: 'landscape' as const }];
+    const result = snapPanelToGrid(
+      { x: 117, y: 100 },
+      bigRoof,
+      PANEL,
+      'landscape',
+      0.1,
+      existing,
+      null,
+      false,
+    );
+    expect(result).not.toBeNull();
+  });
+
+  it('uses each existing panel\'s own orientation (portrait next to landscape)', () => {
+    // Existing PORTRAIT panel at (100,100): 10 wide × 17 tall → spans
+    // y 91.5..108.5. A landscape candidate (17 × 10) centred at (113.5, 112)
+    // spans x 105..122, y 107..117: it clears the portrait panel in x
+    // (portrait spans 95..105) → no overlap. Shift it to x=110 → overlaps.
+    const existing = [{ x: 100, y: 100, orientation: 'portrait' as const }];
+    expect(
+      snapPanelToGrid({ x: 113.5, y: 112 }, bigRoof, PANEL, 'landscape', 0.1, existing, null, false),
+    ).not.toBeNull();
+    expect(
+      snapPanelToGrid({ x: 110, y: 112 }, bigRoof, PANEL, 'landscape', 0.1, existing, null, false),
+    ).toBeNull();
+    // Without the orientation hint the existing panel would be assumed
+    // landscape (17 × 10, y 95..105) and the first candidate (y ≥ 107)
+    // would also pass — the hint is what makes the second one fail on y.
+  });
+
+  it('panelFitsOnRoof flags partially overlapping siblings of a different group', () => {
+    expect(
+      panelFitsOnRoof(
+        { id: 'a', cx: 100, cy: 100 },
+        bigRoof,
+        PANEL,
+        'landscape',
+        0.1,
+        [{ id: 'b', cx: 108, cy: 100, orientation: 'landscape' }],
+      ),
+    ).toBe(false);
+    expect(
+      panelFitsOnRoof(
+        { id: 'a', cx: 100, cy: 100 },
+        bigRoof,
+        PANEL,
+        'landscape',
+        0.1,
+        [{ id: 'b', cx: 117, cy: 100, orientation: 'landscape' }],
+      ),
+    ).toBe(true);
+  });
+
+  it('returns null instead of throwing for a NaN cursor or an uncalibrated map', () => {
+    expect(snapPanelToGrid({ x: NaN, y: 1 }, bigRoof, PANEL, 'portrait', 0.1, [])).toBeNull();
+    expect(snapPanelToGrid({ x: 100, y: 100 }, bigRoof, PANEL, 'portrait', 0, [])).toBeNull();
+  });
+});
+
+// ── getPanelGroupDimensions label positions ───────────────────────────────
+
+describe('getPanelGroupDimensions label positions', () => {
+  // 3 portrait panels, each 100 × 200 px (1 × 2 m at mpp 0.01, tilt 0),
+  // centred at x = 400 / 500 / 600, y = 500 → the row spans x 350..650,
+  // y 400..600. Roof is axis-aligned (primary angle 0).
+  const roof = makeRoof({
+    polygon: [
+      { x: 0, y: 0 },
+      { x: 1000, y: 0 },
+      { x: 1000, y: 1000 },
+      { x: 0, y: 1000 },
+    ],
+  });
+  const row = [
+    { cx: 400, cy: 500 },
+    { cx: 500, cy: 500 },
+    { cx: 600, cy: 500 },
+  ];
+
+  it('centres the long-edge labels on the row and places them just outside it', () => {
+    const dims = getPanelGroupDimensions(row, roof, PANEL_1x2, 'portrait', 0.01);
+    // Only the two 3-cell edges are labelled (short sides are 1 cell).
+    expect(dims).toHaveLength(2);
+    const sorted = [...dims].sort((a, b) => a.centerCanvas.y - b.centerCanvas.y);
+    const [top, bottom] = sorted;
+    // Horizontal centre of the row is x = 500 (was 550 with the bug).
+    expect(top.centerCanvas.x).toBeCloseTo(500);
+    expect(bottom.centerCanvas.x).toBeCloseTo(500);
+    // Top edge at y = 400, label shifted 15 px outward → 385 (was 485,
+    // i.e. inside the row). Bottom edge y = 600 → 615 (was 715).
+    expect(top.centerCanvas.y).toBeCloseTo(385);
+    expect(bottom.centerCanvas.y).toBeCloseTo(615);
+    for (const d of dims) {
+      expect(d.lengthM).toBeCloseTo(3);
+      expect(d.textAngle).toBeCloseTo(0);
+    }
+  });
+
+  it('places side labels of a vertical column outside its left/right edges', () => {
+    // 1 × 3 column of the same panels: x 450..550, y 300..900.
+    const column = [
+      { cx: 500, cy: 400 },
+      { cx: 500, cy: 600 },
+      { cx: 500, cy: 800 },
+    ];
+    const dims = getPanelGroupDimensions(column, roof, PANEL_1x2, 'portrait', 0.01);
+    expect(dims).toHaveLength(2);
+    const sorted = [...dims].sort((a, b) => a.centerCanvas.x - b.centerCanvas.x);
+    expect(sorted[0].centerCanvas.x).toBeCloseTo(435); // 450 − 15
+    expect(sorted[1].centerCanvas.x).toBeCloseTo(565); // 550 + 15
+    for (const d of dims) {
+      expect(d.centerCanvas.y).toBeCloseTo(600);
+      expect(d.lengthM).toBeCloseTo(6);
+    }
+  });
+
+  it('keeps labels correct on a rotated roof (rotates with the grid)', () => {
+    // Same row rotated by 90° about the first panel: roof whose longest
+    // edge is vertical. Centres at y = 400 / 500 / 600 along x = 400.
+    const tallRoof = makeRoof({
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 0, y: 1000 },
+        { x: 900, y: 1000 },
+        { x: 900, y: 0 },
+      ],
+    });
+    // Longest edge (0,0)→(0,1000) → angle +90°. Local +x maps to canvas +y.
+    const rotated = [
+      { cx: 400, cy: 400 },
+      { cx: 400, cy: 500 },
+      { cx: 400, cy: 600 },
+    ];
+    const dims = getPanelGroupDimensions(rotated, tallRoof, PANEL_1x2, 'portrait', 0.01);
+    expect(dims).toHaveLength(2);
+    for (const d of dims) {
+      // Along-row centre is the middle panel's y.
+      expect(d.centerCanvas.y).toBeCloseTo(500);
+    }
+    const xs = dims.map((d) => d.centerCanvas.x).sort((a, b) => a - b);
+    // Row is 200 px thick across x (300..500); labels sit 15 px outside.
+    expect(xs[0]).toBeCloseTo(285);
+    expect(xs[1]).toBeCloseTo(515);
   });
 });

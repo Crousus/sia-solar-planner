@@ -69,9 +69,16 @@ interface Props {
   // used for eager cleanup on unlock. All real interaction post-lock
   // goes through our own pan/zoom state — no Leaflet calls.
   mapRef: React.RefObject<L.Map | null>;
+  /**
+   * PDF export hook: called once the Stage is mounted at a real size and
+   * the captured background has finished loading (or failed / is hidden /
+   * absent), i.e. as soon as `stage.toCanvas()` would produce the final
+   * picture. Only the offscreen export frame (KonvaExportFrame) passes it.
+   */
+  onCaptureReady?: () => void;
 }
 
-export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
+export default function KonvaOverlay({ containerRef, mapRef: _mapRef, onCaptureReady }: Props) {
   const stageRef = useRef<Konva.Stage>(null);
   const { t } = useTranslation();
 
@@ -129,9 +136,14 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
   // async; render nothing for the background until it's ready (the other
   // layers still render immediately — just no backdrop for a frame).
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+  // True once the current capturedImage has either decoded or failed.
+  // Only consumed by the export-readiness signal below.
+  const [bgSettled, setBgSettled] = useState(false);
   useEffect(() => {
+    setBgSettled(false);
     if (!capturedImage) {
       setBgImage(null);
+      setBgSettled(true);
       return;
     }
     // `cancelled` + cleanup prevent two hazards: (1) a late onload from a
@@ -141,9 +153,14 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
     // Clearing src='' lets the browser release the decoded bitmap.
     const img = new window.Image();
     let cancelled = false;
-    img.onload = () => { if (!cancelled) setBgImage(img); };
+    img.onload = () => {
+      if (cancelled) return;
+      setBgImage(img);
+      setBgSettled(true);
+    };
     img.onerror = () => {
       if (cancelled) return;
+      setBgSettled(true);
       // Fires when the captured base64 PNG fails to decode — usually
       // means the data URL was truncated by a localStorage quota limit
       // or hand-edited. Toast surfaces it visibly; without this the
@@ -163,6 +180,22 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
       img.src = '';
     };
   }, [capturedImage, t]);
+
+  // ── Export readiness (offscreen PDF frame only) ──────────────────────
+  // Fires once per mount. Waits for (a) a measured, non-zero Stage — the
+  // placeholder div below renders until then — and (b) the background
+  // image to settle when it's going to be drawn. react-konva draws
+  // synchronously on commit, so by the time this effect runs after the
+  // render that contains the image, the layer canvas already has it.
+  const readyFiredRef = useRef(false);
+  const stageMounted = viewport.size.w > 0 && viewport.size.h > 0;
+  const bgReady = !showBackground || !capturedImage || bgSettled;
+  useEffect(() => {
+    if (!onCaptureReady || readyFiredRef.current) return;
+    if (!stageMounted || !bgReady) return;
+    readyFiredRef.current = true;
+    onCaptureReady();
+  }, [onCaptureReady, stageMounted, bgReady]);
 
   // ── Merged Stage mouse handlers ──────────────────────────────────────
   // Order matters: viewport first. If the viewport consumes the event
@@ -301,6 +334,35 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef }: Props) {
           onReset={() => viewport.setRotationAbsolute(0)}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Self-contained roof-plan Stage for the PDF exporter's offscreen render
+ * (pdf/pdfExport.tsx), used when the user exports while the block
+ * diagram view is active and the on-screen KonvaOverlay isn't mounted.
+ *
+ * The frame is sized to the captured satellite image, and a fresh
+ * useViewport starts at the identity transform (plus the lock-time
+ * rotation seed), so the export shows the whole locked capture area —
+ * the same framing the editor opens with after locking. (Exporting from
+ * the roof view instead captures the user's current pan/zoom.)
+ */
+export function KonvaExportFrame({
+  width,
+  height,
+  onReady,
+}: {
+  width: number;
+  height: number;
+  onReady: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width, height, overflow: 'hidden' }}>
+      <KonvaOverlay containerRef={containerRef} mapRef={mapRef} onCaptureReady={onReady} />
     </div>
   );
 }

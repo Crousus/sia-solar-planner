@@ -29,11 +29,13 @@
 //      A to project B would briefly flash A's roofs/panels because the
 //      next mount's fetch is async.
 //
-// Task 12/13 adds the syncClient subscription here (outbound diff + POST
-// of patches, inbound SSE for collaborator changes). This task stops
-// short of that — opening a project works but nothing is synced back
-// to the server yet. Edits made here will be lost on refresh until
-// Task 12 wires the patch stream.
+// The same mount persists across the roof ↔ diagram view toggle (one
+// layout route in AppShell; App.tsx picks the view from the URL), so the
+// sync client, undo history and tool state survive view switches.
+//
+// Sync: a per-mount SyncClient (backend/syncClient.ts, ADR-016) owns the
+// initial fetch so the editor's doc and the sync baseline come from the
+// same server response.
 //
 // Error handling:
 //   404 (project deleted) and 403 (caller is not a team member) are
@@ -49,6 +51,7 @@ import { pb } from '../backend/pb';
 import type { InverterModelRecord, ProjectRecord } from '../backend/types';
 import { panelTypeFromCatalogRecord, useProjectStore } from '../store/projectStore';
 import { createSyncClient, type SyncClient } from '../backend/syncClient';
+import { markServerEra } from '../backend/migrateLocalStorage';
 import { dismissToast, pushToast } from '../store/toastStore';
 import { formatErrorForUser } from '../utils/errorClassify';
 import App from '../App';
@@ -94,6 +97,15 @@ export default function ProjectEditor() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // `navigate` and `t` are read through refs inside the load effect so
+  // the effect depends on `projectId` ONLY. With them in the dep list, a
+  // language switch (new `t`) or a router-context change (new
+  // `navigate`) tore the whole editor down: stop(), resetProject(),
+  // refetch, undo history gone.
+  const navigateRef = useRef(navigate);
+  const tRef = useRef(t);
+  navigateRef.current = navigate;
+  tRef.current = t;
   const [error, setError] = useState<string | null>(null);
   // `loaded` gates rendering of <App/>. We can't render it until the
   // store has a real project doc — otherwise the canvas would render
@@ -101,238 +113,196 @@ export default function ProjectEditor() {
   // session (or the default initialProject, which would look like a
   // half-loaded blank project to the user).
   const [loaded, setLoaded] = useState(false);
-  // Holds the active syncClient instance for the lifetime of this mount.
-  // We use a ref (not state) because nothing in React's render path
-  // depends on the client — only imperative paths (unmount cleanup,
-  // sibling components via getActiveSyncClient) need to read it.
-  const syncClientRef = useRef<SyncClient | null>(null);
-  // Holds the unsubscribe handle for the sync-status → toast bridge so
-  // unmount cleanup can drop it without leaking a closure that still
-  // references the dead client.
-  const statusUnsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
-    // `cancelled` prevents a race when the user navigates away mid-fetch:
-    // the in-flight Promise still resolves, but we ignore its result so
-    // we don't loadProject() into an unmounted/unrelated tree. Without
-    // this flag a fast back-button press could overwrite the next page's
-    // state with this page's late-arriving doc.
+    // `cancelled` covers the whole async chain: every continuation after
+    // an await re-checks it so a fast navigation (or React StrictMode's
+    // mount→unmount→mount) never loads project A into the store while
+    // project B is open, and never leaves a sync client running.
     let cancelled = false;
-    pb.collection('projects')
-      .getOne<ProjectRecord>(projectId, {
-        // Expand panel_model so we can override doc.panelType with the
-        // catalog record's live values (see block below). Customer is
-        // expanded too so downstream consumers (e.g. settings page)
-        // don't need a separate fetch.
-        expand: 'panel_model,customer',
-      })
-      .then(async (record) => {
-        if (cancelled) return;
-        // ── Live reference: catalog → doc.panelType ──────────────────
-        // If this project is linked to a panel_models catalog entry,
-        // replace whatever doc.panelType had with a fresh PanelType
-        // derived from the catalog record. This is the core of the
-        // "live reference" semantic: any edit to the catalog entry
-        // takes effect on all linked projects on next load.
-        //
-        // Legacy projects (panel_model is empty string) skip this step
-        // and continue using whatever panelType was embedded in the doc
-        // — matches the backwards-compat promise.
-        //
-        // We mutate record.doc IN PLACE rather than building a new
-        // object because loadProject takes the doc by reference and
-        // any downstream sync machinery will diff against it. Writing
-        // the catalog value before loadProject ensures the diff
-        // baseline already has the catalog values, so catalog-sourced
-        // panel data isn't treated as an "edit" waiting to be flushed.
-        if (record.expand?.panel_model) {
-          record.doc.panelType = panelTypeFromCatalogRecord(record.expand.panel_model);
-        }
+    setError(null);
+    setLoaded(false);
 
-        const store = useProjectStore.getState();
-        // We use getState() rather than a hook subscription because
-        // loadProject is an action we just want to fire once — no need
-        // to re-render this component when other store fields change.
-        store.loadProject(record.doc);
+    // Create the client FIRST and register it with the cleanup below,
+    // so whatever happens later (fetch failure, cancellation mid-await)
+    // the cleanup always stops exactly the client this effect created.
+    // Previously the client was created after an await and a cancelled
+    // effect still started one — a leaked client that diffed project B's
+    // store content against project A's baseline and POSTed it to A.
+    const client = createSyncClient(projectId, {
+      // Final-flush failures after unmount: the editor is gone, so a
+      // toast is the only way left to tell the user.
+      onUnsavedChanges: (reason) => {
+        const key =
+          reason === 'conflict' ? 'sync.unsavedConflict'
+          : reason === 'network' ? 'sync.unsavedNetwork'
+          : 'sync.unsavedRejected';
+        pushToast('error', tRef.current(key), { dedupeKey: `sync-unsaved:${projectId}` });
+      },
+    });
+    activeSyncClient = client;
 
-        // Wire up the catalog context so Sidebar + model pickers can
-        // read/write them. Order: project id → model id → inverter
-        // cache. The cache fetch is async; we set the rest synchronously
-        // so Sidebar doesn't briefly show "no catalog info" during the
-        // round-trip.
-        store.setActivePbProjectId(record.id);
-        store.setActivePanelModelId(record.panel_model || null);
-
-        // Batch-fetch all inverter model records referenced in the doc.
-        // The inverters array is usually small (≤5), but batching
-        // through one filter query (via `id ?= "..." || id ?= "..."`)
-        // still avoids N individual fetches. Deduped before the query so
-        // two inverters sharing a model don't fetch twice.
-        const modelIds = Array.from(
-          new Set(
-            record.doc.inverters
-              .map((i) => i.inverterModelId)
-              .filter((id): id is string => !!id),
-          ),
-        );
-        if (modelIds.length > 0) {
-          try {
-            // Use `?=` (array contains) style via OR; PB filter DSL
-            // doesn't have an `in` operator so we OR per-id. For the
-            // tens-of-inverters scale we care about, the string is
-            // short and PB handles it fine.
-            const filter = modelIds.map((id) => `id="${id}"`).join(' || ');
-            const recs = await pb.collection('inverter_models').getFullList<InverterModelRecord>({ filter });
-            if (!cancelled) {
-              const cache: Record<string, InverterModelRecord> = {};
-              for (const r of recs) cache[r.id] = r;
-              store.setInverterModelCache(cache);
-            }
-          } catch {
-            // Cache miss on any id simply means the sidebar shows the
-            // inverter's user-editable name with no manufacturer
-            // metadata — degraded but functional. Swallow to avoid
-            // blocking the editor mount on a catalog fetch.
-          }
-        }
-
-        // Set before setLoaded so Toolbar can read it on first render.
-        activeProjectTeamId = record.team;
-        // `created_by` is empty string for legacy projects (pre-migration
-        // 1712346900). Normalize to null so callers only need one falsy
-        // check — matches the pattern for activeProjectTeamId when no
-        // project is open.
-        activeProjectCreatorId = record.created_by || null;
-        setLoaded(true);
-        // Start the sync client AFTER loadProject so its initial
-        // `lastSyncedDoc` fetch aligns with the doc we just loaded.
-        // `start()` does its own getOne internally, which means the
-        // client will briefly fetch the project twice at startup —
-        // acceptable for simplicity; we could optimize by passing the
-        // record through, but that would couple the client's startup
-        // signature to this caller.
-        const client = createSyncClient(projectId);
-        // Fire-and-forget: start is async (awaits the initial fetch and
-        // SSE subscription) but we don't block rendering on it. If the
-        // initial fetch fails the client will simply stay in `synced`
-        // status with no lastSyncedDoc; the next user edit will schedule
-        // a flush that early-exits until the subscribe completes on the
-        // next tick (or surfaces an error via the retry path).
-        void client.start();
-        syncClientRef.current = client;
-        activeSyncClient = client;
-
-        // ── Sync error → toast ─────────────────────────────────────────
-        // The status badge (SyncStatusIndicator) already shows the
-        // current state at a glance, but the user can easily miss it
-        // while focused on the canvas. A toast adds a louder beat so
-        // they don't keep editing unaware that nothing is being saved.
-        //
-        // Strategy:
-        //   1. Wait `OFFLINE_GRACE_MS` after the first sign of offline
-        //      before toasting — short network blips that auto-recover
-        //      shouldn't bother the user. The retry mechanic in
-        //      syncClient already handles them silently.
-        //   2. Once the toast is up, keep it up until status returns to
-        //      `synced`, at which point we dismiss it and post a brief
-        //      success ("connection restored") toast.
-        //   3. Conflicts have their own UI (ConflictModal); don't toast
-        //      for those.
-        //
-        // We hold the in-flight toast id in a closure variable rather
-        // than reactive state because the subscription handler isn't a
-        // React effect — a ref/state would buy nothing here.
-        const OFFLINE_GRACE_MS = 5000;
-        let offlineToastId: string | null = null;
-        let offlineGraceTimer: ReturnType<typeof setTimeout> | null = null;
-        const unsubStatus = client.subscribeStatus((status) => {
-          if (status.kind === 'offline') {
-            if (offlineToastId || offlineGraceTimer) return; // already pending/shown
-            offlineGraceTimer = setTimeout(() => {
-              offlineGraceTimer = null;
-              offlineToastId = pushToast('error', t('errors.syncOffline'), {
-                dedupeKey: `sync-offline:${projectId}`,
-              });
-            }, OFFLINE_GRACE_MS);
-          } else if (status.kind === 'synced') {
-            // Cancel a pending grace toast that hadn't fired yet.
-            if (offlineGraceTimer) {
-              clearTimeout(offlineGraceTimer);
-              offlineGraceTimer = null;
-            }
-            // If we had actually shown the offline toast, swap it for
-            // a brief "restored" success message so the user knows the
-            // editor caught up.
-            if (offlineToastId) {
-              dismissToast(offlineToastId);
-              offlineToastId = null;
-              pushToast('success', t('errors.syncRestored'));
-            }
-          }
+    // ── Sync status → toast ──────────────────────────────────────────
+    // The status badge (SyncStatusIndicator) shows the state at a
+    // glance, but it's easy to miss while focused on the canvas.
+    //   1. Offline: wait OFFLINE_GRACE_MS before toasting so short blips
+    //      that the retry loop absorbs don't bother the user; dismiss
+    //      and post "restored" once we're synced again.
+    //   2. Rejected (server refused our patch even after a resync):
+    //      toast immediately — edits are not being saved.
+    //   3. Conflicts have their own UI (ConflictModal).
+    const OFFLINE_GRACE_MS = 5000;
+    let offlineToastId: string | null = null;
+    let offlineGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubStatus = client.subscribeStatus((status) => {
+      if (status.kind === 'offline') {
+        if (offlineToastId || offlineGraceTimer) return; // already pending/shown
+        offlineGraceTimer = setTimeout(() => {
+          offlineGraceTimer = null;
+          offlineToastId = pushToast('error', tRef.current('errors.syncOffline'), {
+            dedupeKey: `sync-offline:${projectId}`,
+          });
+        }, OFFLINE_GRACE_MS);
+      } else if (status.kind === 'error' && status.reason === 'rejected') {
+        pushToast('error', tRef.current('sync.rejectedToast'), {
+          dedupeKey: `sync-rejected:${projectId}`,
         });
-        // Stash on the ref's metadata-by-closure so the unmount cleanup
-        // can find it. We piggyback on syncClientRef.current's own stop
-        // path by capturing the unsub in the outer-scope variable below.
-        statusUnsubRef.current = unsubStatus;
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        // 404 (project deleted/renamed) and 403 (not a member) both mean
-        // the user can't see this project — bounce to the home page rather
-        // than surface a scary error. `replace: true` so the back button
-        // doesn't loop them straight back into the failing /p/:id URL.
-        if (err?.status === 404 || err?.status === 403) {
-          navigate('/', { replace: true });
-          return;
+      } else if (status.kind === 'synced') {
+        if (offlineGraceTimer) {
+          clearTimeout(offlineGraceTimer);
+          offlineGraceTimer = null;
         }
-        // eslint-disable-next-line no-console
-        console.error('[ProjectEditor] project fetch failed', err);
-        setError(formatErrorForUser(err, t));
+        if (offlineToastId) {
+          dismissToast(offlineToastId);
+          offlineToastId = null;
+          pushToast('success', tRef.current('errors.syncRestored'));
+        }
+      }
+    });
+
+    (async () => {
+      // ONE fetch feeds both the store and the sync baseline. start()
+      // subscribes to realtime before calling `load`, buffers any patch
+      // committed in between, and reconciles by revision once the record
+      // is in — the old "GET here, second GET inside start()" sequence
+      // could see two different revisions and the next diff would
+      // revert a collaborator's (or our own just-flushed) edit.
+      const record = await client.start<ProjectRecord>({
+        load: () =>
+          pb.collection('projects').getOne<ProjectRecord>(projectId, {
+            // panel_model: live catalog override below. customer: so
+            // downstream consumers don't need a separate fetch.
+            expand: 'panel_model,customer',
+          }),
+        onLoaded: (rec) => {
+          if (cancelled) return;
+          // ── Live reference: catalog → doc.panelType ──────────────────
+          // If this project is linked to a panel_models entry, the
+          // editor uses the catalog's current values instead of the
+          // copy embedded in the doc, so catalog edits reach every
+          // linked project on next open. Legacy projects (empty
+          // panel_model) keep their embedded panelType.
+          //
+          // We build a NEW doc instead of mutating rec.doc: the sync
+          // baseline is the raw server doc, and the override is a real
+          // local change. If the catalog differs from the stored copy,
+          // the first flush POSTs it so the server doc (PDF export,
+          // settings page, collaborators) converges on the catalog
+          // values. (The previous comment here claimed the override was
+          // part of the baseline; it never was — start() fetched its own
+          // un-overridden copy — and the claim was misleading.)
+          const doc = rec.expand?.panel_model
+            ? { ...rec.doc, panelType: panelTypeFromCatalogRecord(rec.expand.panel_model) }
+            : rec.doc;
+          const store = useProjectStore.getState();
+          store.loadProject(doc);
+          // Catalog context for Sidebar + model pickers.
+          store.setActivePbProjectId(rec.id);
+          store.setActivePanelModelId(rec.panel_model || null);
+          activeProjectTeamId = rec.team;
+          // `created_by` is '' for legacy projects; normalise to null.
+          activeProjectCreatorId = rec.created_by || null;
+          // This browser now runs the server-backed editor: any legacy
+          // `solar-planner-project` blob is not a pre-auth draft.
+          markServerEra();
+        },
       });
+      if (cancelled || !record) return;
+
+      // Batch-fetch the inverter catalog records referenced in the doc
+      // (deduped, one OR-filter query — PB's filter DSL has no `in`).
+      // Awaited before setLoaded so the sidebar doesn't flash "no
+      // manufacturer info"; failures are swallowed (degraded but usable).
+      const modelIds = Array.from(
+        new Set(
+          record.doc.inverters
+            .map((i) => i.inverterModelId)
+            .filter((id): id is string => !!id),
+        ),
+      );
+      if (modelIds.length > 0) {
+        try {
+          const filter = modelIds.map((id) => `id="${id}"`).join(' || ');
+          const recs = await pb.collection('inverter_models').getFullList<InverterModelRecord>({ filter });
+          if (cancelled) return;
+          const cache: Record<string, InverterModelRecord> = {};
+          for (const r of recs) cache[r.id] = r;
+          useProjectStore.getState().setInverterModelCache(cache);
+        } catch {
+          if (cancelled) return;
+        }
+      }
+      if (cancelled) return;
+      setLoaded(true);
+    })().catch((err) => {
+      if (cancelled) return;
+      // 404 (deleted) / 403 (not a member): bounce home. `replace` so
+      // Back doesn't loop into the failing URL.
+      if (err?.status === 404 || err?.status === 403) {
+        navigateRef.current('/', { replace: true });
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.error('[ProjectEditor] project fetch failed', err);
+      setError(formatErrorForUser(err, tRef.current));
+    });
+
     return () => {
       cancelled = true;
-      // Drop the status → toast bridge before stop() so any final state
-      // emission during stop doesn't fire a stray toast for a project
-      // we're navigating away from.
-      statusUnsubRef.current?.();
-      statusUnsubRef.current = null;
-      // Stop the sync client BEFORE resetting the store — stop() clears
-      // its debounce timer and store subscription, so the resetProject()
-      // below won't trigger a spurious outbound flush for a doc the
-      // user is about to navigate away from.
-      syncClientRef.current?.stop();
-      syncClientRef.current = null;
-      activeSyncClient = null;
+      // Drop the status → toast bridge before stop() so teardown doesn't
+      // fire a stray toast for a project we're leaving.
+      unsubStatus();
+      if (offlineGraceTimer) clearTimeout(offlineGraceTimer);
+      // stop() BEFORE resetProject: it snapshots the store's project for
+      // the final flush and drops its store subscription, so the reset
+      // below is neither flushed nor lost.
+      client.stop();
+      if (activeSyncClient === client) activeSyncClient = null;
       activeProjectTeamId = null;
       activeProjectCreatorId = null;
-      // Clear the store on unmount so the next project load starts clean.
-      // See header comment for why this matters across project navigation.
       const store = useProjectStore.getState();
       store.resetProject();
-      // Clear catalog context — resetProject only wipes the `project`
-      // slice; the catalog fields are UI-state outside that slice and
-      // would otherwise leak into the next project mount (e.g. the
-      // previous project's panel_model id ghosting through the sidebar
-      // for a frame).
+      // Catalog context lives outside the `project` slice; clear it so
+      // the previous project's ids don't ghost into the next mount.
       store.setActivePbProjectId(null);
       store.setActivePanelModelId(null);
       store.setInverterModelCache({});
     };
-  }, [projectId, navigate, t]);
+  }, [projectId]);
 
   if (error) {
     return (
       <div className="min-h-screen bg-zinc-900 text-zinc-100 p-6">
-        <p className="text-red-400">Failed to open project: {error}</p>
-        <Link className="underline mt-3 inline-block" to="/">← Back</Link>
+        <p className="text-red-400">{t('editor.openFailed', { message: error })}</p>
+        <Link className="underline mt-3 inline-block" to="/">{t('editor.back')}</Link>
       </div>
     );
   }
   if (!loaded) {
     return (
       <div className="min-h-screen bg-zinc-900 text-zinc-100 p-6">
-        Loading…
+        {t('team.loading')}
       </div>
     );
   }

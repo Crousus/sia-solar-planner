@@ -23,6 +23,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
+# Run unprivileged. The service parses untrusted PDFs with pdfminer,
+# poppler and tesseract — large native attack surface — so a parser bug
+# must not hand out root in the container. A fixed UID keeps file
+# ownership predictable across rebuilds; --no-create-home + /tmp for
+# scratch (tempfile / pdf2image write there) is all it needs. App files
+# stay root-owned so the process can't modify its own code.
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin ocr
+USER 10001
+
 # Internal port — only the backend service talks to us.
 EXPOSE 8001
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

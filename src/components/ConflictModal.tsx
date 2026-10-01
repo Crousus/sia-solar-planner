@@ -17,18 +17,17 @@
 // ────────────────────────────────────────────────────────────────────────
 // ConflictModal — appears when syncClient status is 'conflict'.
 //
-// A 409 from the server means someone else advanced the project past
-// our lastKnownRevision. The user picks:
-//   - "Discard mine": loadProject(serverDoc); our local edits are gone.
-//   - "Overwrite theirs": re-diff our local doc against theirs and POST;
-//     server's ops are clobbered where fields overlap.
-//
-// Deliberately NOT offering auto-merge: this is a user-supervised step
-// (Q9 in the spec). Merge semantics for array fields (roofs, panels) are
-// not obvious enough to do silently — a naive last-writer-wins on an
-// array would either drop items or duplicate them depending on how we
-// order ops. Forcing the user to pick makes the data loss (if any)
-// explicit rather than surprise-destructive.
+// Since ADR-016 the sync client auto-merges concurrent edits (three-way,
+// by entity id) and only opens this modal when BOTH sides changed the
+// same field / entity — a genuine conflict it must not decide silently.
+// While the modal is open the client keeps the server side up to date
+// (inbound patches are applied to the conflict's server doc, never to
+// the store) and pauses outbound flushes. The user picks:
+//   - "Discard mine": the store takes the server doc (via the bypass
+//     applyRemotePatch action, so tool mode / selection survive); our
+//     unsent edits are gone.
+//   - "Overwrite theirs": merge where conflicting fields take OUR value
+//     but the collaborator's non-conflicting changes are kept, then POST.
 //
 // Why a sibling of <App/> rather than nested inside it: the modal needs
 // to overlay the entire canvas, including the Konva stage, and live
@@ -96,7 +95,7 @@ export default function ConflictModal() {
     >
       <div className="surface rounded-[14px] p-6 max-w-md w-[92%] space-y-4">
         <div>
-          <span className="tech-label">SYNC · CONFLICT</span>
+          <span className="tech-label">{t('conflict.kicker')}</span>
           <h2
             id="conflict-modal-title"
             className="mt-1 font-editorial text-[28px] leading-[1.05] tracking-tight text-ink-50"

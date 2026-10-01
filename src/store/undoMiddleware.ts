@@ -16,11 +16,23 @@
 
 // Undo/redo middleware for zustand. See spec:
 //   docs/superpowers/specs/2026-04-21-undo-redo-design.md
+//   adr/ADR-014-undo-redo.md        (policy table, coalescing, mirrors)
+//   adr/ADR-015-local-only-undo-and-server-source-of-truth.md
+//                                   (delta history — supersedes ADR-014 §4)
 //
 // The middleware wraps `set` so that every `set(partial, replace, actionName)`
 // call is classified via ACTION_POLICY into one of: record, bypass,
-// clear-history, load-history. This file defines the types and a no-op
-// shell; behavior is added task-by-task.
+// clear-history, load-history.
+//
+// History model (ADR-015): every recorded step is stored as an id-keyed
+// DELTA (`HistoryEntry`: which entities were added / removed / which
+// fields of which entities changed), NOT as a snapshot of whole arrays.
+// Undo applies the inverse delta to the CURRENT project. Why: the project
+// is collaboratively edited — remote patches land via applyRemotePatch
+// (bypass) between Alice's local steps. Restoring a snapshot array would
+// silently delete Bob's roof that arrived after Alice's step (and the sync
+// layer would then push that deletion to the server). A delta only touches
+// what Alice's step touched; everything else stays as it is now.
 //
 // To let callers pass an `actionName` as the 3rd argument to `set` (the
 // same ergonomic you get with zustand's devtools middleware), this module
@@ -29,23 +41,30 @@
 // devtools middleware typings — see node_modules/zustand/middleware/devtools.d.ts.
 
 import type { StateCreator, StoreApi, StoreMutatorIdentifier } from 'zustand';
+import type {
+  UndoableSlice,
+  UndoableCollectionKey,
+  FieldChange,
+  EntityChange,
+  HistoryEntry,
+  HistoryStacks,
+} from '../types';
 
-// The fields we capture per history entry. Defined loosely here via an index
-// signature so tests can use a simplified test state; the real store's slice
-// conforms to this via structural compatibility. projectStore uses a stricter
-// UndoableSlice alias defined next to its Project type once wired.
-export type UndoableSlice = {
-  name: string;
-  panelType: { id: string } & Record<string, unknown>;
-  roofs: unknown[];
-  panels: unknown[];
-  strings: unknown[];
-  inverters: unknown[];
-};
+// Re-exported so existing `import { type UndoableSlice } from './undoMiddleware'`
+// call sites keep compiling. The canonical definitions live in types/index.ts
+// because utils/projectSerializer.ts needs them too and utils must not
+// import from store (layering rule in AGENTS.md).
+export type { UndoableSlice, UndoableCollectionKey, FieldChange, EntityChange, HistoryEntry, HistoryStacks };
 
 export interface HistoryState {
-  past: UndoableSlice[];
-  future: UndoableSlice[];
+  // Newest-at-tail stacks of DELTA entries (see HistoryEntry). `past[last]`
+  // is the step the next undo reverts; `future[last]` the step the next
+  // redo re-applies. The SAME entry object moves between the two stacks —
+  // a delta is direction-agnostic (undo applies its inverse, redo applies
+  // it forward), so nothing has to be recomputed on undo/redo and entries
+  // stay valid no matter which remote patches landed in between.
+  past: HistoryEntry[];
+  future: HistoryEntry[];
   // `lastActionSig` — the signature of the most recently PUSHED history
   // entry. The middleware uses this to decide whether the next record-path
   // mutation should coalesce (same action + key, within 500ms). Reset to
@@ -359,137 +378,615 @@ export function cleanUiRefs(ui: UiRefs, slice: UndoableSlice): UiRefs {
   };
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Delta history engine (ADR-015)
+//
+// Four pure building blocks, all exported for direct unit testing:
+//   diffSlices(before, after)    → HistoryEntry | null   (record path)
+//   composeEntries(older, newer) → HistoryEntry | null   (coalescing)
+//   invertEntry(entry)           → HistoryEntry          (undo = inverse)
+//   applyEntry(current, entry)   → UndoableSlice         (undo/redo)
+//
+// Conflict policy when applying a delta to a current state that has moved
+// on (because remote patches landed in between) — "three-way, field-level,
+// the newer writer wins":
+//   - update: for each field the step changed, write the target value only
+//     if the field currently still holds the value the step started from.
+//     If a collaborator has since written a different value to that field,
+//     their value stays (we skip that field). Fields the step didn't touch
+//     are never written. If the entity no longer exists (deleted remotely),
+//     the update is skipped — undo never resurrects an entity a
+//     collaborator deleted just because Alice once edited it.
+//   - remove (e.g. undoing an add): removed if still present, regardless of
+//     later remote edits to it — the user asked for "my add, gone".
+//   - add (e.g. undoing a delete): re-inserted after its recorded
+//     predecessor (anchor) unless an entity with that id already exists.
+//     References are then validated: a re-inserted panel whose roof is
+//     gone is dropped again; a dangling stringId / inverterId is nulled.
+//   - scalars (name): reverted only if still equal to the step's value.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Entity arrays in the order deltas are applied: referenced collections
+ *  first (roofs, inverters), then the ones that reference them (strings →
+ *  inverter, panels → roof + string), so reference validation after the
+ *  apply sees the final id sets. */
+const APPLY_ORDER: UndoableCollectionKey[] = ['roofs', 'inverters', 'strings', 'panels'];
+
+type Obj = Record<string, unknown>;
+
+/**
+ * Structural equality for JSON-shaped values. A key whose value is
+ * `undefined` is treated as absent — matching JSON semantics, so an entry
+ * that went through an export/import round-trip compares the same as one
+ * that didn't.
+ *
+ * Needed (rather than reference equality) because reducers routinely
+ * re-create unchanged entities — renumberStrings, for instance, rebuilds
+ * every panel object of an affected string even when its index stays the
+ * same. Without a value check those would be recorded as no-op "updates"
+ * and, worse, become conflict candidates on undo.
+ */
+export function deepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+    return false;
+  }
+  const aArr = Array.isArray(a);
+  if (aArr !== Array.isArray(b)) return false;
+  if (aArr) {
+    const aa = a as unknown[];
+    const bb = b as unknown[];
+    if (aa.length !== bb.length) return false;
+    for (let i = 0; i < aa.length; i++) if (!deepEqual(aa[i], bb[i])) return false;
+    return true;
+  }
+  const ao = a as Obj;
+  const bo = b as Obj;
+  const ak = Object.keys(ao).filter((k) => ao[k] !== undefined);
+  const bk = Object.keys(bo).filter((k) => bo[k] !== undefined);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) if (!deepEqual(ao[k], bo[k])) return false;
+  return true;
+}
+
+/** Entities are keyed by a string `id`. Elements without one (only ever
+ *  seen in simplified unit-test shapes) are invisible to the delta engine. */
+function idOf(e: unknown): string | undefined {
+  if (e && typeof e === 'object') {
+    const id = (e as { id?: unknown }).id;
+    if (typeof id === 'string') return id;
+  }
+  return undefined;
+}
+
+/** Field-level diff of two entity objects. null = no difference. */
+function diffFields(a: Obj, b: Obj): Record<string, FieldChange> | null {
+  const out: Record<string, FieldChange> = {};
+  let any = false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (!deepEqual(a[k], b[k])) {
+      out[k] = { before: a[k], after: b[k] };
+      any = true;
+    }
+  }
+  return any ? out : null;
+}
+
+/** Write one side of a field-change map onto an entity (copy). An
+ *  `undefined` value deletes the key, restoring "optional field absent". */
+function writeFieldSide(entity: unknown, fields: Record<string, FieldChange>, side: 'before' | 'after'): Obj {
+  const out: Obj = { ...(entity as Obj) };
+  for (const k of Object.keys(fields)) {
+    const v = fields[k][side];
+    if (v === undefined) delete out[k];
+    else out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Forward-apply field changes to the CURRENT entity using the conflict
+ * policy described above: a field is written only if it still holds
+ * `before`. Returns null when nothing was written (all fields either
+ * already at `after` or overwritten by someone else since).
+ */
+function mergeFieldsForward(current: unknown, fields: Record<string, FieldChange>): Obj | null {
+  const cur = current as Obj;
+  let out: Obj | null = null;
+  for (const k of Object.keys(fields)) {
+    const fc = fields[k];
+    if (deepEqual(cur[k], fc.after)) continue; // already there (idempotent)
+    if (!deepEqual(cur[k], fc.before)) continue; // collaborator wrote since → theirs wins
+    if (!out) out = { ...cur };
+    if (fc.after === undefined) delete out[k];
+    else out[k] = fc.after;
+  }
+  return out;
+}
+
+/**
+ * Id-keyed diff of one entity array. Order of the result matters for the
+ * anchor chain: removals/updates are emitted in BEFORE-array order and
+ * additions in AFTER-array order, so when a batch of entities is
+ * re-inserted (e.g. undoing deleteRoof brings back 40 panels) each one's
+ * predecessor has already been re-inserted by the time it is placed.
+ */
+function diffCollection(before: unknown[], after: unknown[]): EntityChange[] {
+  if (before === after) return [];
+  const afterById = new Map<string, unknown>();
+  for (const e of after) {
+    const id = idOf(e);
+    if (id !== undefined) afterById.set(id, e);
+  }
+  const beforeIds = new Set<string>();
+  const out: EntityChange[] = [];
+  let prev: string | null = null;
+  for (const b of before) {
+    const id = idOf(b);
+    if (id === undefined) continue;
+    beforeIds.add(id);
+    const a = afterById.get(id);
+    if (a === undefined) {
+      out.push({ op: 'remove', id, entity: b, anchor: prev });
+    } else if (a !== b) {
+      const fields = diffFields(b as Obj, a as Obj);
+      if (fields) out.push({ op: 'update', id, fields });
+    }
+    prev = id;
+  }
+  prev = null;
+  for (const a of after) {
+    const id = idOf(a);
+    if (id === undefined) continue;
+    if (!beforeIds.has(id)) out.push({ op: 'add', id, entity: a, anchor: prev });
+    prev = id;
+  }
+  return out;
+}
+
+const COLLECTION_KEYS: UndoableCollectionKey[] = ['roofs', 'panels', 'strings', 'inverters'];
+
+/** True when an entry records no change at all. */
+export function isEmptyEntry(e: HistoryEntry): boolean {
+  return (
+    !e.name &&
+    !(e.panelType && Object.keys(e.panelType).length > 0) &&
+    COLLECTION_KEYS.every((k) => !(e[k] && e[k]!.length > 0))
+  );
+}
+
+/**
+ * Record-path diff: the delta that turns `before` into `after`. Called
+ * immediately around ONE local set(), so it can only ever contain what that
+ * local action changed — remote patches are applied through their own
+ * (bypass) set() calls and never fall inside a before/after pair.
+ *
+ * Returns null when the two slices are value-equal (e.g. a reducer that
+ * rebuilt arrays without changing content), which the record path treats
+ * as a no-op.
+ */
+export function diffSlices(before: UndoableSlice, after: UndoableSlice): HistoryEntry | null {
+  const e: HistoryEntry = {};
+  if (!Object.is(before.name, after.name)) e.name = { before: before.name, after: after.name };
+  if (before.panelType !== after.panelType) {
+    const f = diffFields(before.panelType as Obj, after.panelType as Obj);
+    if (f) e.panelType = f;
+  }
+  for (const k of COLLECTION_KEYS) {
+    const changes = diffCollection(before[k], after[k]);
+    if (changes.length > 0) e[k] = changes;
+  }
+  return isEmptyEntry(e) ? null : e;
+}
+
+/** Compose two field maps: earliest `before`, latest `after`; fields that
+ *  end up back at their starting value drop out. */
+function composeFields(
+  older: Record<string, FieldChange> | undefined,
+  newer: Record<string, FieldChange> | undefined,
+): Record<string, FieldChange> | undefined {
+  if (!older) return newer;
+  if (!newer) return older;
+  const out: Record<string, FieldChange> = { ...older };
+  for (const k of Object.keys(newer)) {
+    const before = k in older ? older[k].before : newer[k].before;
+    const after = newer[k].after;
+    if (deepEqual(before, after)) delete out[k];
+    else out[k] = { before, after };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Compose two changes to the SAME entity id (older happened first). */
+function composeChange(o: EntityChange, n: EntityChange): EntityChange | null {
+  if (o.op === 'add') {
+    // add → update: still an add, of the updated entity.
+    if (n.op === 'update') {
+      return { op: 'add', id: o.id, entity: writeFieldSide(o.entity, n.fields, 'after'), anchor: o.anchor };
+    }
+    // add → remove: the entity never existed from the step's point of view.
+    if (n.op === 'remove') return null;
+    return n; // add → add can't happen (id already existed); keep latest
+  }
+  if (o.op === 'update') {
+    if (n.op === 'update') {
+      const fields = composeFields(o.fields, n.fields);
+      return fields ? { op: 'update', id: o.id, fields } : null;
+    }
+    if (n.op === 'remove') {
+      // update → remove: undo must restore the PRE-step entity, i.e. the
+      // removed value with the earlier update's fields rolled back.
+      return { op: 'remove', id: o.id, entity: writeFieldSide(n.entity, o.fields, 'before'), anchor: n.anchor };
+    }
+    return n;
+  }
+  // o.op === 'remove'
+  if (n.op === 'add') {
+    // remove → add (same id re-created): net effect is a field update.
+    const fields = diffFields(o.entity as Obj, n.entity as Obj);
+    return fields ? { op: 'update', id: o.id, fields } : null;
+  }
+  return o; // remove → update/remove can't happen (entity was gone)
+}
+
+function composeChanges(older: EntityChange[] | undefined, newer: EntityChange[] | undefined): EntityChange[] | undefined {
+  if (!older || older.length === 0) return newer;
+  if (!newer || newer.length === 0) return older;
+  const result: (EntityChange | null)[] = [...older];
+  const pos = new Map<string, number>();
+  result.forEach((c, i) => pos.set(c!.id, i));
+  for (const n of newer) {
+    const i = pos.get(n.id);
+    if (i === undefined) {
+      pos.set(n.id, result.length);
+      result.push(n);
+      continue;
+    }
+    const prev = result[i];
+    result[i] = prev ? composeChange(prev, n) : n;
+  }
+  const out = result.filter((c): c is EntityChange => c !== null);
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Coalescing: fold `newer` into `older` so the merged entry has the
+ * earliest `before` and the latest `after` of every touched field/entity.
+ * Per-id composition (instead of keeping "first before slice + last after
+ * slice") is what keeps coalescing correct when a remote patch lands in
+ * the middle of a slider scrub: the remote change was never part of either
+ * local delta, so it can't sneak into the merged one.
+ *
+ * Returns null when the composition cancels out completely (scrubbed a
+ * slider away and back) — the caller then drops the entry.
+ */
+export function composeEntries(older: HistoryEntry, newer: HistoryEntry): HistoryEntry | null {
+  const e: HistoryEntry = {};
+  if (older.name || newer.name) {
+    const before = older.name ? older.name.before : newer.name!.before;
+    const after = newer.name ? newer.name.after : older.name!.after;
+    if (!deepEqual(before, after)) e.name = { before, after };
+  }
+  const pt = composeFields(older.panelType, newer.panelType);
+  if (pt) e.panelType = pt;
+  for (const k of COLLECTION_KEYS) {
+    const c = composeChanges(older[k], newer[k]);
+    if (c) e[k] = c;
+  }
+  return isEmptyEntry(e) ? null : e;
+}
+
+function invertFields(f: Record<string, FieldChange>): Record<string, FieldChange> {
+  const out: Record<string, FieldChange> = {};
+  for (const k of Object.keys(f)) out[k] = { before: f[k].after, after: f[k].before };
+  return out;
+}
+
+/** The delta that undoes `e`. add ↔ remove (same entity + anchor),
+ *  update/scalars swap before/after. */
+export function invertEntry(e: HistoryEntry): HistoryEntry {
+  const out: HistoryEntry = {};
+  if (e.name) out.name = { before: e.name.after, after: e.name.before };
+  if (e.panelType) out.panelType = invertFields(e.panelType);
+  for (const k of COLLECTION_KEYS) {
+    const list = e[k];
+    if (!list) continue;
+    out[k] = list.map((c): EntityChange => {
+      if (c.op === 'add') return { op: 'remove', id: c.id, entity: c.entity, anchor: c.anchor };
+      if (c.op === 'remove') return { op: 'add', id: c.id, entity: c.entity, anchor: c.anchor };
+      return { op: 'update', id: c.id, fields: invertFields(c.fields) };
+    });
+  }
+  return out;
+}
+
+/** Result of applying one collection's changes: the new array (same
+ *  reference if nothing happened), plus what was removed / written so the
+ *  reference-repair pass can stay targeted. */
+interface CollectionApply {
+  items: unknown[];
+  removed: Map<string, unknown>;
+  /** id → { prev: entity before this apply (undefined for inserts), next } */
+  touched: Map<string, { prev: unknown; next: unknown }>;
+}
+
+function applyCollection(items: unknown[], changes: EntityChange[] | undefined): CollectionApply {
+  const removed = new Map<string, unknown>();
+  const touched = new Map<string, { prev: unknown; next: unknown }>();
+  if (!changes || changes.length === 0) return { items, removed, touched };
+  let work = items;
+  // Copy-on-write so an apply that ends up skipping everything (all
+  // conflicts) returns the original array reference — keeps selectors and
+  // the sync diff quiet.
+  const cow = () => {
+    if (work === items) work = items.slice();
+  };
+  let index: Map<string, number> | null = null;
+  const idx = (): Map<string, number> => {
+    if (!index) {
+      index = new Map();
+      work.forEach((e, i) => {
+        const id = idOf(e);
+        if (id !== undefined) index!.set(id, i);
+      });
+    }
+    return index;
+  };
+  for (const c of changes) {
+    const at = idx().get(c.id);
+    if (c.op === 'update') {
+      if (at === undefined) continue; // deleted meanwhile → don't resurrect
+      const merged = mergeFieldsForward(work[at], c.fields);
+      if (!merged) continue;
+      cow();
+      touched.set(c.id, { prev: work[at], next: merged });
+      work[at] = merged;
+    } else if (c.op === 'remove') {
+      if (at === undefined) continue; // already gone
+      cow();
+      const [gone] = work.splice(at, 1);
+      removed.set(c.id, gone);
+      index = null;
+    } else {
+      if (at !== undefined) continue; // id exists again → never duplicate
+      cow();
+      let insertAt: number;
+      if (c.anchor === null) insertAt = 0;
+      else {
+        const a = idx().get(c.anchor);
+        // Anchor gone (deleted remotely, or itself not restored) → append.
+        insertAt = a === undefined ? work.length : a + 1;
+      }
+      work.splice(insertAt, 0, c.entity);
+      touched.set(c.id, { prev: undefined, next: c.entity });
+      index = null;
+    }
+  }
+  return { items: work, removed, touched };
+}
+
+/**
+ * Options for applyEntry / applyUndo / applyRedo. The middleware is
+ * Project-agnostic about string NUMBERING policy, so the store injects its
+ * `renumberStrings` here (it lives in projectStore.ts with the rest of the
+ * wiring-order logic). Omitted in unit tests → numbering left as restored.
+ */
+export interface ApplyHistoryOptions {
+  renumberStrings?: (panels: unknown[], affectedStringIds: Set<string>) => unknown[];
+}
+
+type PanelRefs = { id: string; roofId?: string; stringId?: string | null; indexInString?: number | null };
+type StringRefs = { id: string; inverterId?: string | null };
+
+/**
+ * Forward-apply `entry` to `current` (redo semantics; undo passes
+ * `invertEntry(entry)`), then restore referential integrity for whatever
+ * this apply touched, then renumber strings whose membership changed.
+ *
+ * Reference repair is TARGETED, not a whole-project sweep: it only
+ * cascades from entities removed by this apply and only validates entities
+ * this apply wrote. A pre-existing inconsistency elsewhere (e.g. from a
+ * malformed remote doc) is not this undo's business and is left alone, so
+ * "entities untouched by the step stay exactly as they are" holds except
+ * for the unavoidable cascades:
+ *   - roof removed     → its panels are removed (like deleteRoof)
+ *   - string removed   → its panels become unassigned (like deleteString)
+ *   - inverter removed → its strings lose inverterId/mpptPort (like deleteInverter)
+ *   - written panel whose roof doesn't exist → dropped
+ *   - written panel / string with a dangling string / inverter ref → nulled
+ */
+export function applyEntry(
+  current: UndoableSlice,
+  entry: HistoryEntry,
+  opts: ApplyHistoryOptions = {},
+): UndoableSlice {
+  let name = current.name;
+  if (entry.name && deepEqual(current.name, entry.name.before) && typeof entry.name.after === 'string') {
+    name = entry.name.after;
+  }
+  let panelType = current.panelType;
+  if (entry.panelType) {
+    const merged = mergeFieldsForward(panelType, entry.panelType);
+    if (merged) panelType = merged as UndoableSlice['panelType'];
+  }
+
+  const out: UndoableSlice = { ...current, name, panelType };
+  const res = {} as Record<UndoableCollectionKey, CollectionApply>;
+  for (const k of APPLY_ORDER) {
+    res[k] = applyCollection(current[k], entry[k]);
+    out[k] = res[k].items;
+  }
+
+  // ── Reference repair ────────────────────────────────────────────────
+  const inverterIds = new Set(out.inverters.map(idOf));
+  const stringIds = new Set(out.strings.map(idOf));
+  const roofIds = new Set(out.roofs.map(idOf));
+
+  const removedInv = res.inverters.removed;
+  const touchedStrings = res.strings.touched;
+  let stringsChanged = false;
+  const strings = out.strings.map((raw) => {
+    const s = raw as StringRefs;
+    const ref = s.inverterId;
+    if (ref == null || inverterIds.has(ref)) return raw;
+    if (!removedInv.has(ref) && !touchedStrings.has(s.id)) return raw;
+    stringsChanged = true;
+    return { ...s, inverterId: null, mpptPort: null };
+  });
+  if (stringsChanged) out.strings = strings;
+
+  const removedRoofs = res.roofs.removed;
+  const removedStrings = res.strings.removed;
+  const touchedPanels = res.panels.touched;
+  const affectedStrings = new Set<string>();
+  // Membership bookkeeping for renumbering: any panel this apply removed,
+  // inserted, or whose stringId/indexInString it wrote.
+  for (const gone of res.panels.removed.values()) {
+    const sid = (gone as PanelRefs).stringId;
+    if (sid) affectedStrings.add(sid);
+  }
+  for (const { prev, next } of touchedPanels.values()) {
+    const p = prev as PanelRefs | undefined;
+    const n = next as PanelRefs;
+    if (!p || p.stringId !== n.stringId || p.indexInString !== n.indexInString) {
+      if (p?.stringId) affectedStrings.add(p.stringId);
+      if (n.stringId) affectedStrings.add(n.stringId);
+    }
+  }
+  let panelsChanged = false;
+  const panels: unknown[] = [];
+  for (const raw of out.panels) {
+    const p = raw as PanelRefs;
+    const written = touchedPanels.has(p.id);
+    if (p.roofId !== undefined && !roofIds.has(p.roofId) && (removedRoofs.has(p.roofId) || written)) {
+      panelsChanged = true;
+      if (p.stringId) affectedStrings.add(p.stringId);
+      continue;
+    }
+    const sid = p.stringId;
+    if (sid != null && !stringIds.has(sid) && (removedStrings.has(sid) || written)) {
+      panelsChanged = true;
+      panels.push({ ...p, stringId: null, indexInString: null });
+      continue;
+    }
+    panels.push(raw);
+  }
+  if (panelsChanged) out.panels = panels;
+
+  if (opts.renumberStrings) {
+    const live = new Set([...affectedStrings].filter((sid) => stringIds.has(sid)));
+    if (live.size > 0) out.panels = opts.renumberStrings(out.panels, live);
+  }
+  return out;
+}
+
+/**
+ * Convert legacy snapshot stacks (v2 JSON exports, ADR-014 format) into
+ * delta entries. `past[i]` was the state before step i, so step i's delta
+ * is diff(past[i], past[i+1]) — with `current` closing the chain. Future
+ * entries are diffed outward from `current` (future's tail is the first
+ * redo). Empty diffs are dropped.
+ */
+export function entriesFromSnapshots(
+  past: UndoableSlice[],
+  future: UndoableSlice[],
+  current: UndoableSlice,
+): HistoryStacks {
+  const pastEntries: HistoryEntry[] = [];
+  for (let i = 0; i < past.length; i++) {
+    const e = diffSlices(past[i], i + 1 < past.length ? past[i + 1] : current);
+    if (e) pastEntries.push(e);
+  }
+  const redoOrder: HistoryEntry[] = [];
+  let prev = current;
+  for (let i = future.length - 1; i >= 0; i--) {
+    const e = diffSlices(prev, future[i]);
+    if (e) redoOrder.push(e);
+    prev = future[i];
+  }
+  return { past: pastEntries, future: redoOrder.reverse() };
+}
+
+/** Apply a delta to a full project object, keeping `mapState`, `meta`,
+ *  `diagram` (everything outside UndoableSlice) untouched, and returning
+ *  the SAME reference when the apply changed nothing. */
+function applyEntryToProject<P extends UndoableSlice>(project: P, entry: HistoryEntry, opts?: ApplyHistoryOptions): P {
+  const cur = buildSlice(project);
+  const next = applyEntry(cur, entry, opts);
+  if (slicesEqual(cur, next)) return project;
+  // Spread order: current project first (keeps mapState — spec §3.4: undo
+  // must never resurrect a captured image or flip the map lock), then the
+  // patched undoable fields.
+  return { ...project, ...next };
+}
+
+function uiRefsOf(s: UiRefs): UiRefs {
+  return {
+    selectedRoofId: s.selectedRoofId,
+    activeStringId: s.activeStringId,
+    selectedInverterId: s.selectedInverterId,
+    activePanelGroupId: s.activePanelGroupId,
+    splitCandidateRoofId: s.splitCandidateRoofId,
+  };
+}
+
 /**
  * Pure "apply undo" function. Computes the next (partial) state given the
  * current state; returns null when there is no undo to perform.
  *
- * Why split this out as a pure function rather than inlining inside the store
- * action: the store action will be a thin wrapper — `const next = applyUndo(get());
- * if (next) set(next, false, 'undo');` — and that wrapper is trivially correct
- * by inspection. All the real logic (stack manipulation, slice restoration,
- * UI-ref cleaning, signature reset) lives here, where we can exercise it in
- * isolation without spinning up a zustand store or worrying about the
- * middleware's coalescing/policy branches. Pure in → pure out → cheap tests.
+ * Pops the newest entry from `past`, applies its INVERSE to the current
+ * project (see the conflict policy at the top of this section), moves the
+ * same entry onto `future`, and cleans UI refs that now dangle.
  *
- * Returns `Partial<S>` because the caller (the store's `undo` action) will
- * pass it into `set(next, false, 'undo')`. Zustand's partial-merge semantics
- * apply the returned fields on top of current state; anything we omit (UI
- * fields we're not touching, middleware-internal fields like `_pendingCoalesce`)
- * stays as-is.
+ * Why split this out as a pure function rather than inlining inside the
+ * store action: the store action is a thin wrapper — `const next =
+ * applyUndo(get(), opts); if (next) set(next, false, 'undo');` — and all
+ * the real logic lives here, testable without a zustand store.
  *
- * Classified as 'bypass' in ACTION_POLICY — the middleware therefore does NOT
- * re-snapshot this set(), which is exactly what we want: undo directly
- * manipulates past/future, it must not push an entry about itself.
+ * Classified as 'bypass' in ACTION_POLICY — the middleware therefore does
+ * NOT record this set(): undo must not push an entry about itself.
  */
 export function applyUndo<
   S extends HistoryState & {
     project: any;
   } & UiRefs,
->(state: S): Partial<S> | null {
-  // Nothing to undo — signal "no-op" to the caller via null so it can skip
-  // the set() entirely (no listener notification for a non-event).
+>(state: S, opts?: ApplyHistoryOptions): Partial<S> | null {
   if (state.past.length === 0) return null;
-
-  // Pop the tail of `past` — that's the most recent "state we can return to".
-  // Slice-copy rather than mutating in place so the pre-undo array reference
-  // is still intact for any consumer that captured it (React selectors, etc.).
-  const prev = state.past[state.past.length - 1];
-  const newPast = state.past.slice(0, -1);
-
-  // Capture the CURRENT project into a slice so redo can restore it. This is
-  // symmetric with the record path: pushing onto `future` is the mirror image
-  // of pushing the "before" snapshot onto `past` during a normal mutation.
-  const currentSlice = buildSlice(state.project);
-
-  // Clean any UI refs that would dangle against the restored slice. Same
-  // defensive sweep used elsewhere — a selectedRoofId pointing to a roof
-  // that doesn't exist in the pre-undo slice must be nulled, otherwise the
-  // UI would render "selection" highlights against an id no selector can
-  // resolve.
-  const cleaned = cleanUiRefs(
-    {
-      selectedRoofId: state.selectedRoofId,
-      activeStringId: state.activeStringId,
-      selectedInverterId: state.selectedInverterId,
-      activePanelGroupId: state.activePanelGroupId,
-      splitCandidateRoofId: state.splitCandidateRoofId,
-    },
-    prev,
-  );
-
+  const entry = state.past[state.past.length - 1];
+  const project = applyEntryToProject(state.project, invertEntry(entry), opts);
   return {
-    past: newPast,
-    // Pushing onto `future` (not prepending) keeps "newest-at-tail" ordering
-    // consistent with `past`; applyRedo pops from the tail, which is the
-    // mirror of how we pop past here.
-    future: [...state.future, currentSlice],
+    past: state.past.slice(0, -1),
+    future: [...state.future, entry],
     // Reset lastActionSig so the first mutation AFTER an undo always starts
-    // a fresh history step — users expect "type, undo, type" to produce
-    // three independent history positions. If we left `lastActionSig`
-    // pointing at whatever the pre-undo signature was, a post-undo edit
-    // of the same action+key within 500ms would silently coalesce into the
-    // restored snapshot, making the two edits indistinguishable on a later
-    // undo. Nulling here forces the next record-path call through the
-    // "no previous sig → push" branch.
+    // a fresh history step — "type, undo, type" must produce independent
+    // positions rather than coalescing the post-undo edit into the entry
+    // we just moved to `future`.
     lastActionSig: null,
-    // Critical subtlety: spread `state.project` first, then overlay `prev`.
-    // `prev` is an UndoableSlice — by construction it has NO `mapState` key
-    // (see buildSlice's spec §3.4 exclusion). So the spread order means:
-    //   1. `...state.project` brings in EVERY current field, including
-    //      `mapState` (captured image, lock flag, …).
-    //   2. `...prev` overwrites only the undoable fields (name, panelType,
-    //      roofs, panels, strings, inverters).
-    //   → `mapState` survives untouched.
-    // This is load-bearing for the spec: undoing a panel edit must NOT
-    // resurrect a previous captured-image or flip the map lock.
-    project: { ...state.project, ...prev },
-    ...cleaned,
+    project,
+    ...cleanUiRefs(uiRefsOf(state), buildSlice(project)),
   } as Partial<S>;
 }
 
 /**
- * Pure "apply redo" — symmetric to applyUndo. Pops `future`, pushes the
- * current slice onto `past`, restores the project, cleans dangling UI refs,
- * resets `lastActionSig` for the same reason as applyUndo.
- *
- * Returns null when there's nothing to redo (e.g., the user never undid, or
- * a new mutation since the last undo cleared `future`).
+ * Pure "apply redo" — symmetric to applyUndo: pops `future`, applies the
+ * entry FORWARD to the current project, pushes it back onto `past`.
+ * Returns null when there's nothing to redo.
  */
 export function applyRedo<
   S extends HistoryState & {
     project: any;
   } & UiRefs,
->(state: S): Partial<S> | null {
+>(state: S, opts?: ApplyHistoryOptions): Partial<S> | null {
   if (state.future.length === 0) return null;
-
-  const next = state.future[state.future.length - 1];
-  const newFuture = state.future.slice(0, -1);
-  // Snapshot the CURRENT project onto past — mirror of how applyUndo pushes
-  // the current slice onto future. After redo, a subsequent undo will pop
-  // this snapshot back, restoring the pre-redo state.
-  const currentSlice = buildSlice(state.project);
-
-  const cleaned = cleanUiRefs(
-    {
-      selectedRoofId: state.selectedRoofId,
-      activeStringId: state.activeStringId,
-      selectedInverterId: state.selectedInverterId,
-      activePanelGroupId: state.activePanelGroupId,
-      splitCandidateRoofId: state.splitCandidateRoofId,
-    },
-    next,
-  );
-
+  const entry = state.future[state.future.length - 1];
+  const project = applyEntryToProject(state.project, entry, opts);
   return {
-    past: [...state.past, currentSlice],
-    future: newFuture,
-    // Same rationale as applyUndo: a post-redo edit must begin a fresh
-    // coalesce window, not silently merge into the restored snapshot.
+    past: [...state.past, entry],
+    future: state.future.slice(0, -1),
     lastActionSig: null,
-    // Same spread-order subtlety as applyUndo: `state.project` first
-    // (keeps mapState), then `next` overlays the undoable slice fields.
-    project: { ...state.project, ...next },
-    ...cleaned,
+    project,
+    ...cleanUiRefs(uiRefsOf(state), buildSlice(project)),
   } as Partial<S>;
 }
 
@@ -499,13 +996,13 @@ export function applyRedo<
  * dangling: a panel's roofId/stringId, or a string's inverterId. Called
  * after undo/redo restores so snapshot bugs surface immediately.
  *
- * Why this exists at all: applyUndo/applyRedo restore whole slices by
- * reference, and buildSlice performs structural sharing rather than deep
- * validation. If a reducer elsewhere in the store ever forgets to null out
- * a cross-reference when deleting an entity (e.g. deleting a roof without
- * also clearing panels' roofId, or deleting an inverter without clearing
- * strings' inverterId), that broken reference gets faithfully snapshotted
- * into history and then faithfully restored later — the bug becomes
+ * Why this exists at all: applyEntry repairs the references IT touches
+ * (targeted repair, see applyEntry), but it deliberately does not sweep
+ * the whole project. If a reducer elsewhere in the store ever forgets to
+ * null out a cross-reference when deleting an entity (e.g. deleting a
+ * roof without also clearing panels' roofId, or deleting an inverter
+ * without clearing strings' inverterId), that broken reference gets
+ * faithfully recorded into a delta and later re-applied — the bug becomes
  * silent, because selectors typically tolerate missing lookups by
  * returning undefined, and the UI just renders nothing for that panel.
  * This sweep surfaces the bug the moment we restore a compromised slice,
@@ -647,12 +1144,12 @@ export type NamedSet<T> = WithUndoable<StoreApi<T>>['setState'];
 /**
  * Record-path constants. Exposed for tests.
  *
- * MAX_PAST caps the number of retained snapshots. Chosen as 100 to balance
+ * MAX_PAST caps the number of retained entries. Chosen as 100 to balance
  * "enough headroom that users practically never hit the ceiling mid-session"
- * against memory growth. Because snapshots share references with the live
- * project tree (structural sharing via buildSlice), the marginal cost of each
- * entry is small — essentially six pointer-sized fields plus whatever
- * sub-trees have since been replaced by newer edits.
+ * against memory growth. Since ADR-015 each entry is a delta holding only
+ * the entities the step touched (by reference — shared with whatever
+ * project tree produced them), so the marginal cost of an entry is
+ * proportional to the size of the edit, not the size of the project.
  */
 export const MAX_PAST = 100;
 
@@ -781,9 +1278,11 @@ type Undoable = <
  *
  * Behavior per action:
  *   - bypass / unknown: pass through untouched.
- *   - record: call buildSlice before + after; if anything changed, push the
- *             "before" snapshot onto `past`, reset `future`, and cap at
- *             MAX_PAST. If nothing changed (no-op), don't push.
+ *   - record: call buildSlice before + after, diff them into an id-keyed
+ *             HistoryEntry (diffSlices); if anything changed, push the
+ *             entry onto `past` (or fold it into the newest entry when
+ *             coalescing), reset `future`, and cap at MAX_PAST. If nothing
+ *             changed (no-op), don't push.
  *   - clear-history / load-history: pass through for now; Tasks 9+ fill in.
  *
  * Why build the slice twice (before + after) rather than inspecting the
@@ -862,8 +1361,12 @@ const undoableImpl = (
         const before = buildSlice(get().project);
         (set as any)(partial, replace, name);
         const after = buildSlice(get().project);
-        if (slicesEqual(before, after)) {
-          // No-op: the mutation didn't change any top-level slice field
+        // Reference check first (O(1), the common no-op), then the id-keyed
+        // delta. A null delta means the reducer produced new references
+        // but identical content — also a no-op for history purposes.
+        const entry = slicesEqual(before, after) ? null : diffSlices(before, after);
+        if (entry === null) {
+          // No-op: the mutation didn't change any undoable content
           // (e.g. splitRoof rejecting an invalid cut, or setProjectName
           // called with the already-current name). Drop the phantom push.
           //
@@ -935,24 +1438,47 @@ const undoableImpl = (
         //     in quick succession from collapsing into one step; the
         //     'does not coalesce across different keys' test locks this in.
         //   - within the 500ms window (now - sig.at <= COALESCE_MS).
+        const pastNow = get().past;
         const shouldCoalesce =
           sig !== null &&
           sig.action === name &&
           sig.key === key &&
-          now - sig.at <= COALESCE_MS;
+          now - sig.at <= COALESCE_MS &&
+          // Defensive: nothing to fold into (can't happen after a push,
+          // but a load/reset that left a stale sig must not crash).
+          pastNow.length > 0;
 
         if (shouldCoalesce) {
-          // Suppress push; slide the timestamp forward so a chain of rapid
-          // edits keeps extending the window. If we DIDN'T advance `at`,
-          // a long streak of mutations 400ms apart would eventually break
-          // coalescing once the original `at` aged past 500ms relative to
-          // the latest mutation, even though no individual gap exceeded
-          // the window. Sliding `at` makes the window "last edit + 500ms",
-          // which better matches user intent for continuous activity.
-          // Also clear `_pendingCoalesce` so a subsequent keyless record
+          // Fold this delta into the newest entry: earliest `before`,
+          // latest `after`, composed PER ENTITY ID (see composeEntries) so
+          // a remote patch that landed mid-streak can never leak into the
+          // merged entry. Slide the timestamp forward so a chain of rapid
+          // edits keeps extending the window ("last edit + 500ms"). Also
+          // clear `_pendingCoalesce` so a subsequent keyless record
           // doesn't accidentally inherit this call's key.
+          const merged = composeEntries(pastNow[pastNow.length - 1], entry);
+          if (merged === null) {
+            // The streak cancelled itself out (slider scrubbed away and
+            // back). Drop the entry entirely — an undo that visibly does
+            // nothing is confusing — and null the sig so the next edit of
+            // the streak starts a fresh entry whose `before` is the
+            // (unchanged) original state.
+            const shrunk = pastNow.slice(0, -1);
+            (set as any)(
+              {
+                past: shrunk,
+                lastActionSig: null,
+                _pendingCoalesce: null,
+                canUndo: shrunk.length > 0,
+              },
+              false,
+              '__history__',
+            );
+            return;
+          }
           (set as any)(
             {
+              past: [...pastNow.slice(0, -1), merged],
               lastActionSig: { action: name!, key, at: now },
               _pendingCoalesce: null,
             },
@@ -965,7 +1491,7 @@ const undoableImpl = (
         // Spread-create a fresh past array, then shift() its head if we
         // blew the cap. Mutating after-spread is safe because `newPast`
         // is our local copy; no React/zustand consumer has seen it yet.
-        const newPast = [...get().past, before];
+        const newPast = [...pastNow, entry];
         if (newPast.length > MAX_PAST) newPast.shift();
 
         // Replace=false (partial merge): we only want to overwrite the
@@ -977,7 +1503,7 @@ const undoableImpl = (
         (set as any)(
           {
             past: newPast,
-            future: [] as UndoableSlice[],
+            future: [] as HistoryEntry[],
             lastActionSig: { action: name!, key, at: now },
             _pendingCoalesce: null,
             // Mirror `past.length > 0` onto the flat `canUndo` boolean that

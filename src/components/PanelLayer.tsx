@@ -36,6 +36,7 @@
 import { Group, Rect, Text, Circle } from 'react-konva';
 import { useMemo, useRef } from 'react';
 import type Konva from 'konva';
+import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '../store/projectStore';
 import { darkenColor } from '../utils/colors';
 import {
@@ -63,7 +64,17 @@ export default function PanelLayer({
   renderPass = 'base',
   stageRotation = 0,
 }: Props) {
-  const project = useProjectStore((s) => s.project);
+  // Narrow, shallow-compared slice (not the whole `project`) so diagram
+  // edits / meta changes don't re-render every panel on the canvas.
+  const project = useProjectStore(
+    useShallow((s) => ({
+      roofs: s.project.roofs,
+      panels: s.project.panels,
+      strings: s.project.strings,
+      panelType: s.project.panelType,
+      mapState: s.project.mapState,
+    })),
+  );
   const toolMode = useProjectStore((s) => s.toolMode);
   const selectedRoofId = useProjectStore((s) => s.selectedRoofId);
   const activePanelGroupId = useProjectStore((s) => s.activePanelGroupId);
@@ -122,9 +133,11 @@ export default function PanelLayer({
   let ghostOrientation: 'portrait' | 'landscape' = selectedRoof?.panelOrientation ?? 'portrait';
   if (showGhost) {
     const mpp = project.mapState.metersPerPixel;
+    // Carry each panel's orientation so the overlap test uses its real
+    // footprint (groups on one roof may mix portrait and landscape).
     const existingCenters = project.panels
       .filter((p) => p.roofId === selectedRoof.id)
-      .map((p) => ({ x: p.cx, y: p.cy }));
+      .map((p) => ({ x: p.cx, y: p.cy, orientation: p.orientation }));
 
     let origin: Point | null = null;
     let snap = false;

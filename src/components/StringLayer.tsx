@@ -33,12 +33,24 @@
 
 import { Group, Line } from 'react-konva';
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useProjectStore } from '../store/projectStore';
 import { darkenColor } from '../utils/colors';
 import { computeStringPath } from '../utils/stringRouting';
 
 export default function StringLayer() {
-  const project = useProjectStore((s) => s.project);
+  // Narrow, shallow-compared slice instead of the whole `project`: a
+  // whole-project selector re-rendered (and re-routed every string) on
+  // each unrelated doc change — e.g. every diagram-drag frame or meta edit.
+  const project = useProjectStore(
+    useShallow((s) => ({
+      roofs: s.project.roofs,
+      panels: s.project.panels,
+      strings: s.project.strings,
+      panelType: s.project.panelType,
+      mapState: s.project.mapState,
+    })),
+  );
 
   /**
    * Compute flattened polyline points for every string.

@@ -23,6 +23,8 @@
 //   - offline  → amber   "Offline — changes saved locally"
 //   - conflict → red     "Conflict" (click opens the modal — ConflictModal
 //              subscribes to the same status, so there's no extra wiring.)
+//   - error    → red     "Sync error" (initial load failed, or the server
+//              rejected our patch even after a baseline resync)
 //
 // Why subscribe here (not via React context): syncClient is created
 // imperatively in ProjectEditor's effect and exposed via a module-level
@@ -99,5 +101,10 @@ function describe(s: SyncStatus, t: TFunction): { color: string; label: string }
       return { color: '#f59e0b', label: t('sync.offline') };
     case 'conflict':
       return { color: '#ef4444', label: t('sync.conflict') };
+    // 'error' covers a load failure and a server-rejected patch (ADR-016).
+    // Same red as conflict: in both cases edits are NOT reaching the
+    // server and the user should know.
+    case 'error':
+      return { color: '#ef4444', label: t('sync.error') };
   }
 }

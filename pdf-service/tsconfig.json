@@ -1,0 +1,30 @@
+{
+  // Typecheck-only config for the pdf-service (it runs via tsx, which
+  // strips types without checking them). `npm run typecheck`.
+  //
+  // server.ts imports ../src/pdf/SolarPlanDoc.tsx, which `import type`s from
+  // composeStageImage.ts (a browser module). Type resolution walks up to
+  // the repo-root node_modules for those browser deps, so run this from a
+  // full checkout with root `npm install` done; DOM lib is included for the
+  // same reason. skipLibCheck keeps third-party .d.ts noise out.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  // SolarPlanDoc.tsx MUST be listed: tsx only applies `jsx: react-jsx` to
+  // files matched by `include`. Without it tsx falls back to the classic
+  // React.createElement transform and rendering dies with
+  // "React is not defined". The Docker CMD passes --tsconfig explicitly
+  // because the process cwd there is /app, not /app/pdf-service.
+  "include": ["server.ts", "validate.test.ts", "../src/pdf/SolarPlanDoc.tsx"]
+}

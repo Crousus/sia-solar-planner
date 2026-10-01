@@ -1,0 +1,10 @@
+# Build context for the ocr-service image. Only requirements.txt and
+# main.py are COPYed, but keep secrets and local artefacts out of the
+# context entirely (the context is sent to the Docker daemon / builder).
+.env*
+__pycache__
+*.pyc
+.venv
+venv
+.pytest_cache
+test_main.py

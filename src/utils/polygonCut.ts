@@ -109,6 +109,8 @@ export function pointOnPolygonBoundary(
  *   - The two endpoints lie on DIFFERENT edges (same-edge = degenerate;
  *     we'd produce a zero-area sliver)
  *   - Interior cutLine points (if any) lie strictly INSIDE the polygon
+ *   - Every cut SEGMENT stays inside the polygon (touching the boundary
+ *     only at the cut's endpoints) and the cut doesn't cross itself
  *
  * Returns [polyA, polyB] or null on any violation. Callers treat a null
  * return as "cut rejected" — the draw-roof tool silently discards the
@@ -170,6 +172,19 @@ export function splitPolygon(
   // resulting polygon halves to share the boundary vertex exactly.
   const snapStart = pointAlongEdge(polygon, hitA.edgeIndex, hitA.t);
   const snapEnd = pointAlongEdge(polygon, hitB.edgeIndex, hitB.t);
+
+  // Drop consecutive duplicate cut vertices. A double-click commit appends
+  // the same pointer position twice (click + click + dblclick), and a
+  // zero-length segment has no direction to validate — it would also
+  // leave a zero-length edge in both result polygons.
+  const interior = dedupeConsecutive([snapStart, ...cutLine.slice(1, cutLine.length - 1), snapEnd]).slice(1, -1);
+
+  // Segment-level validation. Checking only that the interior VERTICES
+  // are inside (above) is not enough: on a concave roof (U / L shapes) a
+  // segment between two inside vertices can still cross the notch, and
+  // the "halves" we'd stitch together are then self-intersecting
+  // polygons that splitRoof would happily accept. See isValidCutPath.
+  if (!isValidCutPath(polygon, [snapStart, ...interior, snapEnd])) return null;
 
   // Insert both cut endpoints into a working copy of `polygon`. Each
   // insertion turns an existing edge into two edges meeting at the new
@@ -254,9 +269,8 @@ export function splitPolygon(
   }
   arcB.push(modified[idxA]);
 
-  // Interior cut vertices (everything between endpoints). If the caller
-  // passed a straight 2-point cut, this is empty.
-  const interior = cutLine.slice(1, cutLine.length - 1);
+  // `interior` (computed above, deduped) holds the cut vertices between
+  // the endpoints. If the caller passed a straight 2-point cut, it's empty.
 
   // polyA closes by going arcA (idxA → idxB around ring) then back
   // along the cut (reversed interior) to idxA.
@@ -271,6 +285,147 @@ export function splitPolygon(
   if (polyA.length < 3 || polyB.length < 3) return null;
 
   return [polyA, polyB];
+}
+
+/**
+ * Remove consecutive points closer than `tol` px to their predecessor.
+ * Endpoints are preserved: if the last point duplicates the previous one,
+ * the PREVIOUS (interior) point is dropped so the snapped boundary endpoint
+ * survives.
+ */
+function dedupeConsecutive(points: Point[], tol: number = 1e-6): Point[] {
+  const out: Point[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const prev = out[out.length - 1];
+    if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) <= tol) {
+      if (i === points.length - 1 && out.length > 1) out[out.length - 1] = p;
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+type SegHit =
+  | { kind: 'none' }
+  | { kind: 'point'; point: Point }
+  | { kind: 'overlap' };
+
+/**
+ * Closed-segment intersection a→b vs c→d with a small relative epsilon.
+ *
+ * Returns 'point' for a single contact (including touching at an
+ * endpoint), 'overlap' when the segments are collinear and share more than
+ * a point, 'none' otherwise. Endpoint contacts are reported deliberately —
+ * isValidCutPath decides which contacts are legitimate.
+ */
+function segmentIntersection(a: Point, b: Point, c: Point, d: Point): SegHit {
+  const rx = b.x - a.x, ry = b.y - a.y;
+  const sx = d.x - c.x, sy = d.y - c.y;
+  const qx = c.x - a.x, qy = c.y - a.y;
+  const rLen = Math.hypot(rx, ry);
+  const sLen = Math.hypot(sx, sy);
+  if (rLen < 1e-12 || sLen < 1e-12) return { kind: 'none' };
+  const denom = rx * sy - ry * sx;
+  const EPS = 1e-9;
+  if (Math.abs(denom) <= EPS * rLen * sLen) {
+    // Parallel. Collinear iff c lies on the line through a→b.
+    if (Math.abs(qx * ry - qy * rx) / rLen > 1e-7 * Math.max(1, rLen, sLen)) {
+      return { kind: 'none' };
+    }
+    // Project c and d onto a→b's parameter space and intersect intervals.
+    const r2 = rLen * rLen;
+    const t0 = (qx * rx + qy * ry) / r2;
+    const t1 = t0 + (sx * rx + sy * ry) / r2;
+    const lo = Math.max(0, Math.min(t0, t1));
+    const hi = Math.min(1, Math.max(t0, t1));
+    if (hi - lo > EPS) return { kind: 'overlap' };
+    if (hi - lo >= -EPS) return { kind: 'point', point: { x: a.x + lo * rx, y: a.y + lo * ry } };
+    return { kind: 'none' };
+  }
+  const t = (qx * sy - qy * sx) / denom;
+  const u = (qx * ry - qy * rx) / denom;
+  if (t < -EPS || t > 1 + EPS || u < -EPS || u > 1 + EPS) return { kind: 'none' };
+  const tc = Math.max(0, Math.min(1, t));
+  return { kind: 'point', point: { x: a.x + tc * rx, y: a.y + tc * ry } };
+}
+
+/**
+ * Validate a (snapped, deduped) cut polyline against `polygon`:
+ *
+ *   1. Every cut segment may touch the polygon boundary ONLY at the cut's
+ *      own endpoints (first segment at its start, last segment at its
+ *      end). Any other contact — a proper crossing, grazing a vertex, or
+ *      running along an edge (collinear overlap) — means the cut leaves the
+ *      roof or rides its outline, so the two halves wouldn't be simple
+ *      polygons.
+ *   2. Every segment's midpoint must be strictly inside. Catches a chord
+ *      that touches the boundary only at its endpoints yet runs entirely
+ *      OUTSIDE a concave polygon (e.g. straight across a U's notch from
+ *      one arm tip to the other).
+ *   3. The cut must not intersect itself: non-adjacent segments may not
+ *      touch at all, adjacent ones may not fold back over each other.
+ *
+ * Tolerances are relative to the polygon's size so they behave the same
+ * at any canvas scale; they only need to absorb float noise from
+ * pointAlongEdge / segmentIntersection, not user imprecision (the snap
+ * tolerance already handled that upstream).
+ */
+function isValidCutPath(polygon: Point[], path: Point[]): boolean {
+  if (path.length < 2) return false;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of polygon) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const touchTol = 1e-6 * Math.max(1, Math.hypot(maxX - minX, maxY - minY));
+  const near = (p: Point, q: Point) => Math.hypot(p.x - q.x, p.y - q.y) <= touchTol;
+  for (const p of path) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
+  }
+
+  const start = path[0];
+  const end = path[path.length - 1];
+  const segCount = path.length - 1;
+
+  for (let k = 0; k < segCount; k++) {
+    const a = path[k];
+    const b = path[k + 1];
+    // (1) boundary contacts
+    for (let j = 0; j < polygon.length; j++) {
+      const c = polygon[j];
+      const d = polygon[(j + 1) % polygon.length];
+      const hit = segmentIntersection(a, b, c, d);
+      if (hit.kind === 'none') continue;
+      if (hit.kind === 'overlap') return false;
+      const atStart = k === 0 && near(hit.point, start);
+      const atEnd = k === segCount - 1 && near(hit.point, end);
+      if (!atStart && !atEnd) return false;
+    }
+    // (2) midpoint strictly inside
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (!isInsidePolygon(mid, polygon)) return false;
+  }
+
+  // (3) self-intersection
+  for (let i = 0; i < segCount; i++) {
+    for (let j = i + 1; j < segCount; j++) {
+      const hit = segmentIntersection(path[i], path[i + 1], path[j], path[j + 1]);
+      if (hit.kind === 'none') continue;
+      if (j === i + 1) {
+        // Adjacent segments legitimately share path[i+1]; anything more
+        // (folding back along itself) is degenerate.
+        if (hit.kind === 'overlap') return false;
+        if (!near(hit.point, path[i + 1])) return false;
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

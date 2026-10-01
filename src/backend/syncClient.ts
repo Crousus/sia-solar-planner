@@ -19,49 +19,77 @@
 //
 // One instance per open project (started on ProjectEditor mount, stopped
 // on unmount). The instance subscribes to the store for outbound changes
-// and subscribes to PocketBase realtime for inbound ones. It is the
-// single chokepoint between local state and server state.
+// and to PocketBase realtime for inbound ones. It is the single
+// chokepoint between local state and server state. Design: ADR-016.
 //
-// Key invariants:
-//   - lastSyncedDoc ALWAYS reflects the server's current view, modulo
-//     the in-flight POST (which we still haven't been ack'd on).
-//   - lastKnownRevision ALWAYS reflects the highest revision we know
-//     the server to be at.
-//   - We never apply our own patches twice (per-tab deviceId self-
-//     filter). Each tab mints a UUID on first syncClient init and
-//     stores it in sessionStorage, so a tab reload keeps the same id
-//     but a new tab of the same user gets a fresh one. The server
-//     mirrors the deviceId onto each patches row; the SSE handler
-//     drops only patches whose device_id matches our own. Patches
-//     from another tab of the SAME user (different deviceId) are
-//     applied normally. Legacy patches without a device_id fall back
-//     to author-based filtering so pre-deviceId data still works.
-//   - Any unexpected state triggers a full resync — doc at revision
-//     is always source of truth.
+// Three docs matter at any moment:
 //
-// Why a plain factory (createSyncClient) rather than a React context or
-// singleton module:
-//   - A project's lifetime is bounded by ProjectEditor's mount — creating
-//     the client per-mount (and stopping it on unmount) mirrors that
-//     lifecycle exactly, with zero risk of state from project A leaking
-//     into project B.
-//   - Tests can instantiate the client freely with stubbed fetch and
-//     pocketbase without mocking a module-level singleton.
-//   - Sibling components (KonvaOverlay, SyncStatusIndicator) access the
-//     live instance through the `getActiveSyncClient()` bridge in
-//     ProjectEditor — React context would work too but is heavier for
-//     what is effectively a single mutable ref.
+//   base      the SERVER-CONFIRMED doc at `baseRevision`. It only ever
+//             changes to something the server has committed: a fetched
+//             record, an inbound patch applied on top of it, the doc we
+//             sent once the server ACKs it with 200, or the `currentDoc`
+//             of a 409. It is JSON-normalised (toJsonDoc) so it is exactly
+//             what the server holds — index-addressed diffs computed
+//             against it therefore apply cleanly on the server.
+//
+//   local     the store's `project`: base + unsent local edits (+ any
+//             in-flight POST's edits).
+//
+//   inflight  the doc we POSTed but haven't had ACKed yet. At most one at
+//             a time — the server enforces OCC on `fromRevision`, so a
+//             second parallel POST would always 409.
+//
+// Whenever `base` moves underneath unsent local work (collaborator patch,
+// 409, resync, reconnect, gesture drain) we never simply copy the store
+// into the baseline (that was the old data-loss bug: unsent edits were
+// absorbed into the baseline and never POSTed). Instead `advanceBase`
+// three-way-merges the local doc onto the new server doc BY ENTITY ID
+// (rebaseProject in diff.ts) and writes the result to the store via the
+// bypass action `applyRemotePatch`. Non-overlapping edits from both sides
+// survive; same-field conflicts open the conflict modal instead of being
+// resolved silently in either direction.
+//
+// Inbound patches are keyed by `from_revision` in `pendingInbound` and
+// applied strictly in revision order. A gap is NOT immediately a resync:
+// while our own POST is in flight, a collaborator's patch can legally
+// arrive with from_revision = ourRevision+1 before our 200 does (our own
+// echo is filtered by deviceId, so we only learn our revision from the
+// response). We wait for the POST to settle and only resync if the gap
+// persists.
 // ────────────────────────────────────────────────────────────────────────
 
 import { pb, currentUser } from './pb';
 import type { PatchRecord, ProjectRecord } from './types';
-// We import `diffProjects` directly — `applyProjectPatch` is NOT used
-// here because the store's `applyRemotePatch` action already wraps it,
-// and routing through the store is required so React subscribers re-
-// render.
-import { diffProjects, type Op } from './diff';
+// The store write goes through `applyRemotePatch` (bypass in
+// ACTION_POLICY) so React subscribers re-render and remote/rebased
+// changes stay out of the undo stack. We use `applyProjectPatch` directly
+// only on our private `base` copy.
+import {
+  applyProjectPatch,
+  diffProjects,
+  rebaseProject,
+  toJsonDoc,
+  type Op,
+} from './diff';
 import { useProjectStore } from '../store/projectStore';
 import type { Project } from '../types';
+import { repairReferences } from '../utils/repairReferences';
+
+/**
+ * rebaseProject + referential repair. The id-wise merge is schema-blind,
+ * so concurrent edits can leave refs dangling (panel on a roof the
+ * collaborator deleted, edge to a removed diagram node, two panels both
+ * numbered #7 in one string). EVERY merge result goes through here before
+ * it reaches the store or finalDoc: the repair then shows up as an
+ * ordinary local edit (store ≠ base) and is POSTed by the next flush, so
+ * the server converges on the repaired doc too. repairReferences returns
+ * its input unchanged when nothing is broken, so the common path costs
+ * one sweep and no extra diff work.
+ */
+function mergeAndRepair(base: Project, theirs: Project, mine: Project) {
+  const { doc, conflicts } = rebaseProject(base, theirs, mine);
+  return { doc: repairReferences(doc), conflicts };
+}
 
 // 1 second chosen to balance "feels instant to collaborators" against
 // "batches enough keystrokes into one patch to be efficient". Rapid
@@ -70,413 +98,639 @@ import type { Project } from '../types';
 // gesture — see gesture section below.
 const DEBOUNCE_MS = 1000;
 
-// Per-tab identifier used by the SSE self-filter (see subscribeSse).
+// Browsers cap the combined body size of in-flight `keepalive` requests
+// at 64 KiB per origin. We stay a little below so a small concurrent
+// keepalive (analytics, another tab's flush) doesn't push us over and
+// get the request rejected outright. Larger patches (e.g. the map-lock
+// patch carrying a base64 capture) go out as normal fetches; the
+// beforeunload prompt covers the window where those could be lost.
+const KEEPALIVE_MAX_BYTES = 60_000;
+
+// Initial project load: a few quick retries for transient failures
+// (network blip, 5xx during a deploy) before the editor shows its error
+// page. 4xx fails immediately — retrying a 404/403 can't succeed.
+const MAX_LOAD_ATTEMPTS = 3;
+
+// After stop() we keep trying to land the last edits a couple of times
+// (each 409 is rebased onto the server's doc and re-sent). Bounded so a
+// hot document can't keep a dead client looping forever.
+const MAX_FINAL_FLUSH_ATTEMPTS = 3;
+
+// ── Device id ────────────────────────────────────────────────────────
 //
-// sessionStorage (not localStorage) is deliberate:
-//   - Different tabs of the same browser get independent sessionStorage,
-//     so each tab generates its own deviceId → the self-filter discards
-//     only a tab's own echo and applies other tabs' patches.
-//   - A tab reload reuses the same sessionStorage, so the deviceId is
-//     stable across reloads — no risk that a mid-edit reload looks like
-//     a new device and double-applies its own in-flight patch.
-//   - Closing the tab clears it, which is what we want: the next time
-//     the user opens this project in a fresh tab, it's truly a new
-//     device for sync purposes.
+// Identifies THIS page instance for the SSE self-filter: the server
+// stores it on each patches row and we drop rows carrying our own id
+// (our echo) while applying everyone else's — including other tabs of
+// the same user.
 //
-// Generated lazily on first access so server-side import (e.g. during
-// Vite SSR or Vitest) never touches `sessionStorage` (which is undefined
-// in Node). In tests we fall back to a random UUID that lives for the
-// process's lifetime — fine, because tests don't rely on reload
-// semantics.
-const DEVICE_ID_KEY = 'solar-planner-device-id';
-let cachedDeviceId: string | null = null;
-function getDeviceId(): string {
-  if (cachedDeviceId) return cachedDeviceId;
-  if (typeof sessionStorage !== 'undefined') {
-    const existing = sessionStorage.getItem(DEVICE_ID_KEY);
-    if (existing) {
-      cachedDeviceId = existing;
-      return existing;
-    }
-    const fresh = crypto.randomUUID();
-    sessionStorage.setItem(DEVICE_ID_KEY, fresh);
-    cachedDeviceId = fresh;
-    return fresh;
+// Per page load (module-level), NOT sessionStorage. Chrome's "Duplicate
+// tab" (and some session-restore paths) copy sessionStorage, which made
+// two live tabs share an id and silently drop each other's patches as
+// "echoes".
+//
+// sessionStorage was originally chosen so a reload kept the same id and
+// "a mid-edit reload wouldn't double-apply its own in-flight patch".
+// That concern no longer applies: the reloaded page loads its doc from
+// the server (the store no longer rehydrates the project from storage)
+// and subscribes BEFORE fetching. If the old page's last POST committed
+// before the fetch, it's in the fetched doc and its echo (from_revision
+// < fetched revision) is discarded as stale. If it committed after, the
+// fetched doc lacks it and applying the echo is exactly right — the new
+// page never had those edits locally, so nothing is applied twice.
+let deviceId: string | null = null;
+export function getDeviceId(): string {
+  if (!deviceId) {
+    deviceId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   }
-  // Non-browser environment (Node-side test, SSR) — any stable id works.
-  cachedDeviceId = crypto.randomUUID();
-  return cachedDeviceId;
+  return deviceId;
 }
 
 /**
- * Coarse sync state. Exposed via a subscribe-able observable so the
- * status indicator (Task 14) can show Synced / Syncing / Offline /
- * Conflict. A discriminated union rather than separate booleans so
- * consumers can switch on `kind` and get type-narrowed access to the
- * extra payload (retries count, server doc, etc.) without having to
- * correlate multiple fields themselves.
+ * Coarse sync state, observable via subscribeStatus. A discriminated
+ * union so consumers can switch on `kind` and get the payload typed.
+ *
+ *   error/load-failed — the initial project load failed after retries.
+ *   error/rejected    — the server rejected our patch (400) even after a
+ *                       resync rebuilt the baseline; local edits are
+ *                       kept, and the next edit retries.
  */
 export type SyncStatus =
   | { kind: 'synced' }
   | { kind: 'syncing' }
   | { kind: 'offline'; retriesScheduled: number }
-  | { kind: 'conflict'; currentDoc: Project; currentRevision: number };
+  | { kind: 'conflict'; currentDoc: Project; currentRevision: number }
+  | { kind: 'error'; reason: 'load-failed' | 'rejected' };
+
+/** Why edits could not be saved after the client was stopped. */
+export type UnsavedReason = 'conflict' | 'network' | 'rejected';
+
+export interface SyncClientOptions {
+  /**
+   * Called when stop() could not land the last local edits (final flush
+   * hit an unresolvable conflict, a network error, or a rejection).
+   * The client is already torn down at that point, so this is the only
+   * channel left to tell the user — ProjectEditor turns it into a toast.
+   */
+  onUnsavedChanges?: (reason: UnsavedReason) => void;
+}
+
+/** Minimal shape start() needs from the loaded record. */
+export interface LoadedRecord {
+  doc: Project;
+  revision: number;
+}
+
+export interface StartOptions<R extends LoadedRecord> {
+  /**
+   * Fetch the project record. Defaults to a plain getOne. ProjectEditor
+   * passes its own loader (with `expand`) so the editor and the sync
+   * baseline come from ONE fetch — there is no second fetch that could
+   * return a different revision.
+   */
+  load?: () => Promise<R>;
+  /**
+   * Called synchronously once the record is loaded and the baseline is
+   * installed, before any buffered realtime events are applied. This is
+   * where the caller hydrates the store (loadProject). The caller must
+   * not mutate `record.doc` in place — the baseline is snapshotted
+   * before this call either way.
+   */
+  onLoaded?: (record: R) => void;
+}
 
 type Listener = (s: SyncStatus) => void;
 
 export interface SyncClient {
-  start(): Promise<void>;
+  /**
+   * Subscribe to realtime, load the project, install the baseline, then
+   * start watching the store. Resolves with the loaded record, or null
+   * if stop() was called meanwhile. Rejects if the load fails
+   * permanently. Idempotent: a second call resolves to null.
+   */
+  start<R extends LoadedRecord = ProjectRecord>(opts?: StartOptions<R>): Promise<R | null>;
   stop(): void;
   subscribeStatus(fn: Listener): () => void;
-  /** Called by ConflictModal (Task 14) to finalize the user's choice. */
+  /** Called by ConflictModal to finalize the user's choice. */
   resolveConflict(choice: 'discard-mine' | 'overwrite-theirs'): Promise<void>;
-  /** Gesture hooks — wired from KonvaOverlay in Task 13. */
+  /** Gesture hooks — wired from KonvaOverlay. */
   beginGesture(): void;
   endGesture(): void;
 }
 
-export function createSyncClient(projectId: string): SyncClient {
+interface InFlight {
+  fromRevision: number;
+  sentDoc: Project;
+  keepalive: boolean;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
+function byteLength(s: string): number {
+  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(s).length : s.length * 3;
+}
+
+export function createSyncClient(projectId: string, options: SyncClientOptions = {}): SyncClient {
   // ── Mutable state owned by this client instance ─────────────────────
-  // All of these live in closure rather than on an object field because
-  // nothing outside this factory ever needs to read them — the public
-  // surface is the SyncClient interface, and exposing internals would
-  // invite tight coupling.
-  let lastSyncedDoc: Project | null = null;
-  let lastKnownRevision = 0;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  // `postInFlight` guards against two overlapping POSTs. If the debounce
-  // timer fires again while a POST is in-flight (because the user kept
-  // editing after the timer started), we DON'T start a second POST —
-  // instead the success handler re-checks for pending diffs and schedules
-  // another flush. This serialization is essential because the server
-  // enforces optimistic concurrency on `fromRevision`: two parallel POSTs
-  // would both claim the same revision, the second would 409, and we'd
-  // flap into conflict UI for no reason.
-  let postInFlight = false;
-  // `gestureActive` suppresses BOTH outbound flushes (we don't want to
-  // snapshot a half-dragged panel) AND inbound applies (we don't want
-  // Bob's patch to yank the polygon out from under Alice's live drag).
-  // Inbound ops are buffered into gestureInboundQueue during the gesture
-  // and drained in endGesture().
+  // Closure-private: the public surface is the SyncClient interface.
+  let base: Project | null = null;
+  let baseRevision = 0;
+  let inflight: InFlight | null = null;
+  // Inbound patches not yet applied, keyed by from_revision. Holds
+  // events that arrive before the initial load, during a gesture, or
+  // ahead of a revision we haven't confirmed yet.
+  const pendingInbound = new Map<number, PatchRecord>();
+  // Set while the conflict modal is open. `serverDoc` keeps tracking the
+  // server (inbound patches are applied to it) so the eventual choice is
+  // made against the latest server state; the store is left alone and
+  // outbound flushes are paused — an inbound patch must never silently
+  // resolve an open conflict.
+  let conflict: { serverDoc: Project; serverRevision: number } | null = null;
+  // A full server snapshot (409 body / resync) that arrived mid-gesture;
+  // integrated in endGesture so we don't yank data from under the
+  // pointer.
+  let deferredSnapshot: { doc: Project; revision: number } | null = null;
+  // `gestureActive` suppresses outbound flushes (don't upload a half-
+  // dragged state) and inbound store writes (don't move the vertex the
+  // user is dragging). Inbound patches simply wait in pendingInbound.
   let gestureActive = false;
-  let gestureInboundQueue: Op[] = [];
-  // Exponential backoff on transient POST failures (5xx, network error).
-  // We don't count 401/403/404 here — those indicate a permanent issue
-  // (auth gone, project deleted) and retrying wouldn't help.
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Separate timers per kind so a failing flush can't cancel a pending
+  // resync retry (or vice versa) — both must eventually run.
+  const retryTimers: Record<'flush' | 'resync', ReturnType<typeof setTimeout> | null> = {
+    flush: null,
+    resync: null,
+  };
+  // Exponential backoff counter for transient failures (5xx, network).
   let retryCount = 0;
+  // Consecutive 400s. The first triggers a baseline-rebuilding resync;
+  // a second in a row means the doc itself is unacceptable → error
+  // status instead of an endless retry of the same bad diff.
+  let rejectedCount = 0;
+  let resyncRunning = false;
+  let resyncQueued = false;
+  let resyncAfterInflight = false;
+  let started = false;
+  // `stopped` guards every async continuation and every callback: a
+  // late SSE event, PB_CONNECT, POST response or load result must never
+  // touch the store after stop() — the store may already hold a
+  // different project.
+  let stopped = false;
+  // Snapshot of the store's project taken in stop(), BEFORE the caller
+  // resets the store. Post-stop flushes read this instead of the store.
+  let finalDoc: Project | null = null;
+  let finalAttempts = 0;
   let status: SyncStatus = { kind: 'synced' };
   const listeners = new Set<Listener>();
+  // Teardown callbacks registered as subscriptions are established —
+  // including ones that resolve after an await, so stop() during start()
+  // still finds (or immediately runs) them.
+  const cleanups: Array<() => void> = [];
 
-  let storeUnsub: (() => void) | null = null;
-  let sseUnsub: (() => void) | null = null;
-  // Window-level listeners that act as a safety valve for gesture state.
-  // See start() for the rationale: Konva's onMouseUp is canvas-scoped and
-  // doesn't fire if the user releases the mouse outside the browser window
-  // (or tab-switches mid-drag), which would otherwise leave gestureActive
-  // stuck at true and stall sync indefinitely.
-  let windowListenersUnsub: (() => void) | null = null;
-  // `stopped` protects against late async work (a POST that completes
-  // after the component unmounts) touching a dead client. Every async
-  // path re-checks `stopped` before calling setStatus or re-entering
-  // flush().
-  let stopped = false;
+  function addCleanup(fn: () => void) {
+    if (stopped) fn();
+    else cleanups.push(fn);
+  }
 
   function setStatus(next: SyncStatus) {
+    if (stopped) return;
     status = next;
     listeners.forEach((fn) => fn(next));
   }
 
-  // ── Outbound: debounced diff + POST ─────────────────────────────────
-  //
-  // Flow: store change → scheduleFlush() (resets debounce) → after
-  // DEBOUNCE_MS of quiet → flush() → POST /api/sp/patch. A successful
-  // POST advances lastSyncedDoc + lastKnownRevision so subsequent diffs
-  // are relative to the new baseline.
-
-  function scheduleFlush() {
-    if (debounceTimer != null) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(flush, DEBOUNCE_MS);
+  /** Pick the status that reflects current state (after a transition). */
+  function settleStatus() {
+    if (stopped || conflict) return;
+    if (inflight) setStatus({ kind: 'syncing' });
+    else if (retryTimers.flush || retryTimers.resync) return; // keep 'offline'
+    else if (status.kind === 'error' && status.reason === 'rejected' && rejectedCount > 0) return;
+    else setStatus({ kind: 'synced' });
   }
 
-  async function flush() {
-    if (stopped) return;
-    // These early returns are NOT bugs — they're the three cases where a
-    // flush should be delayed rather than cancelled:
-    //   postInFlight: the success handler will re-schedule if new edits
-    //                 arrived while the POST was in flight.
-    //   gestureActive: endGesture will call scheduleFlush() itself.
-    //   !lastSyncedDoc: start() hasn't completed yet; the first store
-    //                   subscription firing before the initial fetch
-    //                   resolves is harmless — nothing to diff against.
-    if (postInFlight) return;
-    if (gestureActive) return;
-    if (!lastSyncedDoc) return;
+  function localDoc(): Project {
+    return stopped ? (finalDoc as Project) : useProjectStore.getState().project;
+  }
 
-    const current = useProjectStore.getState().project;
-    const ops = diffProjects(lastSyncedDoc, current);
+  function hasUnsentChanges(): boolean {
+    if (!base) return false;
+    return diffProjects(base, toJsonDoc(localDoc())).length > 0;
+  }
+
+  // Replace the store's project with `target` through the bypass action.
+  // The diff is computed against the store's CURRENT project and applied
+  // to that same object, so index-addressed ops are always correct here.
+  function writeStore(target: Project) {
+    if (stopped) return;
+    const cur = useProjectStore.getState().project;
+    const ops = diffProjects(cur, target);
+    if (ops.length > 0) useProjectStore.getState().applyRemotePatch(ops);
+  }
+
+  function enterConflict(serverDoc: Project, serverRevision: number) {
+    conflict = { serverDoc, serverRevision };
+    if (debounceTimer != null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    setStatus({ kind: 'conflict', currentDoc: serverDoc, currentRevision: serverRevision });
+  }
+
+  /**
+   * THE rebase primitive. Moves the server-confirmed baseline to
+   * `newBase` and carries the local unsent edits along (three-way merge
+   * by entity id). Returns false if a same-field conflict was detected —
+   * the conflict modal opens and neither the store nor `base` changes.
+   *
+   * Preconditions: base != null, not stopped, no gesture, no conflict.
+   */
+  function advanceBase(newBase: Project, newRevision: number): boolean {
+    const local = useProjectStore.getState().project;
+    const { doc, conflicts } = mergeAndRepair(base as Project, newBase, local);
+    if (conflicts.length > 0) {
+      enterConflict(newBase, newRevision);
+      return false;
+    }
+    // Baseline first, then the store: the store write fires our store
+    // subscription, and the resulting diff must be computed against the
+    // NEW baseline (yielding exactly the local edits).
+    base = newBase;
+    baseRevision = newRevision;
+    writeStore(doc);
+    return true;
+  }
+
+  // ── Outbound: debounced diff + POST ─────────────────────────────────
+
+  function scheduleFlush() {
+    if (stopped) return;
+    if (debounceTimer != null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void flush();
+    }, DEBOUNCE_MS);
+  }
+
+  function scheduleRetry(kind: 'flush' | 'resync', action: () => void) {
+    if (stopped) return;
+    retryCount += 1;
+    // Capped exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, …
+    const delay = Math.min(30_000, 1000 * 2 ** (retryCount - 1));
+    const prev = retryTimers[kind];
+    if (prev != null) clearTimeout(prev);
+    retryTimers[kind] = setTimeout(() => {
+      retryTimers[kind] = null;
+      if (!stopped) action();
+    }, delay);
+    setStatus({ kind: 'offline', retriesScheduled: retryCount });
+  }
+
+  async function flush(): Promise<void> {
+    if (debounceTimer != null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    // Delayed, not cancelled:
+    //   inflight      → its completion re-checks for pending edits.
+    //   !base         → start() hasn't installed the baseline yet.
+    //   gestureActive → endGesture schedules a flush.
+    //   conflict      → resolveConflict flushes.
+    // After stop() gestures/conflicts no longer matter (stop handles the
+    // conflict case itself) — we just try to land finalDoc.
+    if (inflight || !base) return;
+    if (stopped ? finalDoc === null : gestureActive || conflict) return;
+
+    const local = toJsonDoc(localDoc());
+    const ops = diffProjects(base, local);
     if (ops.length === 0) {
-      setStatus({ kind: 'synced' });
+      settleStatus();
       return;
     }
 
-    postInFlight = true;
+    const body = JSON.stringify({
+      projectId,
+      fromRevision: baseRevision,
+      ops,
+      // Page-scoped identifier — see getDeviceId().
+      deviceId: getDeviceId(),
+    });
+    // keepalive lets the request outlive the page (tab close, reload,
+    // navigation) — only possible under the browser's body-size cap.
+    const keepalive = byteLength(body) <= KEEPALIVE_MAX_BYTES;
+    const sent: InFlight = { fromRevision: baseRevision, sentDoc: local, keepalive };
+    inflight = sent;
     setStatus({ kind: 'syncing' });
 
+    let code: number;
+    let payload: unknown = null;
     try {
+      // NB: everything up to this fetch() call runs synchronously inside
+      // the caller's tick, so pagehide/beforeunload handlers that call
+      // flush() really do get the request on the wire before unload.
       const res = await fetch('/api/sp/patch', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          // The PocketBase JS SDK manages the token via authStore; we
-          // forward it on manual fetch calls so our custom /api/sp/*
-          // routes (which live outside the SDK) can authenticate via
-          // the same bearer token.
+          // Our custom /api/sp/* routes live outside the SDK, so we
+          // forward the SDK-managed bearer token by hand.
           Authorization: `Bearer ${pb.authStore.token}`,
         },
-        body: JSON.stringify({
-          projectId,
-          fromRevision: lastKnownRevision,
-          ops,
-          // Tab-scoped identifier. Server stores it on the patches row
-          // so the SSE handler can tell "my own echo" (drop) from
-          // "another tab of me" (apply).
-          deviceId: getDeviceId(),
-        }),
+        body,
+        keepalive,
       });
-
-      if (res.status === 200) {
-        const body = (await res.json()) as { newRevision: number };
-        // Success: the server has accepted our ops. `current` is now
-        // the new baseline — not `useProjectStore.getState().project`,
-        // because the user may have continued editing during the POST
-        // and we'd lose those deltas on the next diff.
-        //
-        // Guard against a concurrent fullResync having already advanced
-        // us past body.newRevision. That happens when an SSE patch
-        // arrives from another user while our own POST is still in
-        // flight: lastKnownRevision is behind, the gap-check in
-        // applyInbound fires, fullResync pulls the authoritative doc
-        // (which already includes our ops too, because the server
-        // accepted them before mirroring over SSE), then our 200
-        // arrives with a stale newRevision. If lastKnownRevision is
-        // already >= body.newRevision, the fullResync already installed
-        // a newer baseline — leave state untouched rather than regressing.
-        if (body.newRevision > lastKnownRevision) {
-          lastSyncedDoc = current;
-          lastKnownRevision = body.newRevision;
-        }
-        retryCount = 0;
-        setStatus({ kind: 'synced' });
-
-        // If more edits arrived while we were POSTing, schedule another
-        // flush. The debounce timer was INACTIVE during the POST (it
-        // fired once to enter flush()), so without this explicit check
-        // late edits would sit unsynced until the NEXT user action.
-        // The `lastSyncedDoc &&` guard is defensive — in practice it's
-        // non-null by this point (we early-returned on !lastSyncedDoc
-        // at the top of flush), but TS can't narrow through the
-        // conditional assignment above, and an explicit check is cheap.
-        const afterPost = useProjectStore.getState().project;
-        if (lastSyncedDoc && diffProjects(lastSyncedDoc, afterPost).length > 0) {
-          scheduleFlush();
-        }
-      } else if (res.status === 409) {
-        // Server state diverged from our fromRevision baseline. The
-        // response carries the authoritative doc + revision so the
-        // ConflictModal can show the user what changed. We don't try
-        // to auto-rebase — merge semantics on this data model would
-        // be surprisingly subtle (string indexing, string/roof refs)
-        // and "show the user both and ask" is the honest UX.
-        const body = (await res.json()) as {
-          currentRevision: number;
-          currentDoc: Project;
-        };
-        setStatus({
-          kind: 'conflict',
-          currentRevision: body.currentRevision,
-          currentDoc: body.currentDoc,
-        });
-      } else if (res.status === 401 || res.status === 403 || res.status === 404) {
-        // Permanent failures: the token expired, we were kicked from
-        // the team, or the project was deleted. Retrying won't help —
-        // surface as offline with 0 retries so the UI can prompt the
-        // user to re-auth / navigate away.
-        setStatus({ kind: 'offline', retriesScheduled: 0 });
-      } else {
-        // 5xx / other transient server errors: back off and retry.
-        scheduleRetry();
+      code = res.status;
+      // Parse BEFORE clearing `inflight`, otherwise a debounced flush
+      // could start a second POST against the stale baseline while we
+      // await the body.
+      if (typeof res.json === 'function') {
+        payload = await res.json().catch(() => null);
       }
     } catch {
-      // Network error, DNS failure, CORS preflight, etc. Treat the same
-      // as a 5xx — back off and retry. We deliberately don't surface
-      // the error to the UI beyond the "offline, retries scheduled"
-      // status; the exact reason isn't actionable from the user's end.
-      scheduleRetry();
-    } finally {
-      postInFlight = false;
+      inflight = null;
+      onTransientFailure();
+      return;
     }
-  }
+    inflight = null;
 
-  function scheduleRetry() {
-    retryCount += 1;
-    // Capped exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, …
-    // Cap at 30s so a long offline period doesn't stretch to minutes
-    // between retry attempts (bad UX — the user would think the app
-    // is frozen even after connectivity returns).
-    const delay = Math.min(30_000, 1000 * 2 ** (retryCount - 1));
-    setStatus({ kind: 'offline', retriesScheduled: retryCount });
-    setTimeout(() => { if (!stopped) flush(); }, delay);
-  }
-
-  // ── Inbound: SSE patch subscription ────────────────────────────────
-
-  async function subscribeSse() {
-    // PocketBase's realtime API uses wildcard '*' to subscribe to all
-    // records of the collection — we filter client-side by projectId
-    // rather than using a PB filter expression because the latter has
-    // historically had flakier semantics across SDK versions, and the
-    // volume of other projects' patches arriving at this tab is low
-    // enough that the filter overhead is negligible.
-    const unsub = await pb.collection('patches').subscribe<PatchRecord>(
-      '*',
-      (e) => {
-        if (e.action !== 'create') return;
-        const rec = e.record;
-        if (rec.project !== projectId) return;
-
-        // Self-filter: drop patches this exact tab authored, but keep
-        // patches from other tabs (even of the same user).
-        //
-        // Primary check — deviceId: set on every patch we POST; unique
-        //   per sessionStorage, so it identifies THIS tab specifically.
-        //   A patch with matching device_id is our own echo; anything
-        //   else came from elsewhere and should be applied.
-        //
-        // Fallback — author: used only when a patch lacks device_id
-        //   (legacy rows written before the field shipped). Behaves
-        //   like the pre-deviceId filter: same user id = skip. Without
-        //   this fallback, a legacy patch would double-apply; with it,
-        //   the only lost capability is same-user multi-tab sync for
-        //   legacy rows, which won't happen in practice (they're <1hr
-        //   old and nobody was relying on this feature pre-fix).
-        const myDeviceId = getDeviceId();
-        if (rec.device_id) {
-          if (rec.device_id === myDeviceId) return;
-        } else {
-          const me = currentUser();
-          if (me && rec.author === (me as { id: string }).id) return;
-        }
-
-        if (gestureActive) {
-          // Don't disrupt an ongoing drag. Buffer the op stream and
-          // drain it in endGesture. Note: we append ALL ops from ALL
-          // queued patches into one flat array; chunkByPatch below
-          // treats the whole buffer as a single patch for replay.
-          gestureInboundQueue.push(...(rec.ops as Op[]));
+    if (code === 200) {
+      const newRevision = (payload as { newRevision?: number } | null)?.newRevision;
+      retryCount = 0;
+      rejectedCount = 0;
+      if (typeof newRevision !== 'number' || sent.fromRevision !== baseRevision) {
+        // Defensive: the baseline moved while our POST was in flight
+        // (shouldn't happen — any server-side change at our fromRevision
+        // would have made this POST 409). Re-derive from the server.
+        requestResync();
+      } else {
+        // The server applied exactly our ops to exactly `base`, so the
+        // doc we sent IS the server's doc now. (NOT the store's current
+        // project — edits made during the POST are still unsent.)
+        base = sent.sentDoc;
+        baseRevision = newRevision;
+      }
+      afterPost();
+    } else if (code === 409) {
+      const body409 = payload as { currentRevision?: number; currentDoc?: Project } | null;
+      if (!body409?.currentDoc || typeof body409.currentRevision !== 'number') {
+        if (stopped) options.onUnsavedChanges?.('conflict');
+        else requestResync();
+        return;
+      }
+      const serverDoc = toJsonDoc(body409.currentDoc);
+      if (stopped) {
+        // No UI left to ask the user. Try to land the edits by rebasing
+        // the final snapshot onto the server doc; only give up (and tell
+        // the user via the callback) on a true same-field conflict.
+        const { doc, conflicts } = mergeAndRepair(base, serverDoc, toJsonDoc(finalDoc as Project));
+        if (conflicts.length > 0 || finalAttempts >= MAX_FINAL_FLUSH_ATTEMPTS) {
+          options.onUnsavedChanges?.('conflict');
           return;
         }
-
-        applyInbound(rec);
-      },
-    );
-    // pb.collection().subscribe returns a callable unsubscribe function
-    // directly; we wrap to match our typed `(() => void) | null`.
-    sseUnsub = () => unsub();
+        finalAttempts += 1;
+        base = serverDoc;
+        baseRevision = body409.currentRevision;
+        finalDoc = doc;
+        void flush();
+        return;
+      }
+      // Someone else committed first. Rebase our local work onto their
+      // doc (opens the modal only on a same-field conflict) and retry.
+      integrateSnapshot(serverDoc, body409.currentRevision);
+      afterPost();
+    } else if (code === 401 || code === 403 || code === 404) {
+      // Permanent: token expired, kicked from the team, project deleted.
+      if (stopped) options.onUnsavedChanges?.('rejected');
+      else setStatus({ kind: 'offline', retriesScheduled: 0 });
+    } else if (code >= 400 && code < 500) {
+      // 400: the patch didn't apply on the server. With a correct
+      // baseline that can't happen, so assume the baseline diverged:
+      // resync (preserving local edits) and let the next flush send a
+      // fresh diff. If THAT is rejected too, stop retrying the same bad
+      // patch in a loop and surface an error; local edits stay in the
+      // store and the next edit tries again.
+      if (stopped) {
+        options.onUnsavedChanges?.('rejected');
+        return;
+      }
+      rejectedCount += 1;
+      if (rejectedCount === 1) {
+        requestResync({ thenFlush: true });
+      } else {
+        setStatus({ kind: 'error', reason: 'rejected' });
+      }
+    } else {
+      onTransientFailure();
+    }
   }
 
-  function applyInbound(rec: PatchRecord) {
-    // Gap check: the incoming patch claims from_revision; if it doesn't
-    // match our lastKnownRevision, we missed a patch (possibly due to
-    // a brief SSE disconnection that auto-reconnected). Replaying the
-    // current patch on top of stale state would produce silent
-    // divergence — the reliable recovery is a full resync.
-    if (rec.from_revision !== lastKnownRevision) {
-      fullResync().catch(() => scheduleRetry());
+  function onTransientFailure() {
+    if (stopped) {
+      options.onUnsavedChanges?.('network');
       return;
     }
+    scheduleRetry('flush', () => void flush());
+  }
 
-    try {
-      // applyRemotePatch is registered as 'bypass' in ACTION_POLICY so
-      // it doesn't enter the undo stack — Alice shouldn't be able to
-      // Ctrl-Z Bob's changes (would fight the server's authoritative
-      // state). See Task 11 commit / projectStore for rationale.
-      useProjectStore.getState().applyRemotePatch(rec.ops as Op[]);
-      // After the store mutates, our lastSyncedDoc should be the NEW
-      // project — taking it from the store avoids re-applying the
-      // patch ourselves (which we've already done via applyRemotePatch).
-      lastSyncedDoc = useProjectStore.getState().project;
-      lastKnownRevision = rec.to_revision;
-      setStatus({ kind: 'synced' });
-    } catch {
-      // applyPatch throws on malformed ops or failed `test` ops. Either
-      // way local state is suspect — fall back to a full resync which
-      // is guaranteed-consistent (getOne returns the server's current
-      // doc verbatim).
-      fullResync().catch(() => scheduleRetry());
+  /** Bookkeeping after any POST settles (200 or a handled 409). */
+  function afterPost() {
+    if (stopped) {
+      // Keep draining finalDoc (edits made while the last POST was in
+      // flight, or the rebased doc after a 409).
+      if (finalAttempts < MAX_FINAL_FLUSH_ATTEMPTS && hasUnsentChanges()) {
+        finalAttempts += 1;
+        void flush();
+      }
+      return;
     }
+    if (resyncAfterInflight) {
+      resyncAfterInflight = false;
+      requestResync();
+    }
+    processInbound();
+    settleStatus();
+    if (!conflict && hasUnsentChanges()) scheduleFlush();
   }
 
-  async function fullResync() {
-    // The server's record at whatever revision it's currently at is
-    // the source of truth. We replace our local doc wholesale — any
-    // unsaved local edits are lost. That's a conscious trade-off: by
-    // the time we hit this path we've already decided local state is
-    // corrupt / out-of-sync, so preserving it would only prolong the
-    // inconsistency.
-    const record = await pb
-      .collection('projects')
-      .getOne<ProjectRecord>(projectId);
-    useProjectStore.getState().loadProject(record.doc);
-    lastSyncedDoc = record.doc;
-    lastKnownRevision = record.revision;
-    retryCount = 0;
-    setStatus({ kind: 'synced' });
+  // ── Inbound ─────────────────────────────────────────────────────────
+
+  function onPatchEvent(e: { action: string; record: PatchRecord }) {
+    if (stopped) return;
+    if (e.action !== 'create') return;
+    const rec = e.record;
+    if (rec.project !== projectId) return;
+
+    // Self-filter. Primary: deviceId identifies THIS page instance, so a
+    // matching id is our own echo. Fallback for legacy rows without a
+    // device_id: same author = skip (pre-deviceId behaviour).
+    if (rec.device_id) {
+      if (rec.device_id === getDeviceId()) return;
+    } else {
+      const me = currentUser();
+      if (me && rec.author === (me as { id: string }).id) return;
+    }
+
+    pendingInbound.set(rec.from_revision, rec);
+    processInbound();
   }
 
-  // ── Conflict resolution (triggered by ConflictModal in Task 14) ────
+  /**
+   * Apply every buffered patch that chains from the current server head,
+   * in revision order, then rebase local work onto the result ONCE.
+   */
+  function processInbound() {
+    if (stopped || !base || gestureActive) return;
+    let head = conflict ? conflict.serverRevision : baseRevision;
+    // Anything older than our head is already reflected (it was in a
+    // fetched doc or a 409 body).
+    for (const k of [...pendingInbound.keys()]) if (k < head) pendingInbound.delete(k);
+
+    let doc = conflict ? conflict.serverDoc : base;
+    let advanced = false;
+    while (pendingInbound.has(head)) {
+      const rec = pendingInbound.get(head) as PatchRecord;
+      pendingInbound.delete(head);
+      try {
+        doc = applyProjectPatch(doc, rec.ops as Op[]);
+      } catch {
+        // Patch doesn't apply to what we believe the server holds →
+        // our baseline is wrong. Rebuild it from the server.
+        requestResync();
+        return;
+      }
+      head = rec.to_revision;
+      advanced = true;
+    }
+
+    if (advanced) {
+      if (conflict) {
+        // Keep the modal's server side current; don't touch the store.
+        enterConflict(doc, head);
+      } else if (advanceBase(doc, head)) {
+        settleStatus();
+      }
+    }
+
+    // A real gap (we missed an event). If our POST is in flight, the gap
+    // may simply be our own revision — wait for the response.
+    if (pendingInbound.size > 0 && !inflight) requestResync();
+  }
+
+  /**
+   * Integrate a full server snapshot (resync GET or 409 body), carrying
+   * local edits along. Never discards unsent work; never touches UI
+   * state or undo history.
+   */
+  function integrateSnapshot(doc: Project, revision: number) {
+    if (stopped || !base) return;
+    const head = conflict ? conflict.serverRevision : baseRevision;
+    // Equal revision still proceeds: a 400-triggered resync needs to
+    // REPLACE a baseline that diverged at the same revision number.
+    if (revision < head) return;
+    for (const k of [...pendingInbound.keys()]) if (k < revision) pendingInbound.delete(k);
+    if (conflict) {
+      enterConflict(doc, revision);
+      processInbound();
+      return;
+    }
+    if (gestureActive) {
+      if (!deferredSnapshot || revision >= deferredSnapshot.revision) {
+        deferredSnapshot = { doc, revision };
+      }
+      return;
+    }
+    if (advanceBase(doc, revision)) processInbound();
+  }
+
+  /**
+   * Fetch the server's current doc and integrate it. Replaces the old
+   * `fullResync` → `loadProject` path, which discarded unsent edits and
+   * reset tool mode / selection / undo history.
+   */
+  function requestResync(opts: { thenFlush?: boolean } = {}) {
+    if (stopped || !base) return;
+    if (inflight) {
+      resyncAfterInflight = true;
+      return;
+    }
+    if (resyncRunning) {
+      resyncQueued = true;
+      return;
+    }
+    resyncRunning = true;
+    void (async () => {
+      try {
+        const record = await pb.collection('projects').getOne<ProjectRecord>(projectId);
+        if (stopped) return;
+        resyncRunning = false;
+        retryCount = 0;
+        if (retryTimers.resync != null) {
+          clearTimeout(retryTimers.resync);
+          retryTimers.resync = null;
+        }
+        integrateSnapshot(toJsonDoc(record.doc), record.revision);
+        settleStatus();
+        if (opts.thenFlush) void flush();
+        else if (hasUnsentChanges()) scheduleFlush();
+      } catch {
+        resyncRunning = false;
+        if (!stopped) scheduleRetry('resync', () => requestResync(opts));
+      } finally {
+        resyncRunning = false;
+        if (resyncQueued && !stopped) {
+          resyncQueued = false;
+          requestResync();
+        }
+      }
+    })();
+  }
+
+  // ── Conflict resolution (ConflictModal) ────────────────────────────
 
   async function resolveConflict(choice: 'discard-mine' | 'overwrite-theirs') {
-    // Guard: if status has already flipped to something else (another
-    // inbound patch landed, or the modal double-dispatched), treat the
-    // call as a no-op rather than operating on stale conflict payload.
-    if (status.kind !== 'conflict') return;
-    const { currentDoc, currentRevision } = status;
+    // Guard against double-dispatch or a stale modal.
+    if (stopped || !conflict || !base) return;
+    const { serverDoc, serverRevision } = conflict;
+    conflict = null;
 
     if (choice === 'discard-mine') {
-      // User chose the server's version. Wholesale replace — same
-      // semantics as fullResync, but without a second network round-trip
-      // because we already have the server doc from the 409 response.
-      useProjectStore.getState().loadProject(currentDoc);
-      lastSyncedDoc = currentDoc;
-      lastKnownRevision = currentRevision;
+      // Take the server's version wholesale. Through applyRemotePatch
+      // (not loadProject) so tool mode / selection / view survive.
+      base = serverDoc;
+      baseRevision = serverRevision;
+      writeStore(serverDoc);
       setStatus({ kind: 'synced' });
+      processInbound();
       return;
     }
 
-    // overwrite-theirs — re-diff our local project against the current
-    // server doc and POST. The new diff will contain ops that "undo"
-    // the collaborator's changes AND re-apply our own, which is exactly
-    // what "keep mine" means in OCC semantics.
-    lastSyncedDoc = currentDoc;
-    lastKnownRevision = currentRevision;
+    // Keep mine: three-way merge where conflicting fields resolve to the
+    // local value but the collaborator's NON-conflicting changes are
+    // kept (the old implementation re-diffed the whole local doc against
+    // theirs and reverted everything they did).
+    const { doc } = mergeAndRepair(base, serverDoc, useProjectStore.getState().project);
+    base = serverDoc;
+    baseRevision = serverRevision;
+    writeStore(doc);
     setStatus({ kind: 'syncing' });
+    processInbound();
     await flush();
   }
 
   // ── Gesture hooks ──────────────────────────────────────────────────
   //
   // A "gesture" is a continuous interaction (vertex drag, slider scrub,
-  // panel paint-drag) that produces many store writes in rapid succession.
-  // Without these hooks, the 1s debounce would still eventually fire —
-  // but during the gesture, two bad things could happen:
-  //   1. An inbound patch from a collaborator would yank the data out
-  //      from under the user's pointer (polygon vertex they're dragging
-  //      suddenly moves).
-  //   2. The debounce timer could fire if the gesture paused > 1s,
-  //      uploading a half-committed state.
-  // Both are prevented by bracketing gestures with begin/end hooks.
+  // panel paint-drag) bracketed by begin/end from KonvaOverlay. During
+  // it we neither upload half-finished state nor apply collaborator
+  // changes to the store. On end, buffered inbound patches go through
+  // the same rebase path as any other inbound patch: revision advances
+  // per patch (no guaranteed 409 afterwards), entity arrays merge by id
+  // (no duplicated `add /panels/N`, no `remove` hitting the wrong panel).
 
   function beginGesture() {
+    if (stopped) return;
     gestureActive = true;
     if (debounceTimer != null) {
       clearTimeout(debounceTimer);
@@ -485,192 +739,200 @@ export function createSyncClient(projectId: string): SyncClient {
   }
 
   function endGesture() {
+    if (stopped) return;
     gestureActive = false;
-    // Snapshot aliceDiff BEFORE applying buffered remote ops so we can
-    // reassert Alice's work after Bob's patches land. Order matters:
-    // we apply Bob's ops to get a consistent base (aligned with Bob's
-    // from_revision → to_revision chain), then re-apply Alice's local
-    // diff on top. This is NOT a proper OT merge — if Alice and Bob
-    // touched the same field, Alice's value wins. Acceptable for M3;
-    // proper conflict detection at the op level is a future concern.
-    const projectNow = useProjectStore.getState().project;
-    const aliceDiff = lastSyncedDoc
-      ? diffProjects(lastSyncedDoc, projectNow)
-      : [];
-
-    if (gestureInboundQueue.length > 0) {
-      try {
-        for (const queuedOps of chunkByPatch(gestureInboundQueue)) {
-          useProjectStore.getState().applyRemotePatch(queuedOps);
-        }
-        gestureInboundQueue = [];
-        // Intentionally set lastSyncedDoc BEFORE re-applying Alice's diff.
-        // The baseline we want for the next flush is "server + Bob's ops",
-        // so that diffProjects(lastSyncedDoc, store) yields exactly
-        // Alice's ops when we re-apply them to the store below. Moving
-        // this assignment after the Alice re-apply would make the next
-        // flush see no diff and silently drop Alice's gesture from the
-        // outbound POST.
-        lastSyncedDoc = useProjectStore.getState().project;
-        if (aliceDiff.length > 0) {
-          // Alice's edits get re-applied via applyRemotePatch (bypass)
-          // rather than as local mutations — we don't want to double-
-          // count them in undo history (the original gestures already
-          // produced history entries). The server will receive these
-          // via the next flush() and accept them as a legit patch.
-          useProjectStore.getState().applyRemotePatch(aliceDiff);
-        }
-      } catch {
-        // If anything throws during replay, abandon the queue and
-        // full-resync. Safer than leaving the store in a half-applied
-        // state where lastSyncedDoc doesn't match the project anymore.
-        gestureInboundQueue = [];
-        fullResync().catch(() => scheduleRetry());
-        return;
-      }
+    if (deferredSnapshot) {
+      const snap = deferredSnapshot;
+      deferredSnapshot = null;
+      integrateSnapshot(snap.doc, snap.revision);
     }
+    processInbound();
     scheduleFlush();
   }
 
-  // M3 simplification: treat the buffered inbound queue as a single op
-  // array. applyRemotePatch tolerates arbitrary ops in sequence. A future
-  // refactor may reinstate per-patch chunking if we need to preserve
-  // from/to revisions for each queued patch (currently we only track
-  // the aggregate, which is fine because revision numbers are strictly
-  // monotonic and the chunkByPatch output feeds straight back into the
-  // store without a network round-trip).
-  function chunkByPatch(ops: Op[]): Op[][] {
-    return ops.length === 0 ? [] : [ops];
+  // ── Page lifecycle ─────────────────────────────────────────────────
+
+  function installWindowListeners() {
+    if (typeof window === 'undefined') return;
+
+    // Gesture safety valve: Konva's onMouseUp is canvas-scoped, so a
+    // release outside the window (or a tab switch mid-drag) would leave
+    // gestureActive stuck and stall sync. Window mouseup / visibility
+    // change are reliable "gesture is over" signals.
+    const onMouseUp = () => {
+      if (gestureActive) endGesture();
+    };
+
+    // Tab hidden (switch, minimise, mobile app switch, and the step
+    // before most closes): flush NOW instead of waiting out the
+    // debounce. Hidden pages may be discarded without further events.
+    const onVisibility = () => {
+      if (gestureActive) endGesture();
+      if (document.visibilityState === 'hidden') void flush();
+    };
+
+    // pagehide fires on close/navigation even where visibilitychange
+    // doesn't (older Safari). React unmount cleanup does NOT run on
+    // unload, so this is the only flush the closing page gets.
+    const onPageHide = () => {
+      if (gestureActive) endGesture();
+      void flush();
+    };
+
+    // beforeunload: try to flush, and if edits still can't be guaranteed
+    // to reach the server (non-keepalive large POST, edits queued behind
+    // an in-flight POST, open conflict, retrying offline) ask the
+    // browser to confirm leaving.
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (stopped || !base) return;
+      if (gestureActive) endGesture();
+      void flush();
+      const local = toJsonDoc(useProjectStore.getState().project);
+      let unsafe: boolean;
+      if (inflight) {
+        unsafe = !inflight.keepalive || diffProjects(inflight.sentDoc, local).length > 0;
+      } else {
+        unsafe = diffProjects(base, local).length > 0;
+      }
+      if (unsafe) {
+        e.preventDefault();
+        // Legacy browsers need returnValue set to show the prompt.
+        e.returnValue = '';
+      }
+    };
+
+    window.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    addCleanup(() => {
+      window.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    });
   }
 
   // ── Public API ─────────────────────────────────────────────────────
 
   return {
-    async start() {
-      // Idempotence guard: if start() is called twice (e.g., a React
-      // strict-mode double-invoke, or a caller bug), we don't want two
-      // store subscriptions firing the same flush.
-      if (storeUnsub) return;
+    async start<R extends LoadedRecord = ProjectRecord>(opts: StartOptions<R> = {}): Promise<R | null> {
+      if (started || stopped) return null;
+      started = true;
 
-      // Initial fetch establishes the baseline. Note we don't call
-      // loadProject here — ProjectEditor already did it before mounting
-      // the editor, and loadProject resets UI state which would be
-      // disruptive on re-entry. We just snapshot the server doc as
-      // lastSyncedDoc.
-      const record = await pb
-        .collection('projects')
-        .getOne<ProjectRecord>(projectId);
-      lastSyncedDoc = record.doc;
-      lastKnownRevision = record.revision;
-      setStatus({ kind: 'synced' });
+      // 1. Reconnect detection. PocketBase does NOT replay events missed
+      //    while the SSE connection was down; it re-subscribes and emits
+      //    PB_CONNECT. Any PB_CONNECT after the baseline is installed is
+      //    a reconnect → resync (preserving local edits). The initial
+      //    connect happens before the load completes (base still null)
+      //    and is ignored. Not awaited: a slow/failed PB_CONNECT
+      //    subscription must not block opening the editor.
+      pb.realtime
+        .subscribe('PB_CONNECT', () => {
+          if (stopped || !base) return;
+          requestResync();
+        })
+        .then((unsub) => addCleanup(() => void unsub()))
+        .catch(() => { /* reconnect detection unavailable; non-fatal */ });
 
-      // Zustand v4 subscribe: the callback receives (state, prevState)
-      // but we ignore them — scheduleFlush reads the current state
-      // itself via getState() inside flush(). The subscribe signature
-      // tolerates a 0-arg callback since extra args are simply unused.
-      storeUnsub = useProjectStore.subscribe(scheduleFlush);
-
-      await subscribeSse();
-
-      // ── Gesture safety valve ─────────────────────────────────────────
-      //
-      // KonvaOverlay calls beginGesture on stage mouseDown and endGesture
-      // on stage mouseUp. Konva's pointer events are canvas-scoped, so if
-      // the user starts a drag inside the stage but releases the mouse
-      // OUTSIDE the browser window (on browser chrome, another app, etc),
-      // Konva never delivers onMouseUp. The same happens if the user
-      // Cmd-Tabs away mid-drag: focus leaves the window while the button
-      // is still held. In either case, without this fallback:
-      //   - gestureActive stays true indefinitely
-      //   - gestureInboundQueue grows unbounded (all SSE patches queued
-      //     but never drained)
-      //   - scheduleFlush's gestureActive guard suppresses every outbound
-      //     POST — the user's edits silently stop syncing
-      //
-      // Window-level mouseup catches release-outside-canvas; document
-      // visibilitychange catches tab-switch / window-blur. Either signal
-      // is a reasonable "gesture is definitely over" trigger: the user
-      // is no longer actively manipulating the canvas. Calling endGesture
-      // when no gesture is active is a no-op by construction (it clears
-      // an already-cleared flag and drains an empty queue), so we don't
-      // need a mirror `if (gestureActive)` guard on every code path —
-      // but we still check it here to avoid needlessly scheduling a
-      // flush on every stray window mouseup in the app.
-      //
-      // The `typeof window !== 'undefined'` guard keeps this safe under
-      // SSR and non-jsdom Vitest environments where global `window` is
-      // absent. In jsdom (our default test env) both window and document
-      // are present, so the listeners attach normally.
-      if (typeof window !== 'undefined') {
-        const onRelease = () => {
-          if (gestureActive) endGesture();
-        };
-        window.addEventListener('mouseup', onRelease);
-        document.addEventListener('visibilitychange', onRelease);
-        windowListenersUnsub = () => {
-          window.removeEventListener('mouseup', onRelease);
-          document.removeEventListener('visibilitychange', onRelease);
-        };
+      // 2. Subscribe to patches BEFORE fetching the doc. Events that land
+      //    between subscribe and fetch are buffered in pendingInbound
+      //    (base is still null) and reconciled by revision afterwards —
+      //    nothing committed in that window can be missed.
+      try {
+        const unsub = await pb.collection('patches').subscribe<PatchRecord>('*', onPatchEvent);
+        addCleanup(() => void unsub());
+        if (stopped) return null;
+      } catch {
+        if (stopped) return null;
+        // Realtime unavailable: outbound sync still works; inbound
+        // changes arrive via 409 rebases and reconnect resyncs.
       }
+
+      // 3. Load, with a few retries for transient failures.
+      const load = opts.load ?? (() => pb.collection('projects').getOne<ProjectRecord>(projectId) as unknown as Promise<R>);
+      let record: R;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          record = await load();
+          break;
+        } catch (err) {
+          if (stopped) return null;
+          const code = (err as { status?: number } | null)?.status ?? 0;
+          const transient = code === 0 || code >= 500;
+          if (!transient || attempt >= MAX_LOAD_ATTEMPTS) {
+            setStatus({ kind: 'error', reason: 'load-failed' });
+            throw err;
+          }
+          setStatus({ kind: 'offline', retriesScheduled: attempt });
+          await sleep(1000 * 2 ** (attempt - 1));
+          if (stopped) return null;
+        }
+      }
+      if (stopped) return null;
+
+      // 4. Baseline = the RAW server doc, snapshotted before the caller
+      //    can touch it. Anything the caller layers on top in onLoaded
+      //    (e.g. the live catalog panelType) is a genuine local edit and
+      //    will be POSTed, so the server doc converges to it.
+      base = toJsonDoc(structuredClone(record.doc));
+      baseRevision = record.revision;
+      opts.onLoaded?.(record);
+      if (stopped) return null;
+
+      // 5. Watch the store, apply anything buffered since step 2, and
+      //    push whatever onLoaded layered on top of the server doc.
+      const storeUnsub = useProjectStore.subscribe(() => {
+        if (!stopped) scheduleFlush();
+      });
+      addCleanup(storeUnsub);
+      installWindowListeners();
+      setStatus({ kind: 'synced' });
+      processInbound();
+      // Only when the caller hydrated the store from THIS record: then
+      // any difference is a deliberate overlay (catalog panelType,
+      // migrateProject back-fills) that should reach the server. Without
+      // onLoaded the store holds whatever it held before, and pushing
+      // that unprompted could overwrite the server with stale content.
+      if (opts.onLoaded && hasUnsentChanges()) scheduleFlush();
+      return record;
     },
 
     stop() {
-      // ── Final flush before tear-down ────────────────────────────────
-      //
-      // Why: store changes are debounced (DEBOUNCE_MS = 1 s) so rapid
-      // edits batch into one POST. If the user edits something and then
-      // unmounts the editor inside that 1 s window — by toggling between
-      // roof and diagram views (each view lives at a separate Route, so
-      // the toggle remounts ProjectEditor), navigating away from the
-      // project, or simply closing the tab — the previous teardown path
-      // (clear timer, drop store) would silently discard the edit. The
-      // next mount fetches the pre-edit doc from the server and the
-      // change is gone.
-      //
-      // The fix is to fire one last flush() before tearing down. It's
-      // fire-and-forget by necessity: React's unmount cleanup must run
-      // synchronously, so we can't await the POST. We don't have to,
-      // either — fetch() dispatches the request immediately and returns
-      // a Promise; the network bytes are on the wire by the time control
-      // returns to us. The browser keeps the request alive after this
-      // client's closure becomes unreachable. The success/failure
-      // handlers still run, but they only mutate closure-local vars
-      // (which are detached) and call setStatus on `listeners` (already
-      // empty — ProjectEditor unsubscribes its status listener BEFORE
-      // calling stop, see ProjectEditor.tsx).
-      //
-      // Order matters: flush()'s first line is `if (stopped) return;`,
-      // so we must call flush() BEFORE setting stopped=true, otherwise
-      // the very call we're trying to make would be cancelled.
-      //
-      // Edge: if a POST is already in flight at stop time, flush() will
-      // early-return on its `if (postInFlight) return;` guard, and any
-      // edit made during that POST won't be flushed. This is rare (the
-      // user would need to start an edit, wait <1s for the timer to
-      // expire and flush, then immediately make another edit and unmount
-      // before the in-flight POST returns). Accepting that edge for
-      // simplicity — fixing it would require either an async stop()
-      // (which React unmount can't await) or a deferred flush queue
-      // tracked across component remounts. Both are heavier than the
-      // edge warrants.
-      if (debounceTimer != null) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
-        void flush();
-      }
+      if (stopped) return;
+      // Snapshot the local doc BEFORE the caller resets the store, then
+      // tear everything down. A final flush runs on the snapshot: React
+      // unmount cleanup can't await, but fetch() puts the request on the
+      // wire synchronously (with keepalive when small enough).
+      finalDoc = base ? useProjectStore.getState().project : null;
+      const hadConflict = conflict !== null;
+      const hadInflight = inflight !== null;
       stopped = true;
-      storeUnsub?.();
-      sseUnsub?.();
-      windowListenersUnsub?.();
-      storeUnsub = null;
-      sseUnsub = null;
-      windowListenersUnsub = null;
+      if (debounceTimer != null) clearTimeout(debounceTimer);
+      for (const k of ['flush', 'resync'] as const) {
+        const tm = retryTimers[k];
+        if (tm != null) clearTimeout(tm);
+        retryTimers[k] = null;
+      }
+      debounceTimer = null;
+      for (const fn of cleanups.splice(0)) {
+        try { fn(); } catch { /* best-effort teardown */ }
+      }
+      if (!base || !finalDoc) return;
+      if (hadConflict) {
+        // The user never chose; we can't decide for them. Report so the
+        // UI can warn that the conflicting edits weren't saved.
+        if (hasUnsentChanges()) options.onUnsavedChanges?.('conflict');
+        return;
+      }
+      // If a POST is in flight, its completion (afterPost) continues
+      // with finalDoc; otherwise start the final flush now.
+      if (!hadInflight) void flush();
     },
 
     subscribeStatus(fn) {
       listeners.add(fn);
-      // Fire immediately with current status so subscribers render the
-      // correct state on mount without waiting for the next change.
+      // Fire immediately so subscribers render the right state on mount.
       fn(status);
       return () => {
         listeners.delete(fn);
@@ -678,7 +940,6 @@ export function createSyncClient(projectId: string): SyncClient {
     },
 
     resolveConflict,
-
     beginGesture,
     endGesture,
   };

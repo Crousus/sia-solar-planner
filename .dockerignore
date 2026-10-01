@@ -1,4 +1,7 @@
-node_modules
+# `**/` so nested dirs are excluded too — a bare `node_modules` only matches
+# the context root, which let pdf-service/node_modules (host-OS binaries)
+# leak into the build context and the frontend's `COPY . .`.
+**/node_modules
 dist
 .git
 server
@@ -8,7 +11,10 @@ server
 server/pb_data
 server/pocketbase
 *.local
-.env*
+# Secrets (GEMINI/GROQ keys etc.) must never end up in an image layer.
+**/.env*
+**/__pycache__
+**/*.pyc
 login*.png
 newteam.png
 planner-unlocked.png

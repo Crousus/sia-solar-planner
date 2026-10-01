@@ -29,6 +29,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import type { Point, Roof, PanelType, Rect } from '../types';
+import { MIN_ROOF_TILT_DEG, MAX_ROOF_TILT_DEG } from '../types';
 
 /**
  * Rotate point `p` by `angleRad` around `origin`.
@@ -253,7 +254,7 @@ export function projectOnSegment(
 }
 
 /**
- * Angle (radians, atan2 convention) of the polygon's longest edge.
+ * Angle (radians, atan2 convention) of the polygon's longest straight run.
  *
  * Rationale: solar panels are physically installed in rows aligned with the
  * roof's dominant axis. Taking the longest edge as "horizontal" gives a
@@ -263,22 +264,87 @@ export function projectOnSegment(
  * For a well-shaped rectangular roof the longest edge is obviously the
  * "horizontal" one from the user's POV. For L-shaped roofs it picks the
  * longest straight run, which is usually what you want.
+ *
+ * Degenerate-input guards (all of these used to leak into the result):
+ *   - Zero-length edges (duplicate consecutive vertices) and edges with
+ *     non-finite coordinates are skipped outright — they carry no direction,
+ *     and a NaN coordinate would otherwise poison `Math.hypot` comparisons.
+ *   - Consecutive edges that are EXACTLY collinear and point the same way
+ *     (a vertex sitting on a straight run — e.g. a split endpoint inserted
+ *     mid-edge) are merged into one run before measuring. Without this a
+ *     long side broken in two by a redundant vertex could lose to a shorter
+ *     perpendicular side, and the whole panel grid would rotate 90°. The
+ *     tolerance is deliberately tight (sin θ ≤ 1e-6) so only numerically-
+ *     straight runs merge; a visibly bent corner is never merged, which keeps
+ *     the angle of existing, normally-drawn roofs bit-for-bit unchanged.
+ *   - No usable edge at all → 0 (axis-aligned), never NaN.
+ *
+ * When no merge happens the run vector equals the single edge vector, so
+ * the result is identical to the historic "atan2 of the longest edge".
  */
 export function roofPrimaryAngle(polygon: Point[]): number {
   if (polygon.length < 2) return 0;
-  let maxLen = 0;
-  let bestAngle = 0;
+
+  // 1. Collect usable edge vectors in ring order.
+  const edges: Array<{ dx: number; dy: number; len: number }> = [];
   for (let i = 0; i < polygon.length; i++) {
     const p1 = polygon[i];
     const p2 = polygon[(i + 1) % polygon.length];
     const dx = p2.x - p1.x;
     const dy = p2.y - p1.y;
     const len = Math.hypot(dx, dy);
-    if (len > maxLen) {
-      maxLen = len;
-      bestAngle = Math.atan2(dy, dx);
+    // `!(len > EPS)` also rejects NaN (every comparison with NaN is false).
+    if (!Number.isFinite(len) || !(len > 1e-9)) continue;
+    edges.push({ dx, dy, len });
+  }
+  if (edges.length === 0) return 0;
+
+  // "b continues a" = same direction (dot > 0) and |sin θ| ≤ 1e-6.
+  const continues = (a: { dx: number; dy: number; len: number }, b: { dx: number; dy: number; len: number }) =>
+    a.dx * b.dx + a.dy * b.dy > 0 &&
+    Math.abs(a.dx * b.dy - a.dy * b.dx) <= 1e-6 * a.len * b.len;
+
+  // 2. Start the walk at the first edge that does NOT continue its
+  //    predecessor, so a straight run that wraps past index 0 is still
+  //    measured as one run. For ordinary polygons this is index 0, which
+  //    keeps the historic "first longest edge wins" tie-break.
+  const m = edges.length;
+  let start = 0;
+  for (let i = 0; i < m; i++) {
+    if (!continues(edges[(i - 1 + m) % m], edges[i])) {
+      start = i;
+      break;
     }
   }
+
+  // 3. Accumulate runs, tracking the longest (strict > → earliest wins ties).
+  let bestLen = 0;
+  let bestAngle = 0;
+  let runDx = 0;
+  let runDy = 0;
+  let runLen = 0;
+  let prev: { dx: number; dy: number; len: number } | null = null;
+  const closeRun = () => {
+    if (runLen > bestLen) {
+      bestLen = runLen;
+      bestAngle = Math.atan2(runDy, runDx);
+    }
+  };
+  for (let k = 0; k < m; k++) {
+    const e = edges[(start + k) % m];
+    if (prev && continues(prev, e)) {
+      runDx += e.dx;
+      runDy += e.dy;
+      runLen += e.len;
+    } else {
+      if (prev) closeRun();
+      runDx = e.dx;
+      runDy = e.dy;
+      runLen = e.len;
+    }
+    prev = e;
+  }
+  closeRun();
   return bestAngle;
 }
 
@@ -311,6 +377,20 @@ export function roofPrimaryAngle(polygon: Point[]): number {
  * Returns { w, h } where w is along the roof's long axis and h is along
  * the slope (compressed). The caller rotates these dimensions into the
  * canvas frame using roofPrimaryAngle().
+ *
+ * Degenerate-input guards (this function feeds every layer, so garbage
+ * here used to surface as Infinity/NaN-sized Konva rects and a snap grid
+ * with zero-height cells):
+ *   - tiltDeg is clamped to [MIN_ROOF_TILT_DEG, MAX_ROOF_TILT_DEG] (the
+ *     same range the store enforces on write, from types/index.ts). At 90°
+ *     cos → 0 and the slope axis collapses to nothing (and >90° flips its
+ *     sign). This is the read-side safety net for legacy or remotely-
+ *     patched docs that bypassed the store clamp. Non-finite tilt is
+ *     treated as flat.
+ *   - mpp ≤ 0 / non-finite (uncalibrated map) or non-finite / non-positive
+ *     panel dimensions → {0, 0}. Every caller already treats w/h ≤ 0 as
+ *     "can't place / nothing to draw", so 0 is the safe sentinel — unlike
+ *     the Infinity a division by 0 used to produce.
  */
 export function panelDisplaySize(
   panelType: PanelType,
@@ -318,19 +398,30 @@ export function panelDisplaySize(
   tiltDeg: number,
   mpp: number
 ): { w: number; h: number } {
-  const tilt = (tiltDeg * Math.PI) / 180;
-  const cosT = Math.cos(tilt);
+  const widthM = panelType.widthM;
+  const heightM = panelType.heightM;
+  if (
+    !Number.isFinite(mpp) || mpp <= 0 ||
+    !Number.isFinite(widthM) || widthM <= 0 ||
+    !Number.isFinite(heightM) || heightM <= 0
+  ) {
+    return { w: 0, h: 0 };
+  }
+  const safeTiltDeg = Number.isFinite(tiltDeg)
+    ? Math.min(Math.max(tiltDeg, MIN_ROOF_TILT_DEG), MAX_ROOF_TILT_DEG)
+    : MIN_ROOF_TILT_DEG;
+  const cosT = Math.cos((safeTiltDeg * Math.PI) / 180);
   if (orientation === 'portrait') {
     // Short side across the roof's long axis, long side up the slope.
     return {
-      w: panelType.widthM / mpp,
-      h: (panelType.heightM * cosT) / mpp,
+      w: widthM / mpp,
+      h: (heightM * cosT) / mpp,
     };
   }
   // Landscape: long side along the roof's long axis, short side up the slope.
   return {
-    w: panelType.heightM / mpp,
-    h: (panelType.widthM * cosT) / mpp,
+    w: heightM / mpp,
+    h: (widthM * cosT) / mpp,
   };
 }
 
@@ -375,6 +466,120 @@ export function panelCorners(
 }
 
 /**
+ * Separating-Axis-Theorem overlap test for two convex quads (rotated
+ * rectangles), given as 4 corners each in ring order (panelCorners output).
+ *
+ * Returns true only when the rectangles' interiors overlap by MORE than
+ * `tolerance` pixels along every candidate axis. Shapes that merely touch
+ * (edge-to-edge neighbours in the same grid) or overlap by sub-tolerance
+ * float jitter are reported as NOT overlapping — that's what lets a
+ * snapped row of panels butt up against each other.
+ *
+ * Why SAT instead of the old "centres closer than 0.7 × min(w, h)" check:
+ * the centre-distance heuristic only works when both panels sit on the
+ * SAME grid with the SAME cell size. Panel groups snap to their own origin
+ * (the group's first panel) and portrait/landscape groups can share a roof,
+ * so two panels could overlap by most of their area while their centres
+ * were still > 0.7·min apart (e.g. two 1.7 × 1.0 landscape panels offset
+ * 0.8 along the long axis). SAT is exact for convex polygons: two convex
+ * shapes are disjoint iff some edge normal of one of them separates their
+ * projections.
+ */
+export function rectanglesOverlap(a: Point[], b: Point[], tolerance: number = 0): boolean {
+  for (const poly of [a, b]) {
+    // A rectangle has only 2 distinct edge directions; testing edges 0 and
+    // 1 covers both. (Looping all 4 is harmless but redundant.)
+    for (let i = 0; i < 2; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % poly.length];
+      // Edge normal (not normalised yet).
+      let nx = -(p2.y - p1.y);
+      let ny = p2.x - p1.x;
+      const len = Math.hypot(nx, ny);
+      if (!(len > 1e-12)) continue; // zero-size rect edge — no axis to test
+      nx /= len;
+      ny /= len;
+      let minA = Infinity, maxA = -Infinity, minB = Infinity, maxB = -Infinity;
+      for (const p of a) {
+        const d = p.x * nx + p.y * ny;
+        if (d < minA) minA = d;
+        if (d > maxA) maxA = d;
+      }
+      for (const p of b) {
+        const d = p.x * nx + p.y * ny;
+        if (d < minB) minB = d;
+        if (d > maxB) maxB = d;
+      }
+      // Penetration depth along this axis. ≤ tolerance → separating (or
+      // just-touching) axis found → no overlap.
+      const depth = Math.min(maxA, maxB) - Math.max(minA, minB);
+      if (!(depth > tolerance)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Fraction of the smaller panel side that two panels may interpenetrate
+ * before we call it an overlap. 2 % absorbs float noise in historic snap
+ * results and in tilt/dimension round-trips (e.g. 1.7 m panels at a
+ * non-terminating mpp) while still rejecting any visible overlap.
+ */
+const OVERLAP_TOLERANCE_FRACTION = 0.02;
+
+/**
+ * An existing panel as seen by the overlap checks. `orientation` is
+ * optional for backwards compatibility with callers that only have centres:
+ * when absent, the panel is assumed to share the candidate's orientation
+ * (the historic same-grid assumption).
+ */
+export type PanelFootprintRef = Point & { orientation?: 'portrait' | 'landscape' };
+
+/**
+ * Shared core of snapPanelToGrid / panelFitsOnRoof: does a panel of size
+ * (w, h) centred at `center` (on `roof`, so rotated by the roof's primary
+ * angle) overlap any of `others`?
+ *
+ * All panels on one roof share the roof's primary angle — only their
+ * cell size differs (orientation). We still run the full oriented-rect SAT
+ * rather than an axis-aligned shortcut so the helper stays correct if
+ * per-group rotation is ever introduced.
+ */
+function overlapsAny(
+  center: Point,
+  w: number,
+  h: number,
+  angle: number,
+  roof: Roof,
+  panelType: PanelType,
+  mpp: number,
+  others: PanelFootprintRef[],
+  defaultOrientation: 'portrait' | 'landscape',
+): boolean {
+  const mine = panelCorners(center, angle, w, h);
+  const myRadius = Math.hypot(w, h) / 2;
+  // Display size per orientation, computed once rather than per sibling.
+  const sizeFor = {
+    portrait: panelDisplaySize(panelType, 'portrait', roof.tiltDeg, mpp),
+    landscape: panelDisplaySize(panelType, 'landscape', roof.tiltDeg, mpp),
+  };
+  for (const o of others) {
+    if (!Number.isFinite(o.x) || !Number.isFinite(o.y)) continue;
+    const size = sizeFor[o.orientation ?? defaultOrientation];
+    if (size.w <= 0 || size.h <= 0) continue;
+    // Bounding-circle early-out: rectangles whose circumscribed circles
+    // don't intersect can't overlap. Keeps the check O(n) cheap per frame
+    // (the ghost re-runs this on every mouse move).
+    const otherRadius = Math.hypot(size.w, size.h) / 2;
+    if (Math.hypot(o.x - center.x, o.y - center.y) >= myRadius + otherRadius) continue;
+    const tolerance = Math.min(w, h, size.w, size.h) * OVERLAP_TOLERANCE_FRACTION;
+    const theirs = panelCorners(o, angle, size.w, size.h);
+    if (rectanglesOverlap(mine, theirs, tolerance)) return true;
+  }
+  return false;
+}
+
+/**
  * The core of panel placement: given a cursor position, return the
  * center-point where a panel should go, or null if this position is invalid.
  *
@@ -386,9 +591,13 @@ export function panelCorners(
  *      stays stable as the user redraws the roof.
  *   3. Rotate the snapped point back into canvas space.
  *   4. Reject if any of the panel's 4 corners falls outside the polygon.
- *   5. Reject if the candidate would collide with an existing panel.
- *      (We use 0.7 × min(cell) as the "too close" threshold, allowing
- *      panels to sit edge-to-edge but not overlap.)
+ *   5. Reject if the candidate's rectangle overlaps an existing panel's
+ *      rectangle (SAT, see rectanglesOverlap). Edge-touching neighbours
+ *      are allowed, so a snapped row packs edge-to-edge.
+ *
+ * `existingCenters` may carry each panel's `orientation` so its true
+ * footprint is used; entries without one are assumed to match
+ * `orientation` (legacy call shape — signature kept stable).
  *
  * Returns null → caller paints a red ghost and blocks the click. Returns a
  * point → caller paints a green ghost and allows click-to-place.
@@ -399,13 +608,14 @@ export function snapPanelToGrid(
   panelType: PanelType,
   orientation: 'portrait' | 'landscape',
   mpp: number,
-  existingCenters: Point[],
+  existingCenters: PanelFootprintRef[],
   origin: Point | null = null,
   snap: boolean = true
 ): Point | null {
+  if (!Number.isFinite(cursorPos.x) || !Number.isFinite(cursorPos.y)) return null;
   const angle = roofPrimaryAngle(roof.polygon);
   const { w: cellW, h: cellH } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
-  if (cellW <= 0 || cellH <= 0) return null; // defensive: degenerate panel
+  if (!(cellW > 0) || !(cellH > 0)) return null; // defensive: degenerate panel / uncalibrated map
 
   const gridOrigin = origin || polygonCentroid(roof.polygon);
 
@@ -426,19 +636,15 @@ export function snapPanelToGrid(
   } else {
     candidate = cursorPos;
   }
+  if (!Number.isFinite(candidate.x) || !Number.isFinite(candidate.y)) return null;
 
   // Step 4: polygon containment check on all 4 corners.
   const corners = panelCorners(candidate, angle, cellW, cellH);
   if (!corners.every((c) => isInsidePolygon(c, roof.polygon))) return null;
 
-  // Step 5: overlap check against existing panels on this roof.
-  //   0.7 × min(cellW, cellH) is a heuristic: it's close enough to detect
-  //   actual overlap while tolerating floating-point jitter in historic
-  //   snap results. If panels should butt edge-to-edge, this threshold
-  //   must stay below both cellW and cellH.
-  const minDist = Math.min(cellW, cellH) * 0.7;
-  for (const c of existingCenters) {
-    if (Math.hypot(c.x - candidate.x, c.y - candidate.y) < minDist) return null;
+  // Step 5: true-footprint overlap check against existing panels.
+  if (overlapsAny(candidate, cellW, cellH, angle, roof, panelType, mpp, existingCenters, orientation)) {
+    return null;
   }
 
   return candidate;
@@ -453,6 +659,18 @@ export interface PanelDimension {
 /**
  * Computes the dimensions of outer straight edges of contiguous panel groups.
  * Used to draw length labels for connected panels.
+ *
+ * Grid convention (this is where the historic half-cell bug lived):
+ *   Panels are stored by their CENTRE. Panel (gx, gy) — integer grid
+ *   indices relative to the group's first panel — is centred at local
+ *   (gx·cellW, gy·cellH) and spans ±½ cell around that. The edge-walk
+ *   below labels cell CORNERS with integer indices too, where corner
+ *   index (cx, cy) means local position ((cx − ½)·cellW, (cy − ½)·cellH):
+ *   cell (gx, gy) has corners (gx, gy) … (gx+1, gy+1). The previous code
+ *   converted corner indices straight to `index · cell`, i.e. it treated
+ *   panel centres as cell corners, which shifted every label by half a cell
+ *   right/down (a 3-panel row's top label landed inside the row and its
+ *   centre label 50 px off for 100 px cells).
  */
 export function getPanelGroupDimensions(
   panels: { cx: number; cy: number }[],
@@ -464,19 +682,31 @@ export function getPanelGroupDimensions(
   if (panels.length === 0) return [];
   const angle = roofPrimaryAngle(roof.polygon);
   const { w: cellW, h: cellH } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
-  if (cellW <= 0 || cellH <= 0) return [];
+  if (!(cellW > 0) || !(cellH > 0)) return [];
 
   // Origin is defined by the first panel in the group
   const origin = { x: panels[0].cx, y: panels[0].cy };
+  if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y)) return [];
 
   const edges = new Set<string>();
+  // Panels whose snapped index collides with an earlier panel (shouldn't
+  // happen post-overlap-check, but legacy docs may contain duplicates)
+  // would cancel each other's edges in the XOR walk below and erase the
+  // outline; dedupe cells first.
+  const seenCells = new Set<string>();
 
   for (const p of panels) {
+    if (!Number.isFinite(p.cx) || !Number.isFinite(p.cy)) continue;
     const local = rotatePoint({ x: p.cx, y: p.cy }, -angle, origin);
     const gx = Math.round((local.x - origin.x) / cellW);
     const gy = Math.round((local.y - origin.y) / cellH);
+    const cellKey = `${gx},${gy}`;
+    if (seenCells.has(cellKey)) continue;
+    seenCells.add(cellKey);
 
-    // 4 directed edges of the cell
+    // 4 directed edges of the cell, in corner-index space (see header).
+    // Walk order (top → right → bottom → left) is clockwise on screen, so
+    // the left-hand normal used below points OUT of the silhouette.
     const top = `${gx},${gy}->${gx + 1},${gy}`;
     const right = `${gx + 1},${gy}->${gx + 1},${gy + 1}`;
     const bottom = `${gx + 1},${gy + 1}->${gx},${gy + 1}`;
@@ -513,7 +743,7 @@ export function getPanelGroupDimensions(
         const dy1 = Math.sign(e1.y2 - e1.y1);
         const dx2 = Math.sign(e2.x2 - e2.x1);
         const dy2 = Math.sign(e2.y2 - e2.y1);
-        
+
         if (e1.x2 === e2.x1 && e1.y2 === e2.y1 && dx1 === dx2 && dy1 === dy2) {
           e1.x2 = e2.x2;
           e1.y2 = e2.y2;
@@ -535,11 +765,13 @@ export function getPanelGroupDimensions(
       const lenPx = isHorizontal ? gridLen * cellW : gridLen * cellH;
       const lenM = lenPx * mpp;
 
+      // Edge midpoint in corner-index space → local pixels. The −½ converts
+      // corner indices to offsets from the origin panel's CENTRE (header).
       const mx = (e.x1 + e.x2) / 2;
       const my = (e.y1 + e.y2) / 2;
 
-      const px = mx * cellW;
-      const py = my * cellH;
+      const px = (mx - 0.5) * cellW;
+      const py = (my - 0.5) * cellH;
 
       const dx = Math.sign(e.x2 - e.x1);
       const dy = Math.sign(e.y2 - e.y1);
@@ -558,16 +790,18 @@ export function getPanelGroupDimensions(
 
       // Text angle
       // Edge goes from e1 to e2, local angle:
-      let localAngle = Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180 / Math.PI;
+      const localAngle = Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180 / Math.PI;
       let textAngle = (angle * 180 / Math.PI) + localAngle;
-      
+
       // Normalize text angle to keep it readable
       while (textAngle > 180) textAngle -= 360;
       while (textAngle <= -180) textAngle += 360;
-      
-      if (textAngle > 90 || textAngle < -90) {
-        textAngle += 180;
-      }
+
+      // Flip upside-down text by half a turn, staying inside [-90, 90]
+      // (the old `+= 180` produced e.g. 360 for a bottom edge — visually
+      // identical in Konva, but not a normalised angle).
+      if (textAngle > 90) textAngle -= 180;
+      else if (textAngle < -90) textAngle += 180;
 
       dimensions.push({
         centerCanvas,
@@ -596,7 +830,10 @@ export function distance(a: Point, b: Point): number {
  * The check mirrors the two invariants enforced at placement time
  * (see snapPanelToGrid):
  *   1. All 4 corners must lie inside the roof polygon.
- *   2. No neighbour center may sit closer than 0.7 × min(cellW, cellH).
+ *   2. Its rectangle must not overlap any sibling's rectangle (SAT with a
+ *      small tolerance so edge-touching neighbours stay valid). Siblings
+ *      carrying `orientation` are measured with their own footprint;
+ *      siblings without it are assumed to share `orientation`.
  *
  * NB: The symmetric-overlap check means that if two neighbours each
  * overlap the other, both will report invalid. Callers that auto-prune
@@ -609,17 +846,19 @@ export function panelFitsOnRoof(
   panelType: PanelType,
   orientation: 'portrait' | 'landscape',
   mpp: number,
-  siblings: { id: string; cx: number; cy: number }[]
+  siblings: { id: string; cx: number; cy: number; orientation?: 'portrait' | 'landscape' }[]
 ): boolean {
+  if (!Number.isFinite(panel.cx) || !Number.isFinite(panel.cy)) return false;
   const angle = roofPrimaryAngle(roof.polygon);
   const { w, h } = panelDisplaySize(panelType, orientation, roof.tiltDeg, mpp);
-  if (w <= 0 || h <= 0) return false;
-  const corners = panelCorners({ x: panel.cx, y: panel.cy }, angle, w, h);
+  if (!(w > 0) || !(h > 0)) return false;
+  const center = { x: panel.cx, y: panel.cy };
+  const corners = panelCorners(center, angle, w, h);
   if (!corners.every((c) => isInsidePolygon(c, roof.polygon))) return false;
-  const minDist = Math.min(w, h) * 0.7;
+  const others: PanelFootprintRef[] = [];
   for (const s of siblings) {
     if (s.id === panel.id) continue;
-    if (Math.hypot(s.cx - panel.cx, s.cy - panel.cy) < minDist) return false;
+    others.push({ x: s.cx, y: s.cy, orientation: s.orientation });
   }
-  return true;
+  return !overlapsAny(center, w, h, angle, roof, panelType, mpp, others, orientation);
 }

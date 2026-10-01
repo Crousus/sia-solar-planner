@@ -110,11 +110,11 @@ export default function LoginPage() {
       // succeeds (account created) but the subsequent authWithPassword is
       // rejected with 403. Rather than showing a red error we show a neutral
       // "awaiting approval" notice — the user did nothing wrong.
-      if (
-        mode === 'signup' &&
-        err instanceof ClientResponseError &&
-        err.status === 403
-      ) {
+      // Same for a plain sign-in by a still-pending account: auth-with-
+      // password only answers 403 from the server's approval gate (bad
+      // credentials are 400), so the 403 is unambiguous here and the
+      // generic "You don't have permission…" headline would just be noise.
+      if (err instanceof ClientResponseError && err.status === 403) {
         setPendingApproval(true);
       } else {
         // eslint-disable-next-line no-console
@@ -142,7 +142,7 @@ export default function LoginPage() {
         aria-hidden
         className="tech-label absolute top-6 left-6 select-none"
       >
-        FIG_00 · ACCESS TERMINAL
+        {t('shell.figAccess')}
       </span>
       <span
         aria-hidden
@@ -154,13 +154,13 @@ export default function LoginPage() {
         aria-hidden
         className="tech-label absolute bottom-6 left-6 select-none opacity-70"
       >
-        AUTH · {mode === 'signin' ? '01 SIGN-IN' : '02 REGISTER'}
+        {mode === 'signin' ? t('login.authStateSignIn') : t('login.authStateRegister')}
       </span>
       <span
         aria-hidden
         className="tech-label absolute bottom-6 right-6 select-none opacity-70"
       >
-        ↵ RETURN TO SUBMIT
+        {t('login.returnToSubmit')}
       </span>
 
       {/*
@@ -200,7 +200,7 @@ export default function LoginPage() {
               style={{ background: 'var(--hairline-strong)' }}
             />
             <span className="font-mono text-[11px] tracking-[0.2em] uppercase text-ink-300">
-              Planner · precision PV layout
+              {t('login.tagline')}
             </span>
           </div>
         </div>
@@ -306,7 +306,7 @@ export default function LoginPage() {
                 color: 'var(--sun-300)',
               }}
             >
-              {t('login.pendingApproval')}
+              {t(mode === 'signup' ? 'login.pendingApproval' : 'login.pendingApprovalSignIn')}
             </div>
           )}
 

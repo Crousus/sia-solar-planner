@@ -25,5 +25,11 @@ export default defineConfig({
     // Integration tests require RUN_INTEGRATION=1 and a compiled PocketBase
     // binary — they live in vitest.integration.config.ts instead.
     exclude: ['**/*.integration.test.ts', 'node_modules/**'],
+    // Only the frontend's own tests live under src/. pdf-service/, ocr-service/
+    // and server/ have their own toolchains (tsx script / pytest / go test) and
+    // their own node_modules — without this include, vitest's default glob
+    // walks into pdf-service/node_modules and tries to run third-party test
+    // files (and pdf-service's tsx-style validate.test.ts) that can't load here.
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

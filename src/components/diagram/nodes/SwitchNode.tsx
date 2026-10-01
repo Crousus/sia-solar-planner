@@ -97,6 +97,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Handle, Position, useNodeConnections, useReactFlow } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
@@ -156,6 +157,7 @@ function RotateIcon() {
 }
 
 export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeType>) {
+  const { t } = useTranslation();
   // `updateNodeData` is the targeted helper for in-place label edits;
   // `updateNode` is needed for rotate because we must patch position +
   // data atomically (one keep-centre nudge, one rotation step).
@@ -415,8 +417,8 @@ export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeT
       <button
         type="button"
         className="diagram-rotate-btn nodrag"
-        title="Rotate 90°"
-        aria-label="Rotate 90°"
+        title={t('diagram.rotate90')}
+        aria-label={t('diagram.rotate90')}
         onClick={(e) => {
           e.stopPropagation();
           onRotate();

@@ -19,7 +19,7 @@
 //
 // Runs on login. If the user's localStorage carries any user-generated
 // content (roofs/panels/strings/inverters) AND they have no server
-// projects anywhere, we silently materialise it as their first team
+// projects anywhere, we offer (confirm prompt) to materialise it as their first team
 // project and redirect into it.
 //
 // After import we clear the localStorage key so the user doesn't get
@@ -30,18 +30,27 @@
 // join someone else's team first (via invite) and already have server
 // projects; we don't want to dump their local draft into that team.
 //
-// Why silent (no prompt)? Per spec Q8c: the pre-backend user never
-// explicitly "saved" — their draft was just the persisted UI state.
-// Asking "do you want to import?" on first login leaks an implementation
-// detail (that localStorage existed) and creates a decision the user
-// didn't sign up for. If they had meaningful content locally and no
-// server content, the only reasonable default is to bring it forward.
+// Why we now ASK instead of importing silently (supersedes spec Q8c):
+// the post-auth app kept writing the same localStorage key — it held the
+// LAST project opened in this browser, by whichever user. On a shared
+// machine the next user to sign in (with zero projects) silently
+// received a copy of someone else's customer address, notes and map
+// capture in their own team. Defences, in order:
+//   1. signOutUser() and the user-switch guard (pb.ts) delete the key.
+//   2. The store no longer persists `project`, so the key isn't
+//      rewritten going forward.
+//   3. SERVER_ERA_KEY: set whenever the server-backed editor opens a
+//      project in this browser. If present, any blob is a server-era
+//      leftover (not a pre-auth draft) and is discarded unimported.
+//   4. For blobs that pass 1–3 (old post-auth versions left no marker),
+//      the user must confirm the import, seeing the project's name.
 // ────────────────────────────────────────────────────────────────────────
 
 import { pb } from './pb';
 import type { Project } from '../types';
 import type { ProjectRecord, TeamRecord, UserRecord } from './types';
 import { migrateProject } from '../utils/projectSerializer';
+import i18n from '../i18n';
 
 // Must match `persist`'s `name` in src/store/projectStore.ts. If that
 // key ever changes, this import will silently no-op for everyone — the
@@ -52,6 +61,45 @@ import { migrateProject } from '../utils/projectSerializer';
 // entire zustand store (and its deep transitive geometry/diff imports)
 // into the login bundle for a single string.
 const STORAGE_KEY = 'solar-planner-project';
+
+// Marker: "the server-backed editor has opened a project in this
+// browser". Shares the `solar-planner-` prefix so sign-out clears it
+// together with everything else (harmless: sign-out also deletes the
+// blob it guards against).
+const SERVER_ERA_KEY = 'solar-planner-server-era';
+
+/** Called by ProjectEditor when a server project is opened. */
+export function markServerEra(): void {
+  try {
+    localStorage.setItem(SERVER_ERA_KEY, '1');
+  } catch {
+    // Storage disabled / quota — the confirm prompt is still a guard.
+  }
+}
+
+/** Summary shown to the user before importing. */
+export interface LegacyDraftSummary {
+  name: string;
+  roofs: number;
+  panels: number;
+}
+
+/**
+ * Default confirmation: a native confirm() dialog. Deliberately plain —
+ * this path only ever runs once per browser, right after sign-in, and
+ * LoginPage awaits us before navigating, so a blocking dialog is the
+ * simplest correct UI. Tests inject their own.
+ */
+function defaultConfirm(summary: LegacyDraftSummary): boolean {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false;
+  return window.confirm(
+    i18n.t('sync.legacyImportConfirm', {
+      name: summary.name || '—',
+      roofs: String(summary.roofs),
+      panels: String(summary.panels),
+    }),
+  );
+}
 
 /**
  * Inspect localStorage and, if conditions are right, create a server
@@ -68,9 +116,18 @@ const STORAGE_KEY = 'solar-planner-project';
  * PB calls bubble up; LoginPage wraps this in `.catch(() => null)` so a
  * failed import doesn't block login.
  */
-export async function maybeImportLocalStorage(): Promise<string | null> {
+export async function maybeImportLocalStorage(
+  confirmImport: (summary: LegacyDraftSummary) => boolean | Promise<boolean> = defaultConfirm,
+): Promise<string | null> {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
+
+  // Server-era leftover → never a pre-auth draft. Delete it so it can't
+  // be imported (or leak) later.
+  if (localStorage.getItem(SERVER_ERA_KEY)) {
+    localStorage.removeItem(STORAGE_KEY);
+    return null;
+  }
 
   // The persisted value is Zustand's `persist` wrapper:
   //   { state: { project }, version }
@@ -123,6 +180,19 @@ export async function maybeImportLocalStorage(): Promise<string | null> {
   // pre-auth would otherwise silently create records with no owner.
   const user = pb.authStore.record as UserRecord | null;
   if (!user) return null;
+
+  // Ask. Declining deletes the blob: it's either someone else's project
+  // or a draft the user doesn't want, and asking on every sign-in would
+  // be worse than useless.
+  const ok = await confirmImport({
+    name: project.name,
+    roofs: project.roofs.length,
+    panels: project.panels.length,
+  });
+  if (!ok) {
+    localStorage.removeItem(STORAGE_KEY);
+    return null;
+  }
 
   // Find or create a team to host the project.
   //

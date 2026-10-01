@@ -30,6 +30,7 @@
 
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import MapView from './components/MapView';
 import KonvaOverlay from './components/KonvaOverlay';
 import Sidebar from './components/Sidebar';
@@ -37,8 +38,10 @@ import Toolbar from './components/Toolbar';
 import DiagramView from './components/DiagramView';
 import { useProjectStore } from './store/projectStore';
 import { getActiveSyncClient } from './components/ProjectEditor';
+import { isEditableTarget } from './utils/dom';
 
 export default function App() {
+  const { t } = useTranslation();
   // The Leaflet map instance. null until MapView calls onMapReady().
   // We hold it in a ref (not state) because consumers only need it on
   // click events, not every render — and we don't want to rerender when
@@ -103,15 +106,20 @@ export default function App() {
 
   // Global keyboard shortcuts. Rules:
   //   - Only active when map is locked (modes are meaningless otherwise)
-  //   - Ignored when an input/textarea has focus (don't trap typing)
+  //   - Ignored when a text-entry context has focus (don't trap typing).
+  //     `isEditableTarget` covers input/textarea/select AND contentEditable
+  //     — the diagram's node/edge labels are contentEditable, and the old
+  //     input/textarea-only check let Ctrl+Z there silently undo the last
+  //     roof/panel edit (diagram edits aren't on the undo stack) and let
+  //     r/p/s/d flip the roof tool while the user typed a label.
   //   - Single-letter bindings per AGENTS.md convention
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (isEditableTarget(e.target)) return;
       // Undo / redo shortcuts. Intentionally checked BEFORE the `!locked`
       // guard because edits to project name and panel type happen pre-lock
       // and those mutations still go through the record path — the user
-      // expects ⌘Z to reach them too. The input/textarea guard above is
+      // expects ⌘Z to reach them too. The editable-target guard above is
       // the real "don't steal typing keys" check; `locked` only gates
       // the single-letter mode keys below.
       //
@@ -149,7 +157,11 @@ export default function App() {
         // Intentionally no `return` — we don't preventDefault, and the
         // drawing controller's separate Escape listener still needs to run.
       }
-      if (!locked) return;
+      // Tool-mode letters only make sense on the roof canvas; in the
+      // diagram view they'd silently flip a tool the user can't see.
+      if (!locked || activeView !== 'roof') return;
+      // Leave modified chords (Cmd+R reload, Ctrl+S, …) to the browser.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       switch (e.key.toLowerCase()) {
         case 'r': setToolMode('draw-roof'); break;
         case 'p': setToolMode('place-panels'); break;
@@ -160,7 +172,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [locked, setToolMode]);
+  }, [locked, activeView, setToolMode]);
 
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--ink-950)' }}>
@@ -212,9 +224,9 @@ export default function App() {
             <div
               className="surface absolute bottom-4 right-4 z-[600] rounded-full px-3 py-2 flex items-center gap-2"
               style={{ fontSize: 12 }}
-              title="Rotate the preview before locking. The captured imagery stays axis-aligned; the rotation is applied to the editor view post-lock."
+              title={t('editor.rotatePreviewHint')}
             >
-              <span style={{ color: 'var(--ink-300)' }}>Rotate</span>
+              <span style={{ color: 'var(--ink-300)' }}>{t('editor.rotate')}</span>
               <button
                 type="button"
                 onClick={() => setPreLockRotation((r) => r - 15)}
@@ -224,7 +236,7 @@ export default function App() {
                   borderRadius: 4,
                   background: 'rgba(255,255,255,0.06)',
                 }}
-                aria-label="Rotate -15°"
+                aria-label={t('editor.rotateMinus15')}
               >
                 −15°
               </button>
@@ -236,7 +248,7 @@ export default function App() {
                 value={preLockRotation}
                 onChange={(e) => setPreLockRotation(Number(e.target.value))}
                 style={{ width: 140 }}
-                aria-label="Pre-lock rotation"
+                aria-label={t('editor.preLockRotation')}
               />
               <button
                 type="button"
@@ -247,7 +259,7 @@ export default function App() {
                   borderRadius: 4,
                   background: 'rgba(255,255,255,0.06)',
                 }}
-                aria-label="Rotate +15°"
+                aria-label={t('editor.rotatePlus15')}
               >
                 +15°
               </button>
@@ -272,9 +284,9 @@ export default function App() {
                   background: 'transparent',
                   opacity: preLockRotation === 0 ? 0.4 : 1,
                 }}
-                aria-label="Reset rotation"
+                aria-label={t('editor.resetRotation')}
               >
-                Reset
+                {t('editor.reset')}
               </button>
             </div>
           )}
@@ -309,15 +321,15 @@ export default function App() {
                 />
               </span>
               <span style={{ color: 'var(--ink-100)' }}>
-                Navigate to your location, then
+                {t('editor.lockHintBefore')}
               </span>
               <span
                 className="font-display font-semibold"
                 style={{ color: 'var(--sun-300)', letterSpacing: '-0.01em' }}
               >
-                Lock Map
+                {t('toolbar.lockMap')}
               </span>
-              <span style={{ color: 'var(--ink-300)' }}>to start drawing.</span>
+              <span style={{ color: 'var(--ink-300)' }}>{t('editor.lockHintAfter')}</span>
             </div>
           )}
           {locked && toolMode === 'draw-roof' && splitCandidateRoofId && (
@@ -342,16 +354,16 @@ export default function App() {
                 />
               </span>
               <span style={{ color: 'var(--ink-100)' }}>
-                Click another edge of this roof to
+                {t('editor.splitHintBefore')}
               </span>
               <span
                 className="font-display font-semibold"
                 style={{ color: 'var(--sun-300)', letterSpacing: '-0.01em' }}
               >
-                split
+                {t('editor.splitHintEmphasis')}
               </span>
               <span style={{ color: 'var(--ink-300)' }}>
-                it, or press Enter to commit a polyline cut.
+                {t('editor.splitHintAfter')}
               </span>
             </div>
           )}

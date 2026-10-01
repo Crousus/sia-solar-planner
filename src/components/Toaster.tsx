@@ -59,6 +59,7 @@ const LEVEL_STYLES: Record<ToastLevel, { band: string; bg: string }> = {
  * Toaster is a singleton and reads state directly from the toast store.
  */
 export default function Toaster() {
+  const { t } = useTranslation();
   const toasts = useToasts();
   // No early-return on empty so the keyframes stay parsed and ready —
   // avoids a tiny first-toast flicker where the animation rule is still
@@ -85,7 +86,7 @@ export default function Toaster() {
         // assertive because that would also cut off in-progress speech,
         // which is more disruptive than the toast warrants.
         role="region"
-        aria-label="Notifications"
+        aria-label={t('errors.notificationsRegion')}
         aria-live="polite"
         className="pointer-events-none fixed inset-x-0 top-14 z-[1000] flex flex-col items-center gap-2 px-4"
       >

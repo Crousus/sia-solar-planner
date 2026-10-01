@@ -230,6 +230,122 @@ describe('splitPolygon — rejections', () => {
   });
 });
 
+// U-shaped roof (screen coords, y down): a 100×100 block with a 40-wide
+// notch cut up from the bottom edge between x=30..70, reaching y=30.
+//
+//   (0,0) ─────────────── (100,0)
+//     │                      │
+//     │    (30,30)──(70,30)  │
+//     │      │        │      │
+//   (0,100)─(30,100)  (70,100)─(100,100)
+const U_SHAPE: Point[] = [
+  { x: 0, y: 0 },
+  { x: 100, y: 0 },
+  { x: 100, y: 100 },
+  { x: 70, y: 100 },
+  { x: 70, y: 30 },
+  { x: 30, y: 30 },
+  { x: 30, y: 100 },
+  { x: 0, y: 100 },
+];
+
+/** Proper-crossing test used to assert the halves are simple polygons. */
+function isSimplePolygon(poly: Point[]): boolean {
+  const n = poly.length;
+  const cross = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (j === i + 1 || (i === 0 && j === n - 1)) continue; // adjacent
+      const a = poly[i], b = poly[(i + 1) % n], c = poly[j], d = poly[(j + 1) % n];
+      const d1 = cross(a, b, c), d2 = cross(a, b, d), d3 = cross(c, d, a), d4 = cross(c, d, b);
+      if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+describe('splitPolygon — segment validation (concave roofs)', () => {
+  it('rejects a polyline whose middle segment crosses the U notch', () => {
+    // Both interior vertices sit inside the arms, so the old vertex-only
+    // check accepted this and produced self-intersecting halves.
+    const result = splitPolygon(U_SHAPE, [
+      { x: 0, y: 50 },
+      { x: 15, y: 60 },
+      { x: 85, y: 60 },
+      { x: 100, y: 50 },
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it('rejects a straight chord between the two arm tips that runs outside the polygon', () => {
+    // (30,100)→(70,100)… endpoints are on the boundary, but the chord across
+    // the notch opening is entirely outside. Use the inner arm edges so the
+    // endpoints sit on different edges: (30,80) on the left inner edge,
+    // (70,80) on the right inner edge — the segment between them is in the
+    // notch (outside) and touches the boundary only at its endpoints.
+    const result = splitPolygon(U_SHAPE, [
+      { x: 30, y: 80 },
+      { x: 70, y: 80 },
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it('accepts a cut across the solid top band of the U and yields simple halves', () => {
+    const result = splitPolygon(U_SHAPE, [
+      { x: 0, y: 20 },
+      { x: 50, y: 15 },
+      { x: 100, y: 20 },
+    ]);
+    expect(result).not.toBeNull();
+    const [a, b] = result!;
+    expect(isSimplePolygon(a)).toBe(true);
+    expect(isSimplePolygon(b)).toBe(true);
+  });
+
+  it('rejects a cut that runs along an existing edge', () => {
+    // From the left edge to the right edge via a waypoint ON the top edge
+    // of the notch — the segment touches the boundary mid-cut.
+    const result = splitPolygon(U_SHAPE, [
+      { x: 0, y: 30 },
+      { x: 30, y: 30 },
+      { x: 100, y: 30 },
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it('rejects a self-intersecting cut polyline', () => {
+    // Segment 0 ((0,5)→(8,5)) and segment 3 ((4,8)→(4,2)) cross at (4,5).
+    const result = splitPolygon(SQUARE, [
+      { x: 0, y: 5 },
+      { x: 8, y: 5 },
+      { x: 8, y: 8 },
+      { x: 4, y: 8 },
+      { x: 4, y: 2 },
+      { x: 10, y: 2 },
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it('tolerates duplicate consecutive cut vertices (double-click commit) and drops them', () => {
+    const result = splitPolygon(SQUARE, [
+      { x: 0, y: 5 },
+      { x: 5, y: 6 },
+      { x: 5, y: 6 }, // duplicate from the dblclick's second click
+      { x: 10, y: 5 },
+    ]);
+    expect(result).not.toBeNull();
+    for (const half of result!) {
+      for (let i = 0; i < half.length; i++) {
+        const p = half[i];
+        const q = half[(i + 1) % half.length];
+        expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeGreaterThan(1e-6);
+      }
+    }
+  });
+});
+
 describe('splitPolygon — index-bookkeeping regression', () => {
   // Pre-fix: the old code sorted insertions in descending edgeIndex order
   // and tagged endpoints by NUMERIC index. Splicing at a lower position

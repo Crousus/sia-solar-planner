@@ -14,13 +14,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, Background, BackgroundVariant, Controls,
   ConnectionMode, ConnectionLineType,
-  applyNodeChanges, applyEdgeChanges,
   addEdge,
-  type NodeChange, type EdgeChange, type Connection,
+  useNodesInitialized, useReactFlow,
+  type NodeChange, type EdgeChange, type Connection, type Node, type Edge,
 } from '@xyflow/react';
 // React Flow's default stylesheet — must be imported exactly once somewhere
 // in the app. We centralize it here so that any page mounting the diagram
@@ -37,6 +37,23 @@ import FreNode from './nodes/FreNode';
 import GridOutputNode from './nodes/GridOutputNode';
 import ConsumerNode from './nodes/ConsumerNode';
 import EditableSmoothStepEdge from './edges/EditableSmoothStepEdge';
+import {
+  reduceNodeChanges,
+  reduceEdgeChanges,
+  stripEdgeTransient,
+  EMPTY_NODE_EPHEMERAL,
+  type NodeEphemeral,
+} from './diagramChanges';
+
+// Stable empty fallbacks for projects without a diagram yet. A selector
+// returning a fresh `[]` on every call makes zustand see a "new" value on
+// every store update (and React warn that getSnapshot isn't cached), which
+// re-rendered the whole canvas for unrelated edits.
+const EMPTY_NODES: DiagramNode[] = [];
+const EMPTY_EDGES: DiagramEdge[] = [];
+
+// Center-snap grid (flow px) — see snapCenter in diagramChanges.ts.
+const CENTER_SNAP_GRID = 11;
 
 // Map of node `type` strings to their React components. React Flow looks up
 // each node's `type` field in this dictionary to decide which component to
@@ -86,11 +103,13 @@ const defaultEdgeOptions = {
 /**
  * The interactive React Flow canvas for the electrical block diagram.
  *
- * Reads nodes/edges from the project store and pushes changes back via
- * dedicated diagram actions. We translate React Flow's change arrays into
- * full node/edge arrays using `applyNodeChanges` / `applyEdgeChanges` so the
- * store remains the single source of truth — React Flow is effectively a
- * controlled component here.
+ * Reads nodes/edges from the project store and pushes DOCUMENT changes back
+ * via dedicated diagram actions. React Flow's change arrays are routed by
+ * `reduceNodeChanges` / `reduceEdgeChanges` (diagramChanges.ts): the store
+ * stays the single source of truth for the document, while selection,
+ * measured sizes and in-flight drag positions are per-viewer state held
+ * locally and merged in for rendering — React Flow is still a controlled
+ * component, it just isn't allowed to persist its runtime fields.
  *
  * The `as DiagramNode[] / as DiagramEdge[]` casts are required because
  * React Flow's helpers return its own `Node`/`Edge` internal types, which are
@@ -106,61 +125,177 @@ const defaultEdgeOptions = {
  *   - MiniMap: removed. It added the most visual noise of any chrome and
  *     diagrams at this scale (a dozen nodes max) don't need navigation aid.
  */
-export default function DiagramCanvas() {
+/** One memoised render node + the inputs it was built from. */
+interface RenderCacheEntry {
+  src: DiagramNode;
+  pos: { x: number; y: number } | undefined;
+  m: { width: number; height: number } | undefined;
+  sel: boolean;
+  out: Node;
+}
+
+interface DiagramCanvasProps {
+  /**
+   * Offscreen PDF-export render (see pdf/pdfExport.tsx). Disables all
+   * interaction and chrome, fits the view once nodes are measured, and
+   * then calls `onReady` so the exporter knows the layout is final.
+   */
+  exportMode?: boolean;
+  onReady?: () => void;
+}
+
+export default function DiagramCanvas({ exportMode = false, onReady }: DiagramCanvasProps = {}) {
   // `diagram` is optional on the project (only created on first open), so
-  // fall back to empty arrays to avoid crashing before bootstrap runs.
-  const nodes = useProjectStore(s => s.project.diagram?.nodes ?? []);
-  const edges = useProjectStore(s => s.project.diagram?.edges ?? []);
+  // fall back to stable empty arrays to avoid crashing before bootstrap runs.
+  const storeNodes = useProjectStore(s => s.project.diagram?.nodes ?? EMPTY_NODES);
+  const storeEdges = useProjectStore(s => s.project.diagram?.edges ?? EMPTY_EDGES);
   const setDiagramNodes = useProjectStore(s => s.setDiagramNodes);
   const setDiagramEdges = useProjectStore(s => s.setDiagramEdges);
 
-  // Center-snap grid. Nodes aren't all the same size (inverters with model
-  // + current are taller than a bare fuse chip), and React Flow's native
-  // `snapToGrid` locks the top-left corner — which means centers only
-  // align when widths/heights match. We intercept position changes and
-  // translate: snap the node's CENTER to the grid, then convert back to
-  // a top-left position using the measured size. Result: no matter the
-  // size difference, two nodes placed next to each other can line up
-  // center-to-center on the same grid row/column.
-  const CENTER_SNAP_GRID = 11;
+  // ── Per-viewer interaction state (NOT persisted, NOT synced) ─────────
+  // Selection, measured size and in-flight drag positions live here, in
+  // local React state. Only document edits reach the store — see
+  // diagramChanges.ts for the full routing table and why.
+  const [nodeEph, setNodeEph] = useState<NodeEphemeral>(EMPTY_NODE_EPHEMERAL);
+  const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(() => new Set());
+
+  // Refs mirror the latest values so the change handlers stay referentially
+  // stable (React Flow re-subscribes on handler identity changes) and never
+  // reduce against a stale closure when several change batches arrive
+  // between renders (e.g. dimensions + select on the same frame).
+  const nodeEphRef = useRef(nodeEph);
+  nodeEphRef.current = nodeEph;
+  const selectedEdgesRef = useRef(selectedEdges);
+  selectedEdgesRef.current = selectedEdges;
+
+  // ── Render nodes = store nodes ⊕ local ephemeral fields ──────────────
+  // Cached per node id so a node whose inputs didn't change keeps its
+  // object identity — React Flow skips re-adopting it, which keeps a drag
+  // of one node from re-processing every other node each frame.
+  const renderCacheRef = useRef(new Map<string, RenderCacheEntry>());
+  const renderNodes = useMemo(() => {
+    const cache = renderCacheRef.current;
+    const next = new Map<string, RenderCacheEntry>();
+    const out = storeNodes.map((n) => {
+      const pos = nodeEph.dragging.get(n.id);
+      const m = nodeEph.measured.get(n.id);
+      const sel = nodeEph.selected.has(n.id);
+      const hit = cache.get(n.id);
+      if (hit && hit.src === n && hit.pos === pos && hit.m === m && hit.sel === sel) {
+        next.set(n.id, hit);
+        return hit.out;
+      }
+      // `measured` is set explicitly (possibly undefined) so a stale value
+      // persisted by an older client never overrides this viewer's own
+      // measurement; React Flow re-measures unmeasured nodes on mount.
+      const node: Node = {
+        ...(n as unknown as Node),
+        position: pos ?? n.position,
+        selected: sel,
+        dragging: pos !== undefined,
+        measured: m,
+      };
+      next.set(n.id, { src: n, pos, m, sel, out: node });
+      return node;
+    });
+    renderCacheRef.current = next;
+    return out;
+  }, [storeNodes, nodeEph]);
+
+  const renderEdges = useMemo(
+    () =>
+      storeEdges.map((e) => {
+        const sel = selectedEdges.has(e.id);
+        // Leave unselected edges untouched (same identity) unless an older
+        // client persisted `selected` onto them.
+        if (!sel && !('selected' in e)) return e as unknown as Edge;
+        return { ...(e as unknown as Edge), selected: sel };
+      }),
+    [storeEdges, selectedEdges],
+  );
+
+  // Latest store arrays for the handlers (same stale-closure rationale).
+  const storeNodesRef = useRef(storeNodes);
+  storeNodesRef.current = storeNodes;
+  const storeEdgesRef = useRef(storeEdges);
+  storeEdgesRef.current = storeEdges;
+
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      const snapped = changes.map((c) => {
-        if (c.type !== 'position' || !c.position) return c;
-        // React Flow augments each node in its internal store with
-        // `measured` (computed size after layout) and sometimes `.width`
-        // /`.height`. Our `DiagramNode` type is the persisted schema and
-        // doesn't include those runtime-only fields, so cast through a
-        // local shape to read them without polluting the stored type.
-        type MeasuredNode = DiagramNode & {
-          measured?: { width?: number; height?: number };
-          width?: number;
-          height?: number;
-        };
-        const node = nodes.find((n) => n.id === c.id) as MeasuredNode | undefined;
-        const w = node?.measured?.width ?? node?.width ?? 0;
-        const h = node?.measured?.height ?? node?.height ?? 0;
-        const centerX = c.position.x + w / 2;
-        const centerY = c.position.y + h / 2;
-        const snapCenterX = Math.round(centerX / CENTER_SNAP_GRID) * CENTER_SNAP_GRID;
-        const snapCenterY = Math.round(centerY / CENTER_SNAP_GRID) * CENTER_SNAP_GRID;
-        return {
-          ...c,
-          position: { x: snapCenterX - w / 2, y: snapCenterY - h / 2 },
-        };
-      });
-      setDiagramNodes(applyNodeChanges(snapped, nodes) as DiagramNode[]);
+      const { eph, nodes } = reduceNodeChanges(
+        storeNodesRef.current,
+        nodeEphRef.current,
+        changes,
+        CENTER_SNAP_GRID,
+      );
+      if (eph !== nodeEphRef.current) {
+        nodeEphRef.current = eph;
+        setNodeEph(eph);
+      }
+      // Only real document edits (drag end, add/remove, data replace) hit
+      // the store → localStorage → sync. Selection/measure/mid-drag don't.
+      if (nodes) {
+        storeNodesRef.current = nodes;
+        setDiagramNodes(nodes);
+      }
     },
-    [nodes, setDiagramNodes],
+    [setDiagramNodes],
   );
   const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => setDiagramEdges(applyEdgeChanges(changes, edges) as DiagramEdge[]),
-    [edges, setDiagramEdges],
+    (changes: EdgeChange[]) => {
+      const { selected, edges } = reduceEdgeChanges(
+        storeEdgesRef.current,
+        selectedEdgesRef.current,
+        changes,
+      );
+      if (selected !== selectedEdgesRef.current) {
+        selectedEdgesRef.current = selected;
+        setSelectedEdges(selected);
+      }
+      if (edges) {
+        storeEdgesRef.current = edges;
+        setDiagramEdges(edges);
+      }
+    },
+    [setDiagramEdges],
   );
   const onConnect = useCallback(
-    (connection: Connection) => setDiagramEdges(addEdge(connection, edges) as DiagramEdge[]),
-    [edges, setDiagramEdges],
+    (connection: Connection) => {
+      const next = (addEdge(connection, storeEdgesRef.current as unknown as Edge[]) as unknown as DiagramEdge[])
+        .map((e) => stripEdgeTransient(e));
+      storeEdgesRef.current = next;
+      setDiagramEdges(next);
+    },
+    [setDiagramEdges],
   );
+
+  // Prune local state for nodes/edges that disappeared (remote delete,
+  // undo-free reset). Not required for correctness — render ignores
+  // unknown ids — but keeps the sets from growing across a long session.
+  useEffect(() => {
+    const ids = new Set(storeNodes.map((n) => n.id));
+    const eph = nodeEphRef.current;
+    const stale =
+      [...eph.selected].some((id) => !ids.has(id)) ||
+      [...eph.measured.keys()].some((id) => !ids.has(id)) ||
+      [...eph.dragging.keys()].some((id) => !ids.has(id));
+    if (!stale) return;
+    const next: NodeEphemeral = {
+      selected: new Set([...eph.selected].filter((id) => ids.has(id))),
+      measured: new Map([...eph.measured].filter(([id]) => ids.has(id))),
+      dragging: new Map([...eph.dragging].filter(([id]) => ids.has(id))),
+    };
+    nodeEphRef.current = next;
+    setNodeEph(next);
+  }, [storeNodes]);
+  useEffect(() => {
+    const ids = new Set(storeEdges.map((e) => e.id));
+    const sel = selectedEdgesRef.current;
+    if (![...sel].some((id) => !ids.has(id))) return;
+    const next = new Set([...sel].filter((id) => ids.has(id)));
+    selectedEdgesRef.current = next;
+    setSelectedEdges(next);
+  }, [storeEdges]);
 
   return (
     // The wrapper div carries a stable class name so the scoped CSS below
@@ -171,8 +306,8 @@ export default function DiagramCanvas() {
       style={{ width: '100%', height: '100%', background: 'transparent' }}
     >
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={renderNodes}
+        edges={renderEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
@@ -193,7 +328,20 @@ export default function DiagramCanvas() {
         onConnect={onConnect}
         // Both Delete and Backspace remove the selected node/edge — matches
         // typical diagram-editor UX on macOS (Backspace) and Windows (Delete).
-        deleteKeyCode={['Delete', 'Backspace']}
+        deleteKeyCode={exportMode ? null : ['Delete', 'Backspace']}
+        // Export renders are a static snapshot: no dragging, connecting,
+        // selecting or viewport gestures on the hidden offscreen copy.
+        {...(exportMode
+          ? {
+              nodesDraggable: false,
+              nodesConnectable: false,
+              elementsSelectable: false,
+              panOnDrag: false,
+              zoomOnScroll: false,
+              zoomOnPinch: false,
+              zoomOnDoubleClick: false,
+            }
+          : {})}
         fitView
         // Give fitView a small inset so nodes don't touch the canvas edges,
         // which would otherwise collide with the title block.
@@ -210,7 +358,10 @@ export default function DiagramCanvas() {
           color="rgba(255,255,255,0.1)"
           bgColor="transparent"
         />
-        <Controls showInteractive={false} />
+        {!exportMode && <Controls showInteractive={false} />}
+        {exportMode && onReady && (
+          <ExportReadySignal nodeCount={renderNodes.length} onReady={onReady} />
+        )}
       </ReactFlow>
 
       {/*
@@ -314,4 +465,30 @@ export default function DiagramCanvas() {
       `}</style>
     </div>
   );
+}
+
+/**
+ * Fires `onReady` once the offscreen export canvas has a final layout:
+ * every node measured by React Flow, the viewport fitted to them, and two
+ * frames painted so the DOM the capture walks reflects the fitted
+ * transform. Must render INSIDE <ReactFlow> to reach its context.
+ *
+ * An empty diagram is ready immediately (useNodesInitialized stays false
+ * when there are no nodes, which would otherwise hang the export until
+ * the exporter's timeout).
+ */
+function ExportReadySignal({ nodeCount, onReady }: { nodeCount: number; onReady: () => void }) {
+  const initialized = useNodesInitialized();
+  const { fitView } = useReactFlow();
+  const firedRef = useRef(false);
+  useEffect(() => {
+    if (firedRef.current) return;
+    if (nodeCount > 0 && !initialized) return;
+    firedRef.current = true;
+    const fitted = nodeCount > 0 ? fitView({ padding: 0.15 }) : Promise.resolve(true);
+    void Promise.resolve(fitted).then(() => {
+      requestAnimationFrame(() => requestAnimationFrame(() => onReady()));
+    });
+  }, [initialized, nodeCount, fitView, onReady]);
+  return null;
 }

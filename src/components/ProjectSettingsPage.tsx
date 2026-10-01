@@ -42,7 +42,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { pb } from '../backend/pb';
+import { pb, signOutUser } from '../backend/pb';
 import type { ProjectRecord } from '../backend/types';
 import type { Project } from '../types';
 import { diffProjects } from '../backend/diff';
@@ -84,7 +84,9 @@ export default function ProjectSettingsPage() {
   }, [projectId, navigate, t]);
 
   async function signOut() {
-    pb.authStore.clear();
+    // signOutUser also wipes app-owned localStorage (no project data left
+    // behind for the next person on this machine).
+    signOutUser();
     navigate('/login', { replace: true });
   }
 
@@ -173,7 +175,7 @@ export default function ProjectSettingsPage() {
 
   return (
     <PageShell
-      label="FIG_05 · PROJECT SETTINGS"
+      label={t('shell.figProjectSettings')}
       userEmail={user?.email}
       onSignOut={signOut}
       width="default"

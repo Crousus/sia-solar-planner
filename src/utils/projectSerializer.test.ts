@@ -31,8 +31,8 @@
 //     hand-edited file scenario, called out in the file's docstring).
 //   - Errors: non-object input, missing `project`, unrecognised v1 shape.
 //   - Migration: panel.orientation back-fill from owning roof; reference
-//     identity preserved when nothing needed migrating (the persist-trigger
-//     optimisation that prevents spurious selector re-renders).
+//     identity preserved when nothing needed migrating (prevents spurious
+//     selector re-renders); tilt clamp; diagram transient-field strip.
 // ────────────────────────────────────────────────────────────────────────────
 
 import { describe, it, expect } from 'vitest';
@@ -40,10 +40,10 @@ import {
   serializeProject,
   deserializeProject,
   migrateProject,
+  clampTilt,
   ProjectDeserializationError,
 } from './projectSerializer';
-import type { Project } from '../types';
-import type { UndoableSlice } from '../store/undoMiddleware';
+import type { Project, UndoableSlice, HistoryEntry, LegacySnapshotHistory } from '../types';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -119,10 +119,10 @@ function makeSlice(panelOrientation: 'portrait' | 'landscape' = 'landscape'): Un
 // ── serializeProject + deserializeProject (round-trip) ────────────────────
 
 describe('serialize → deserialize round-trip', () => {
-  it('preserves the project verbatim through a v2 envelope', () => {
+  it('preserves the project verbatim through a v3 envelope', () => {
     const project = makeProject();
     const payload = serializeProject({ project, past: [], future: [] });
-    expect(payload.version).toBe(2);
+    expect(payload.version).toBe(3);
 
     const result = deserializeProject(JSON.parse(JSON.stringify(payload)));
     // Going through JSON.stringify/parse mirrors what file IO actually
@@ -132,19 +132,40 @@ describe('serialize → deserialize round-trip', () => {
     expect(result.history).toEqual({ past: [], future: [] });
   });
 
-  it('round-trips non-empty undo history', () => {
+  it('round-trips non-empty delta history (v3)', () => {
     const project = makeProject();
-    const past = [makeSlice('portrait')];
-    const future = [makeSlice('landscape')];
+    const past: HistoryEntry[] = [{ name: { before: 'a', after: 'Test' } }];
+    const future: HistoryEntry[] = [
+      { roofs: [{ op: 'update', id: 'r1', fields: { tiltDeg: { before: 0, after: 30 } } }] },
+    ];
     const payload = serializeProject({ project, past, future });
 
     const result = deserializeProject(JSON.parse(JSON.stringify(payload)));
-    expect(result.history?.past).toHaveLength(1);
-    expect(result.history?.future).toHaveLength(1);
+    expect(result.history).toEqual({ past, future });
+  });
+});
+
+describe('deserializeProject — v2 snapshot history (legacy)', () => {
+  it('tags v2 history as snapshots and migrates panel.orientation inside them', () => {
+    const project = makeProject();
+    const envelope = {
+      version: 2,
+      project,
+      history: { past: [makeSlice('portrait')], future: [makeSlice('landscape')] },
+    };
+    const result = deserializeProject(JSON.parse(JSON.stringify(envelope)));
+    const h = result.history as LegacySnapshotHistory;
+    expect(h.kind).toBe('snapshots');
     // Slice migration filled in panel.orientation from the slice's roof —
-    // this is the migrateSlice path firing as a side effect.
-    expect((result.history!.past[0].panels[0] as { orientation?: string }).orientation).toBe('portrait');
-    expect((result.history!.future[0].panels[0] as { orientation?: string }).orientation).toBe('landscape');
+    // otherwise loadProject's snapshot→delta conversion would record a
+    // phantom orientation change on every panel.
+    expect((h.past[0].panels[0] as { orientation?: string }).orientation).toBe('portrait');
+    expect((h.future[0].panels[0] as { orientation?: string }).orientation).toBe('landscape');
+  });
+
+  it('drops history whose entries are not objects (corrupted file)', () => {
+    const result = deserializeProject({ version: 3, project: makeProject(), history: { past: [1], future: [] } });
+    expect(result.history).toBeUndefined();
   });
 });
 
@@ -180,7 +201,7 @@ describe('deserializeProject — v2 (envelope)', () => {
     };
     const result = deserializeProject(envelope);
     expect(result.project).toEqual(project);
-    expect(result.history).toEqual({ past: [], future: [] });
+    expect(result.history).toEqual({ kind: 'snapshots', past: [], future: [] });
   });
 
   it('loads a v2 envelope WITHOUT history (tolerance for truncated files)', () => {
@@ -292,5 +313,53 @@ describe('migrateProject', () => {
     });
     const migrated = migrateProject(project);
     expect(migrated).not.toBe(project);
+  });
+});
+
+// ── Tilt clamp + diagram strip (audit findings 4 & 5) ─────────────────────
+
+describe('migrateProject — tilt clamp', () => {
+  it('clampTilt bounds to [0, 60] and maps non-finite to the default', () => {
+    expect(clampTilt(90)).toBe(60);
+    expect(clampTilt(-1)).toBe(0);
+    expect(clampTilt(42)).toBe(42);
+    expect(clampTilt(Number.NaN)).toBe(30);
+  });
+
+  it('clamps an imported 90° roof', () => {
+    const base = makeProject();
+    const project = makeProject({ roofs: [{ ...base.roofs[0], tiltDeg: 90 }] });
+    const migrated = migrateProject(project);
+    expect(migrated.roofs[0].tiltDeg).toBe(60);
+    expect(migrated).not.toBe(project);
+  });
+});
+
+describe('migrateProject — diagram transient fields', () => {
+  it('strips selected/dragging/measured/width/height from nodes and selected from edges', () => {
+    const project = makeProject({
+      diagram: {
+        nodes: [
+          {
+            id: 'n1', type: 'switch', position: { x: 0, y: 0 }, data: { label: 'S' },
+            selected: true, dragging: false, measured: { width: 1, height: 1 }, width: 1, height: 1,
+          } as unknown as NonNullable<Project['diagram']>['nodes'][number],
+        ],
+        edges: [
+          { id: 'e1', source: 'n1', sourceHandle: 'a', target: 'n1', targetHandle: 'b', selected: true } as unknown as NonNullable<Project['diagram']>['edges'][number],
+        ],
+        meta: {},
+      },
+    });
+    const migrated = migrateProject(project);
+    expect(migrated.diagram!.nodes[0]).toEqual({ id: 'n1', type: 'switch', position: { x: 0, y: 0 }, data: { label: 'S' } });
+    expect(migrated.diagram!.edges[0]).toEqual({ id: 'e1', source: 'n1', sourceHandle: 'a', target: 'n1', targetHandle: 'b' });
+  });
+
+  it('keeps reference identity for a clean diagram', () => {
+    const project = makeProject({
+      diagram: { nodes: [{ id: 'n1', type: 'fuse', position: { x: 0, y: 0 }, data: { label: 'F' } }], edges: [], meta: {} },
+    });
+    expect(migrateProject(project)).toBe(project);
   });
 });

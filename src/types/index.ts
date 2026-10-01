@@ -79,9 +79,30 @@ export interface Roof {
   id: string;
   name: string;                             // user-editable; defaults to "Roof N"
   polygon: Point[];                         // vertex list; closed implicitly
-  tiltDeg: number;                          // 0 = flat, up to 60; drives cos(θ) projection
+  tiltDeg: number;                          // 0 = flat, clamped to [MIN_ROOF_TILT_DEG, MAX_ROOF_TILT_DEG]; drives cos(θ) projection
   panelOrientation: 'landscape' | 'portrait';
 }
+
+/**
+ * Valid roof-tilt range in degrees.
+ *
+ * Why clamp at all: the projected panel height is `H · cos(tilt)` (see
+ * panelDisplaySize). At 90° that is ~1e-14 px — zero-height grid cells,
+ * a 0-distance overlap guard and division-by-~0 in any re-layout math.
+ * The sidebar slider already stops at 60°, but JSON imports and remote
+ * patches can carry anything, so the store (updateRoof) and the
+ * persistence boundary (migrateProject) both clamp to this range.
+ *
+ * Why 60 (and not e.g. 75): it is exactly what the UI slider can display
+ * and edit. A stored value the slider cannot represent would render the
+ * thumb pinned at max with a mismatching label — clamping to the UI's
+ * range keeps "what you see" == "what is stored". Steeper real roofs
+ * (mansards) are rare for PV and would need a UI change first.
+ */
+export const MIN_ROOF_TILT_DEG = 0;
+export const MAX_ROOF_TILT_DEG = 60;
+/** Default pitch for a freshly drawn roof (typical residential roof). */
+export const DEFAULT_ROOF_TILT_DEG = 30;
 
 /**
  * A single placed panel.
@@ -110,8 +131,8 @@ export interface Panel {
    *
    * Always present on live panels: `addPanel` writes it at creation,
    * and the `migrateProject` helper (utils/projectSerializer.ts) back-
-   * fills it from `roof.panelOrientation` on both Zustand rehydration
-   * and JSON import of pre-migration saves. Before the migration existed,
+   * fills it from `roof.panelOrientation` on every `loadProject` (server
+   * load) and on JSON import of pre-migration saves. Before the migration existed,
    * this field was optional and five consumer sites carried
    * `p.orientation ?? roof.panelOrientation` fallback; making the field
    * required centralizes the fallback at the persistence boundary.
@@ -161,6 +182,31 @@ export interface Inverter {
    * Null / undefined means "not linked" — a legacy, name-only inverter.
    */
   inverterModelId?: string | null;
+}
+
+/**
+ * Technical spec of a catalog inverter model — the pure data part of the
+ * `inverter_models` PocketBase row.
+ *
+ * Lives here (not only in backend/types.ts) so canvas / diagram
+ * components can type the catalog data they render without importing
+ * from `backend/*` (AGENTS.md layering rule: only ProjectEditor and the
+ * page-level components talk to the server). `InverterModelRecord` in
+ * backend/types.ts extends this with the PB record envelope + `deleted`.
+ */
+export interface InverterModelSpec {
+  manufacturer: string;
+  model: string;
+  maxAcPowerW: number;
+  maxDcPowerW?: number;
+  efficiencyPct?: number;
+  phases?: number;
+  maxStrings?: number;
+  maxInputVoltageV?: number;
+  mpptCount?: number;
+  maxDcCurrentA?: number;
+  stringsPerMppt?: number;
+  datasheetUrl?: string;
 }
 
 /**
@@ -287,12 +333,15 @@ export interface ProjectMeta {
 }
 
 /**
- * Full project — the root persistent object. Serialized to localStorage by
- * Zustand's `persist` middleware and used verbatim for JSON export/import.
+ * Full project — the root persistent object. Stored server-side as the
+ * opaque `doc` column of the PocketBase `projects` row (synced via JSON
+ * Patch, see backend/syncClient.ts) and used verbatim for JSON
+ * export/import. It is NOT persisted to localStorage any more (ADR-015):
+ * the server is the single source of truth.
  *
- * If you add a field here you're adding to the save format. Consider whether
- * older saves should still load (Zustand's `persist` has a `version` option
- * if you need to migrate; not currently used).
+ * If you add a field here you're adding to the save format. Older docs
+ * must still load — add a back-fill to `migrateProject` in
+ * utils/projectSerializer.ts.
  */
 export interface Project {
   name: string;
@@ -455,3 +504,104 @@ export interface Diagram {
   edges: DiagramEdge[];
   meta: DiagramMeta;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Undo/redo history types (ADR-014, delta model per ADR-015).
+//
+// These live here rather than in store/undoMiddleware.ts because
+// utils/projectSerializer.ts needs them for the JSON export envelope, and
+// `utils/*` must not import from `store/*` (AGENTS.md layering rule).
+// undoMiddleware re-exports them for existing call sites.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The undoable projection of a Project: everything except `mapState`
+ * (multi-MB captured image — must never be resurrected by undo), `meta`
+ * and `diagram` (not part of the undo surface).
+ *
+ * Sub-arrays are deliberately loose (`unknown[]`): the middleware is
+ * Project-agnostic and its unit tests use simplified shapes. Since the
+ * delta redesign (ADR-015) this is no longer what history STORES — it is
+ * the working shape the middleware diffs and patches, plus the legacy
+ * shape of v2 JSON exports (see LegacySnapshotHistory).
+ */
+export type UndoableSlice = {
+  name: string;
+  panelType: { id: string } & Record<string, unknown>;
+  roofs: unknown[];
+  panels: unknown[];
+  strings: unknown[];
+  inverters: unknown[];
+};
+
+/** The id-keyed entity arrays inside an UndoableSlice. */
+export type UndoableCollectionKey = 'roofs' | 'panels' | 'strings' | 'inverters';
+
+/**
+ * One field's value before and after a history step. `undefined` means
+ * "field absent" (optional fields like `mpptPort` / `inverterModelId`),
+ * which also survives JSON round-trips as a missing key.
+ */
+export interface FieldChange {
+  before?: unknown;
+  after?: unknown;
+}
+
+/**
+ * One entity-level change inside a history step, keyed by entity `id`.
+ *
+ *   - add    → entity did not exist before the step. `anchor` is the id of
+ *              its predecessor in the post-step array (null = head), used
+ *              to re-insert it at a sensible position on redo.
+ *   - remove → entity existed before and not after. `entity` is the full
+ *              pre-step value; `anchor` is its predecessor in the pre-step
+ *              array, used to re-insert it on undo.
+ *   - update → entity existed on both sides; only the fields that changed
+ *              are recorded. Untouched fields are never written by undo,
+ *              which is what lets a collaborator's edit to a DIFFERENT
+ *              field of the same entity survive Alice's Ctrl-Z.
+ */
+export type EntityChange =
+  | { op: 'add'; id: string; entity: unknown; anchor: string | null }
+  | { op: 'remove'; id: string; entity: unknown; anchor: string | null }
+  | { op: 'update'; id: string; fields: Record<string, FieldChange> };
+
+/**
+ * One undo/redo step, expressed as an id-keyed DELTA rather than a
+ * snapshot (ADR-015). Undo applies the inverse of this delta to the
+ * CURRENT project, so entities the step never touched (e.g. a roof a
+ * collaborator added meanwhile) are left exactly as they are.
+ *
+ * Every key is optional: absent = the step didn't change that part.
+ */
+export interface HistoryEntry {
+  name?: FieldChange;
+  /** Field-level changes of `project.panelType`. */
+  panelType?: Record<string, FieldChange>;
+  roofs?: EntityChange[];
+  panels?: EntityChange[];
+  strings?: EntityChange[];
+  inverters?: EntityChange[];
+}
+
+/** The in-memory (and v3 JSON) shape of the undo/redo stacks. */
+export interface HistoryStacks {
+  past: HistoryEntry[];
+  future: HistoryEntry[];
+}
+
+/**
+ * Undo stacks as written by v2 JSON exports (pre-ADR-015): full snapshots
+ * where `past[i]` is the state BEFORE step i. `loadProject` converts these
+ * to delta entries by diffing consecutive snapshots. The explicit `kind`
+ * discriminant exists so `loadProject` never has to guess the format from
+ * the array contents.
+ */
+export interface LegacySnapshotHistory {
+  kind: 'snapshots';
+  past: UndoableSlice[];
+  future: UndoableSlice[];
+}
+
+/** Anything `loadProject` accepts as initial history. */
+export type LoadableHistory = HistoryStacks | LegacySnapshotHistory;

@@ -11,6 +11,14 @@
 # the SQLite file from the host without running docker exec.
 # pb_migrations is also bind-mounted so migration file edits take effect on
 # the next server restart without rebuilding the image.
+#
+# All published ports are bound to 127.0.0.1: the dev stack has no
+# approval gate, a dev PocketBase admin UI, and sidecars that accept
+# unauthenticated requests (ocr-service makes outbound fetches + paid LLM
+# calls). "PORT:PORT" would publish them on every interface — i.e. to
+# anyone on the same café / office Wi-Fi. Docker also bypasses host
+# firewalls like ufw for published ports, so the bind address is the only
+# reliable guard.
 
 services:
   pdf-service:
@@ -22,7 +30,7 @@ services:
     environment:
       - POCKETBASE_URL=http://backend:8090
     ports:
-      - "3002:3002"
+      - "127.0.0.1:3002:3002"
     restart: unless-stopped
 
   ocr-service:
@@ -34,7 +42,7 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
     ports:
       # Expose for direct testing: curl http://localhost:8001/parse
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     restart: unless-stopped
 
   backend:
@@ -46,14 +54,13 @@ services:
       - ./server/pb_migrations:/app/pb_migrations
     environment:
       - OCR_SERVICE_URL=http://ocr-service:8001
-      - PDF_SERVICE_URL=http://pdf-service:3002
     depends_on:
       - ocr-service
       - pdf-service
     ports:
       # Expose to host so you can reach the PocketBase admin UI at
       # http://localhost:8090/_/ during development.
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     restart: unless-stopped
 
   frontend:
@@ -65,7 +72,7 @@ services:
       # from using binaries compiled for the host OS.
       - /app/node_modules
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
     environment:
       - API_TARGET=http://backend:8090
       - PDF_TARGET=http://pdf-service:3002
