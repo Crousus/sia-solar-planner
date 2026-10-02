@@ -174,16 +174,26 @@ export async function bootPocketBase(): Promise<PbHarness> {
   pbProcess.stderr?.on('data', (d: Buffer) => process.stderr.write(`[pb] ${d}`));
   pbProcess.stdout?.on('data', (d: Buffer) => process.stdout.write(`[pb] ${d}`));
 
-  await waitForReady(baseUrl);
-
   // Authenticate the superuser client. We construct a fresh PocketBase
   // client (not the app's global singleton) so there's no risk of the
   // test harness clobbering the app's auth state.
   const superuser = new PocketBase(baseUrl);
-  await superuser.collection('_superusers').authWithPassword(
-    SUPERUSER_EMAIL,
-    SUPERUSER_PASSWORD,
-  );
+  try {
+    await waitForReady(baseUrl);
+    await superuser.collection('_superusers').authWithPassword(
+      SUPERUSER_EMAIL,
+      SUPERUSER_PASSWORD,
+    );
+  } catch (err) {
+    // The caller never receives a PbHarness when boot fails, so its
+    // afterAll has no stop() to call — without this the spawned server
+    // outlives the test run (orphaned `pocketbase serve` processes piled
+    // up exactly this way when the SDK's fetch rejected jsdom's
+    // AbortSignal on Node 24).
+    pbProcess.kill('SIGTERM');
+    try { rmSync(rootDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw err;
+  }
 
   return {
     baseUrl,

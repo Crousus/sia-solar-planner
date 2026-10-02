@@ -11,7 +11,7 @@ server
 server/pb_data
 server/pocketbase
 *.local
-# Secrets (GEMINI/GROQ keys etc.) must never end up in an image layer.
+# Secrets (DeepSeek/Groq keys etc.) must never end up in an image layer.
 **/.env*
 **/__pycache__
 **/*.pyc

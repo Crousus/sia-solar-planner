@@ -12,11 +12,19 @@
 import asyncio
 import http.server
 import ipaddress
+import json
+import os
 import threading
+
+import httpx
 
 from fastapi import HTTPException
 
 import main
+
+# Captured before any test monkeypatches main._call_llm (the sanitiser tests
+# below replace it with fakes and don't restore it).
+_REAL_CALL_LLM = main._call_llm
 
 
 def _rejects(url: str) -> bool:
@@ -170,7 +178,7 @@ def test_redirect_to_internal_host_is_blocked():
 
 
 def test_llm_output_sanitised():
-    main._call_gemini = lambda prompt: (
+    main._call_llm = lambda prompt: (
         '[{"model": "' + "x" * 500 + '", "wattPeak": 440, "voc": NaN, "phases": true},'
         ' {"wattPeak": Infinity}, "junk"]'
     )
@@ -185,9 +193,146 @@ def test_llm_input_truncated():
         captured["p"] = prompt
         return '[{"wattPeak": 1}]'
 
-    main._call_gemini = fake
+    main._call_llm = fake
     main.llm_extract("A" * (main.MAX_LLM_CHARS * 10) + "\n\n\n\n", "panel")
     assert len(captured["p"]) < main.MAX_LLM_CHARS + 5000
+
+
+# ── DeepSeek client / Groq fallback ─────────────────────────────────────────
+
+def _deepseek_with(handler):
+    """Point the module's DeepSeek client at an in-process mock transport."""
+    main._deepseek_http = httpx.Client(
+        base_url="https://api.deepseek.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def _restore_llm(old_call_llm, old_groq_call):
+    main._call_llm = old_call_llm
+    main._call_groq = old_groq_call
+    main._deepseek_http = None
+
+
+def test_deepseek_request_shape_and_variants_unwrap():
+    old = (main._call_llm, main._call_groq)
+    main._call_llm = _REAL_CALL_LLM
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": '{"variants": [{"manufacturer": "JA", "wattPeak": 440}]}'}}]})
+
+    try:
+        _deepseek_with(handler)
+        out = main.llm_extract("datasheet text", "panel")
+    finally:
+        _restore_llm(*old)
+    assert out == [{"manufacturer": "JA", "wattPeak": 440}]
+    assert seen["path"] == "/chat/completions"
+    body = seen["body"]
+    assert body["model"] == main.DEEPSEEK_MODEL
+    assert body["response_format"] == {"type": "json_object"}
+    # Reasoning mode is off by default (it pushed latency past a minute).
+    assert body["thinking"] == {"type": "disabled"}
+    # DeepSeek JSON mode requires the word "json" in the prompt.
+    assert "json" in (body["messages"][0]["content"] + body["messages"][1]["content"]).lower()
+
+
+def test_deepseek_transient_error_falls_back_to_groq_when_configured():
+    old = (main._call_llm, main._call_groq)
+    main._call_llm = _REAL_CALL_LLM
+    main._call_groq = lambda prompt: '{"variants": [{"wattPeak": 400}]}'
+    os.environ["GROQ_API_KEY"] = "test-groq-key"
+    try:
+        _deepseek_with(lambda request: httpx.Response(503))
+        out = main.llm_extract("t", "panel")
+        # Empty JSON-mode content is DeepSeek's documented flake → fallback too.
+        _deepseek_with(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]}))
+        out2 = main.llm_extract("t", "panel")
+    finally:
+        os.environ.pop("GROQ_API_KEY", None)
+        _restore_llm(*old)
+    assert out == out2 == [{"wattPeak": 400}]
+
+
+def test_deepseek_auth_error_does_not_fall_back():
+    old = (main._call_llm, main._call_groq)
+    main._call_llm = _REAL_CALL_LLM
+    called = []
+    main._call_groq = lambda prompt: called.append(1) or '{"variants": []}'
+    os.environ["GROQ_API_KEY"] = "test-groq-key"
+    try:
+        _deepseek_with(lambda request: httpx.Response(401, json={"error": {"message": "bad key"}}))
+        try:
+            main.llm_extract("t", "panel")
+            raise AssertionError("expected HTTPException")
+        except HTTPException as exc:
+            assert exc.status_code == 502
+            assert exc.detail == "LLM call failed"  # generic, no provider detail
+    finally:
+        os.environ.pop("GROQ_API_KEY", None)
+        _restore_llm(*old)
+    assert called == []
+
+
+def test_transient_error_without_fallback_is_generic_502():
+    old = (main._call_llm, main._call_groq)
+    main._call_llm = _REAL_CALL_LLM
+    os.environ.pop("GROQ_API_KEY", None)
+    try:
+        _deepseek_with(lambda request: httpx.Response(429))
+        try:
+            main.llm_extract("t", "panel")
+            raise AssertionError("expected HTTPException")
+        except HTTPException as exc:
+            assert exc.status_code == 502
+    finally:
+        _restore_llm(*old)
+
+
+def test_deepseek_keepalive_trickle_hits_wall_clock_deadline():
+    """A queued request that only ever sends keep-alive bytes must not pin a
+    concurrency slot forever (observed during a DeepSeek outage)."""
+    import time as _t
+
+    class Trickle(httpx.SyncByteStream):
+        def __iter__(self):
+            while True:
+                _t.sleep(0.05)
+                yield b"\n"
+
+    old = (main._call_llm, main._call_groq, main.LLM_TIMEOUT_S)
+    main._call_llm = _REAL_CALL_LLM
+    main.LLM_TIMEOUT_S = 0.3
+    os.environ.pop("GROQ_API_KEY", None)
+    t0 = _t.monotonic()
+    try:
+        _deepseek_with(lambda request: httpx.Response(200, stream=Trickle()))
+        try:
+            main.llm_extract("t", "panel")
+            raise AssertionError("expected HTTPException")
+        except HTTPException as exc:
+            assert exc.status_code == 502
+    finally:
+        main.LLM_TIMEOUT_S = old[2]
+        _restore_llm(old[0], old[1])
+    assert _t.monotonic() - t0 < 2
+
+
+def test_deepseek_leading_keepalive_lines_are_tolerated():
+    old = (main._call_llm, main._call_groq)
+    main._call_llm = _REAL_CALL_LLM
+    payload = b"\n\n" + json.dumps({"choices": [{"message": {
+        "content": '{"variants": [{"wattPeak": 445}]}'}}]}).encode()
+    try:
+        _deepseek_with(lambda request: httpx.Response(200, content=payload))
+        out = main.llm_extract("t", "panel")
+    finally:
+        _restore_llm(*old)
+    assert out == [{"wattPeak": 445}]
 
 
 if __name__ == "__main__":

@@ -38,8 +38,9 @@ services:
       context: ./ocr-service
       dockerfile: Dockerfile
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      # From the shell or a root .env (gitignored); see ocr-service/.env.example.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
     ports:
       # Expose for direct testing: curl http://localhost:8001/parse
       - "127.0.0.1:8001:8001"
@@ -76,6 +77,10 @@ services:
     environment:
       - API_TARGET=http://backend:8090
       - PDF_TARGET=http://pdf-service:3002
-    command: npm run dev
+    # The anonymous /app/node_modules volume starts EMPTY on first run (and
+    # after `down -v`), so plain `npm run dev` died with "vite: not found".
+    # Install Linux-native deps into that volume first; `npm ci` is a fast
+    # no-op-ish reinstall when the lockfile hasn't changed.
+    command: sh -c "npm ci --no-audit --no-fund && npm run dev"
     depends_on:
       - backend

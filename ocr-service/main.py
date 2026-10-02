@@ -29,10 +29,10 @@
 #      size, one page at a time), tesseract reads them.
 #      This handles JA Solar, Longi, and other design-tool exports where the
 #      font has no ToUnicode CMap table.
-#   4. Send the extracted text to Gemini Flash Lite.  The LLM handles OCR
+#   4. Send the extracted text to DeepSeek (deepseek-flash).  The LLM handles OCR
 #      artifacts, multi-variant tables, mixed units, and varied label wording
 #      far better than hand-written regexes at very low cost (~$0.001/call).
-#      It returns a structured JSON array — one dict per product variant.
+#      It returns {"variants": [...]} — one dict per product variant.
 #
 # WHY LLM instead of regex:
 #   Manufacturer datasheets list 4–8 product variants in a single table, and
@@ -49,6 +49,7 @@ import asyncio
 import io
 import ipaddress
 import json
+import time
 import logging
 import math
 import os
@@ -62,7 +63,7 @@ import httpx
 from dotenv import load_dotenv
 
 # Load .env from the service directory so local dev works without manually
-# exporting GEMINI_API_KEY in the shell.  In Docker the env var is injected
+# exporting DEEPSEEK_API_KEY in the shell.  In Docker the env var is injected
 # by compose; load_dotenv is a no-op when the var is already set.
 load_dotenv()
 from fastapi import FastAPI, HTTPException
@@ -167,35 +168,54 @@ def _get_sem() -> asyncio.Semaphore:
         _pipeline_sem = asyncio.Semaphore(MAX_CONCURRENCY)
     return _pipeline_sem
 
-# ── Gemini client ─────────────────────────────────────────────────────────────
-# Lazy init so the service starts even without a key (useful for local dev
-# where you might test text extraction separately).  Fails at request time
-# if GEMINI_API_KEY is not set.
+# ── LLM clients ──────────────────────────────────────────────────────────────
+# Primary: DeepSeek (OpenAI-compatible chat-completions API, JSON mode).
+# Fallback: Groq, used only when GROQ_API_KEY is set AND DeepSeek fails in a
+# transient way (429 / 5xx / timeout / connection error / empty content —
+# DeepSeek documents that JSON mode can occasionally return empty content).
+# Auth/config errors (401/402/400) do NOT fall back: they need fixing, and a
+# silent switch to another provider would hide that.
 #
-# Model default is gemini-2.0-flash-lite.  Override via GEMINI_MODEL env var.
-# On 503 UNAVAILABLE the request is retried via Groq (GROQ_MODEL).
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
-GROQ_MODEL   = os.environ.get("GROQ_MODEL",   "llama-3.3-70b-versatile")
-_gemini_client = None
+# Lazy init so the service starts even without keys (useful for local dev
+# where you might test text extraction separately). Fails at request time
+# if DEEPSEEK_API_KEY is not set.
+DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+GROQ_MODEL        = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Whole-request budget for one LLM call. Datasheet extraction output is
+# small (a handful of variants), so a minute is generous.
+LLM_TIMEOUT_S     = float(os.environ.get("LLM_TIMEOUT_S", "60"))
+# Upper bound on generated tokens: DeepSeek's guide warns that a too-small
+# max_tokens truncates JSON mid-object. MAX_VARIANTS objects × ~15 fields
+# stays far below this.
+LLM_MAX_TOKENS    = 8192
+# deepseek-flash "thinks" by default (reasoning effort "high"), which made a
+# small extraction call run past a minute. Datasheet extraction is a
+# fixed-format transcription task that doesn't benefit from reasoning, so
+# default to off; set DEEPSEEK_THINKING=enabled to opt back in.
+DEEPSEEK_THINKING = os.environ.get("DEEPSEEK_THINKING", "disabled")
+
+_deepseek_http: Optional[httpx.Client] = None
 _groq_client   = None
 
 
-def _get_gemini():
-    global _gemini_client
-    if _gemini_client is None:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
+class _LLMTransientError(Exception):
+    """Primary-provider failure that justifies trying the fallback."""
+
+
+def _get_deepseek_http() -> httpx.Client:
+    global _deepseek_http
+    if _deepseek_http is None:
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
         if not api_key:
-            log.error("GEMINI_API_KEY env var not set")
+            log.error("DEEPSEEK_API_KEY env var not set")
             raise HTTPException(500, "LLM not configured")
-        # Import lazily so the module loads even without the package installed
-        # (the Dockerfile installs it, but local venvs might not have it yet).
-        try:
-            from google import genai
-            _gemini_client = genai.Client(api_key=api_key)
-        except ImportError:
-            log.error("google-genai package not installed")
-            raise HTTPException(500, "LLM not configured")
-    return _gemini_client
+        _deepseek_http = httpx.Client(
+            base_url=DEEPSEEK_BASE_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=LLM_TIMEOUT_S,
+        )
+    return _deepseek_http
 
 
 def _get_groq():
@@ -203,7 +223,7 @@ def _get_groq():
     if _groq_client is None:
         api_key = os.environ.get("GROQ_API_KEY", "")
         if not api_key:
-            log.error("GROQ_API_KEY env var not set — needed as Gemini fallback")
+            # Callers check _groq_configured() first; this is a safety net.
             raise HTTPException(500, "LLM not configured")
         try:
             from groq import Groq
@@ -212,6 +232,10 @@ def _get_groq():
             log.error("groq package not installed")
             raise HTTPException(500, "LLM not configured")
     return _groq_client
+
+
+def _groq_configured() -> bool:
+    return bool(os.environ.get("GROQ_API_KEY", ""))
 
 
 app = FastAPI(title="solar-planner ocr-service", version="2.0")
@@ -236,7 +260,7 @@ async def parse_datasheet(req: ParseRequest):
     # Stream three-stage ndjson so the frontend can show a real progress bar.
     # Each line is valid JSON + \n:
     #   {"progress": "downloaded"}  — PDF fetched, starting OCR/text extraction
-    #   {"progress": "extracted"}   — text ready, calling Gemini
+    #   {"progress": "extracted"}   — text ready, calling the LLM
     #   {"result": [...]}           — done; array of variant dicts
     #   {"error": "..."}            — something went wrong mid-stream
     #
@@ -661,23 +685,20 @@ def _ocr_image(img, tessdata: str) -> str:
 
 # ── LLM extraction ────────────────────────────────────────────────────────────
 #
-# The text from OCR / pdfminer is sent to Gemini Flash Lite with a prompt that
-# asks for a JSON array of product variants.  Using `responseMimeType:
-# application/json` in generationConfig constrains the model to emit valid JSON
-# without any surrounding prose.
-#
-# WHY not use responseJsonSchema (strict schema enforcement)?
-#   Schema enforcement is reliable for flat objects but Google's JSON schema
-#   validator rejects top-level array types.  Wrapping in {"variants": [...]}
-#   works but adds an extra nesting layer.  Since our prompt is explicit and
-#   the model is consistent, plain JSON mode is simpler and equally reliable.
+# The text from OCR / pdfminer is sent to DeepSeek with a prompt that asks
+# for the product variants as JSON. JSON mode (`response_format:
+# json_object`) constrains the model to emit valid JSON without prose — but
+# it must be a JSON OBJECT, never a bare array, so the prompts ask for
+# {"variants": [...]} and include an example (DeepSeek's JSON-mode guide
+# asks for the word "json" plus an example in the prompt). The parser below
+# also still accepts a bare array, for robustness.
 
 _PANEL_PROMPT = """\
 You are extracting solar panel specifications from a datasheet.
 The text below was extracted from a PDF (possibly via OCR and may contain artifacts).
 
-Return ONLY a JSON array — no prose, no markdown.
-Each element of the array represents one product variant found in the datasheet.
+Return ONLY a JSON object of the form {{"variants": [ ... ]}} — no prose, no markdown.
+Each element of the "variants" array represents one product variant found in the datasheet.
 If the datasheet covers multiple power classes (e.g. 430 W, 435 W, 440 W), return one object per variant.
 If only one variant is described, return a single-element array.
 
@@ -705,6 +726,9 @@ Rules:
 - Temperature coefficient: keep the sign (usually negative).
 - Shared fields (manufacturer, weight, dimensions, temp coefficient) should be repeated on every variant object.
 
+Example json output (values illustrative only):
+{{"variants": [{{"manufacturer": "JA Solar", "model": "JAM54D40-440/LB", "wattPeak": 440, "voc": 39.2, "widthM": 1.134, "heightM": 1.762}}]}}
+
 DATASHEET TEXT:
 {text}
 """
@@ -713,8 +737,8 @@ _INVERTER_PROMPT = """\
 You are extracting solar inverter specifications from a datasheet.
 The text below was extracted from a PDF (possibly via OCR and may contain artifacts).
 
-Return ONLY a JSON array — no prose, no markdown.
-Each element represents one inverter model/variant found in the datasheet.
+Return ONLY a JSON object of the form {{"variants": [ ... ]}} — no prose, no markdown.
+Each element of the "variants" array represents one inverter model/variant found in the datasheet.
 If only one model is described, return a single-element array.
 
 Fields for each object (omit if not found, never guess):
@@ -736,40 +760,121 @@ Rules:
 - Power in watts: 5 kW → 5000.
 - Efficiency in percent: 97.6 %, not 0.976.
 
+Example json output (values illustrative only):
+{{"variants": [{{"manufacturer": "SMA", "model": "Sunny Boy 5.0", "maxAcPowerW": 5000, "mpptCount": 2, "phases": 1}}]}}
+
 DATASHEET TEXT:
 {text}
 """
 
 
-def _call_gemini(prompt: str) -> str:
-    """Call Gemini and return the raw response text (JSON mode)."""
-    from google.genai import types as gtypes
-    client = _get_gemini()
-    resp = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=gtypes.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
-    return resp.text
+_SYSTEM_PROMPT = (
+    "You extract structured specifications from solar equipment datasheets "
+    "and answer with a single valid json object only."
+)
+
+
+def _call_deepseek(prompt: str) -> str:
+    """Call DeepSeek chat completions in JSON mode; return the raw content.
+
+    Raises _LLMTransientError for failures worth retrying on the fallback
+    provider, anything else for hard failures (bad key, bad request).
+    """
+    client = _get_deepseek_http()
+    # httpx's timeout is per read, and DeepSeek keeps a queued request alive
+    # by trickling blank lines — observed: HTTP 200 + 2 bytes in 180 s during
+    # an outage. Without a wall-clock deadline one stuck call would pin a
+    # MAX_CONCURRENCY slot indefinitely, so stream the body and enforce
+    # LLM_TIMEOUT_S over the whole exchange.
+    deadline = time.monotonic() + LLM_TIMEOUT_S
+    try:
+        with client.stream(
+            "POST",
+            "/chat/completions",
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "thinking": {"type": DEEPSEEK_THINKING},
+                "temperature": 0,
+                "max_tokens": LLM_MAX_TOKENS,
+                "stream": False,
+            },
+        ) as resp:
+            body = bytearray()
+            for chunk in resp.iter_bytes():
+                body += chunk
+                if time.monotonic() > deadline:
+                    raise _LLMTransientError(
+                        f"deepseek exceeded {LLM_TIMEOUT_S:.0f}s deadline "
+                        f"(HTTP {resp.status_code}, {len(body)} bytes so far)"
+                    )
+                if len(body) > 2_000_000:
+                    raise RuntimeError("deepseek response too large")
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise _LLMTransientError(f"deepseek transport: {exc!r}") from exc
+    text = body.decode("utf-8", errors="replace")
+
+    if resp.status_code == 429 or resp.status_code >= 500:
+        raise _LLMTransientError(f"deepseek HTTP {resp.status_code}")
+    if resp.status_code != 200:
+        # 400 bad request / 401 bad key / 402 out of balance / 422 params.
+        # Log status + a short body excerpt (DeepSeek error bodies carry no
+        # secrets); never forward it to the client.
+        raise RuntimeError(f"deepseek HTTP {resp.status_code}: {text[:300]}")
+
+    try:
+        # json.loads tolerates the leading keep-alive blank lines.
+        content = json.loads(text)["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"deepseek: unexpected response shape: {exc!r}") from exc
+    if not content or not content.strip():
+        raise _LLMTransientError("deepseek returned empty content")
+    return content
 
 
 def _call_groq(prompt: str) -> str:
-    """Call Groq (llama-3.3-70b-versatile) and return the raw response text.
-
-    Groq doesn't support response_format=json_object for all models, so we
-    rely on the prompt instruction ("Return ONLY a JSON array") instead.
-    """
+    """Call Groq (fallback) in JSON mode and return the raw response text."""
     client = _get_groq()
     chat = client.chat.completions.create(
         model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        # JSON mode IS supported for llama-3.3-70b-versatile on Groq.
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
         response_format={"type": "json_object"},
         temperature=0,
     )
     return chat.choices[0].message.content
+
+
+def _call_llm(prompt: str) -> str:
+    """Primary provider with transient-failure fallback.
+
+    Provider exceptions can include request URLs, model/quota details or key
+    configuration hints — they are logged, and callers only ever see the
+    generic HTTPException.
+    """
+    try:
+        return _call_deepseek(prompt)
+    except HTTPException:
+        raise  # not configured — already logged
+    except _LLMTransientError as exc:
+        if not _groq_configured():
+            log.error("DeepSeek call failed (no fallback configured): %s", exc)
+            raise HTTPException(502, "LLM call failed")
+        log.warning("DeepSeek unavailable, falling back to Groq: %s", exc)
+        try:
+            return _call_groq(prompt)
+        except Exception as exc2:  # noqa: BLE001 — logged, generic to client
+            log.error("Groq fallback failed: %r", exc2)
+            raise HTTPException(502, "LLM call failed")
+    except Exception as exc:  # noqa: BLE001 — logged, generic to client
+        log.error("DeepSeek call failed: %s", exc)
+        raise HTTPException(502, "LLM call failed")
 
 
 def _compact_text(text: str) -> str:
@@ -797,7 +902,7 @@ def llm_extract(text: str, device_type: str) -> list:
     """
     Send extracted datasheet text to the LLM and parse the structured response.
     Returns a list of dicts, one per product variant.
-    Falls back to Groq automatically when Gemini returns 503 UNAVAILABLE.
+    DeepSeek first; Groq on transient DeepSeek failures when configured.
     """
     prompt_tpl = _PANEL_PROMPT if device_type == "panel" else _INVERTER_PROMPT
     # Bound LLM cost/latency and keep a hostile PDF from stuffing megabytes
@@ -806,22 +911,7 @@ def llm_extract(text: str, device_type: str) -> list:
     text = _compact_text(text)[:MAX_LLM_CHARS]
     prompt = prompt_tpl.format(text=text)
 
-    # SDK exceptions can include request URLs, model/quota details or key
-    # configuration hints — log them, return a generic message.
-    try:
-        raw = _call_gemini(prompt)
-    except Exception as exc:
-        # 503 UNAVAILABLE means Gemini is under high load — retry with Groq.
-        if "503" in str(exc) or "UNAVAILABLE" in str(exc):
-            log.warning("Gemini unavailable, falling back to Groq: %r", exc)
-            try:
-                raw = _call_groq(prompt)
-            except Exception as exc2:
-                log.error("Groq fallback failed: %r", exc2)
-                raise HTTPException(502, "LLM call failed")
-        else:
-            log.error("Gemini call failed: %r", exc)
-            raise HTTPException(502, "LLM call failed")
+    raw = _call_llm(prompt)
 
     try:
         parsed = json.loads(raw)

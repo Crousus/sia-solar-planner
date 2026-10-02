@@ -28,7 +28,7 @@ package handlers
 //   empty strings.  Tesseract OCR solves this; shipping a CGo tesseract
 //   binding inside the PocketBase binary adds complexity and a large C
 //   dependency.  A small Python sidecar that owns pdftoppm + tesseract
-//   + the Gemini API call keeps the Go binary clean.
+//   + the LLM API call keeps the Go binary clean.
 //
 // Auth and SSRF validation stay here in Go because:
 //   - The ocr-service is internal (only reachable from the backend network).

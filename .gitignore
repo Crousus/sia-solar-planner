@@ -17,3 +17,5 @@ ocr-service/.env
 # Python bytecode
 __pycache__/
 *.pyc
+# Root .env is read by docker compose for ${VAR} substitution (AI API keys).
+.env

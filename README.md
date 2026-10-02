@@ -17,7 +17,7 @@
 | **Block diagram** | Electrical single-line canvas (React Flow) bootstrapped from roof/inverter data |
 | **PDF export** | A4 landscape, two pages: roof plan + block diagram (rendered server-side by `pdf-service`) |
 | **Team sync** | Real-time multi-user sync via PocketBase SSE; optimistic concurrency, automatic merge of non-overlapping edits, conflict UI for true conflicts |
-| **Datasheet import** | Upload an inverter/panel PDF — OCR + Gemini extract specs automatically |
+| **Datasheet import** | Upload an inverter/panel PDF — OCR + DeepSeek extract specs automatically |
 | **i18n** | English and German |
 
 ---
@@ -36,7 +36,7 @@ This starts (all ports bound to `127.0.0.1`):
 - **Frontend** on port `5173` (Vite, hot-reload)
 - **Backend** on port `8090` (PocketBase + custom Go handlers)
 - **PDF service** on port `3002` (Node + @react-pdf/renderer)
-- **OCR sidecar** on port `8001` (FastAPI + Tesseract + Gemini; needs `GEMINI_API_KEY` for datasheet import)
+- **OCR sidecar** on port `8001` (FastAPI + Tesseract + DeepSeek; needs `DEEPSEEK_API_KEY` for datasheet import — put it in a root `.env`, see `ocr-service/.env.example`)
 
 PocketBase admin UI: [http://127.0.0.1:8090/_/](http://127.0.0.1:8090/_/)
 
@@ -77,7 +77,7 @@ Open [http://localhost:5173](http://localhost:5173).
 | State | Zustand (in-memory; custom delta undo/redo middleware) |
 | PDF | html-to-image capture in the browser + @react-pdf/renderer in `pdf-service` |
 | Backend | PocketBase v0.40 (custom Go binary) |
-| OCR | FastAPI + pdfminer + Tesseract + Gemini Flash Lite |
+| OCR | FastAPI + pdfminer + Tesseract + DeepSeek (`deepseek-flash`, optional Groq fallback) |
 | i18n | i18next + react-i18next |
 
 ---

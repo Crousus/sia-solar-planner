@@ -85,8 +85,7 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
     onChange(v === '' ? null : v);
   }
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleCreate() {
     if (!newName.trim() || creating) return;
     setCreating(true);
     setCreateError(null);
@@ -127,7 +126,28 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
         className="rounded-lg p-3 space-y-2 mt-1"
         style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--hairline)' }}
       >
-        <form onSubmit={handleCreate} className="space-y-2">
+        {/*
+          NOT a <form>: this picker renders inside ProjectMetaForm's <form>,
+          and nested forms are invalid HTML — the browser drops the inner
+          tag, so "Add customer" (and Enter) submitted the OUTER project
+          form and no customer was ever created. A plain group with an
+          explicit click handler + Enter interception keeps the two flows
+          independent.
+        */}
+        <div
+          role="group"
+          aria-label={t('customer.createNew')}
+          className="space-y-2"
+          onKeyDown={(e) => {
+            // Enter in a single-line field means "add this customer", not
+            // "create the project". Textarea keeps Enter for newlines.
+            if (e.key === 'Enter' && !(e.target instanceof HTMLTextAreaElement)) {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleCreate();
+            }
+          }}
+        >
           <label className="block">
             <span className="field-label">{t('customer.name')}</span>
             <input
@@ -135,7 +155,7 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder={t('customer.namePlaceholder')}
-              required
+              aria-required="true"
               maxLength={200}
               autoFocus
             />
@@ -188,7 +208,8 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
           )}
           <div className="flex gap-2 pt-1">
             <button
-              type="submit"
+              type="button"
+              onClick={() => void handleCreate()}
               disabled={!newName.trim() || creating}
               className="btn btn-primary"
               style={{ padding: '8px 14px', fontSize: 13 }}
@@ -204,7 +225,7 @@ export default function CustomerPicker({ teamId, value, onChange }: Props) {
               {t('customer.cancel')}
             </button>
           </div>
-        </form>
+        </div>
       </div>
     );
   }

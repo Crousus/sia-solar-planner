@@ -24,10 +24,13 @@ services:
       context: ./ocr-service
       dockerfile: Dockerfile
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      # Keys come from the shell or a root .env (gitignored). DEEPSEEK is
+      # required for datasheet import; compose warns when it's unset.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      # Optional fallback for transient DeepSeek failures; empty = disabled.
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
       # Override models here if needed:
-      # - GEMINI_MODEL=gemini-2.5-flash-preview-04-17
+      # - DEEPSEEK_MODEL=deepseek-flash
       # - GROQ_MODEL=llama-3.3-70b-versatile
     restart: unless-stopped
     # Internal only — no host port exposure needed.

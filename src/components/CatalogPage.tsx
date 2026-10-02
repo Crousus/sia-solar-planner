@@ -736,7 +736,7 @@ function PanelsTab(p: PanelsTabProps) {
                   </a>
                 )}
                 {/* Import button: downloads the PDF, OCRs it, sends the
-                    text to Gemini, and auto-fills the numeric fields. */}
+                    text to the LLM (DeepSeek), and auto-fills the numeric fields. */}
                 {p.form.datasheetUrl.trim() && (
                   <button
                     type="button"
