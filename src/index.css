@@ -94,6 +94,19 @@
      [data-pdf-export] this swaps to solid white so the printed PDF
      gets clean light surfaces inside the violet outline. */
   --fre-bg: rgba(0, 0, 0, 0.30);
+
+  /* IEC symbol ink — the 'iec' block-diagram symbol style (ADR-020,
+     export only). Solid rather than alpha so overlapping strokes (box +
+     diagonal, stub + symbol) don't print darker at the joints; under
+     [data-pdf-export] it matches the printed edge tone (0.7 black on
+     white = #4d4d4d). */
+  --iec-ink: rgba(255, 255, 255, 0.7);
+
+  /* Edge-label chip on the block diagram (EditableSmoothStepEdge). A
+     token so the print theme can turn it into a white chip — hard-coded
+     dark, it printed as a black box under dark PDF text. */
+  --edge-chip-bg: rgba(17, 17, 19, 0.9);
+  --edge-chip-border: rgba(255, 255, 255, 0.14);
 }
 
 /* ── Global resets ────────────────────────────────────────────────────── */
@@ -396,6 +409,11 @@ html, body, #root {
   /* FRE node background fill — flat white inside the violet outline so
      the case body and display read as printable surfaces on paper. */
   --fre-bg: #ffffff;
+
+  --iec-ink: #4d4d4d;
+
+  --edge-chip-bg: #ffffff;
+  --edge-chip-border: rgba(0, 0, 0, 0.18);
 }
 
 /* Sheet background — flat white with a soft gray dot grid that echoes
@@ -424,6 +442,10 @@ html, body, #root {
    on paper, visually noisy at every node edge. */
 [data-pdf-export] .react-flow__handle {
   opacity: 0 !important;
+  /* Connected handles fade via a 120 ms opacity transition (DiagramCanvas);
+     the capture runs ~2 frames after this attribute is set, i.e. mid-fade,
+     which left half-visible colored dots on every wire end in the PDF. */
+  transition: none !important;
 }
 
 /* React Flow's built-in dot-grid background — the editor draws it in

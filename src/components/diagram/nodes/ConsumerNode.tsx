@@ -53,6 +53,7 @@ import { useMemo } from 'react';
 import { Handle, Position, useNodeConnections, useReactFlow } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
+import { useDiagramSymbolStyle } from '../symbolStyle';
 
 type ConsumerNodeType = Node<DiagramNodeData, 'consumer'>;
 
@@ -114,6 +115,7 @@ const DOOR_TOP_Y = GROUND_Y - DOOR_H;            // 58
 
 export default function ConsumerNode({ id, data, selected }: NodeProps<ConsumerNodeType>) {
   const { updateNodeData } = useReactFlow();
+  const iec = useDiagramSymbolStyle() === 'iec';
 
   // Mirror FreNode/SwitchNode/BaseNode connected-handle tracking so a
   // pin stays visible whenever it carries a wire, regardless of hover.
@@ -181,6 +183,7 @@ export default function ConsumerNode({ id, data, selected }: NodeProps<ConsumerN
         style={{ ...handleStyle, top: PIN_Y }}
       />
 
+      {iec ? <IecConsumerSymbol connected={connectedHandleIds} /> : (
       <svg
         width={SYMBOL_W}
         height={SYMBOL_H}
@@ -288,6 +291,7 @@ export default function ConsumerNode({ id, data, selected }: NodeProps<ConsumerN
           fill="none"
         />
       </svg>
+      )}
 
       {/* Editable name — same absolute-positioned pattern as
           FreNode + SwitchNode. No type caption inside the symbol:
@@ -322,5 +326,35 @@ export default function ConsumerNode({ id, data, selected }: NodeProps<ConsumerN
         {data.label}
       </div>
     </div>
+  );
+}
+
+/**
+ * IEC style (ADR-020): IEC 60617 has no "house" symbol; a load is drawn as
+ * the general component rectangle, identified by its designation (the
+ * label to the right). Same 112 × 90 box and pin height as the house, so
+ * attached wires don't move. Pins (connected sides only) run 5 px past the
+ * box to where React Flow ends the edge.
+ */
+function IecConsumerSymbol({ connected }: { connected: ReadonlySet<string> }) {
+  const half = 22;
+  return (
+    <svg
+      width={SYMBOL_W}
+      height={SYMBOL_H}
+      viewBox={`0 0 ${SYMBOL_W} ${SYMBOL_H}`}
+      overflow="visible"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      style={{ color: 'var(--iec-ink)', display: 'block' }}
+    >
+      {/* Pins only where a wire attaches. */}
+      {connected.has('left') && <line x1={-5} y1={PIN_Y} x2={SYMBOL_W / 2 - half} y2={PIN_Y} />}
+      {connected.has('right') && (
+        <line x1={SYMBOL_W / 2 + half} y1={PIN_Y} x2={SYMBOL_W + 5} y2={PIN_Y} />
+      )}
+      <rect x={SYMBOL_W / 2 - half} y={PIN_Y - half} width={half * 2} height={half * 2} />
+    </svg>
   );
 }

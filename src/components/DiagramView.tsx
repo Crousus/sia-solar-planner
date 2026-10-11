@@ -46,6 +46,7 @@ import { useTranslation } from 'react-i18next';
 import { useProjectStore } from '../store/projectStore';
 import DiagramCanvas from './diagram/DiagramCanvas';
 import DiagramMetaTable from './diagram/DiagramMetaTable';
+import { DiagramSymbolStyleContext, type DiagramSymbolStyle } from './diagram/symbolStyle';
 
 // A4 landscape at 96 dpi: 297mm × 210mm → 1122×794 px.
 // Extracted as constants so they're discoverable from a single place if
@@ -112,9 +113,18 @@ interface DiagramViewProps {
    */
   exportMode?: boolean;
   onReady?: () => void;
+  /**
+   * Node drawing style. The editor always uses 'app'; the exporter can
+   * render an offscreen copy with 'iec' standard symbols (ADR-020).
+   */
+  symbolStyle?: DiagramSymbolStyle;
 }
 
-export default function DiagramView({ exportMode = false, onReady }: DiagramViewProps = {}) {
+export default function DiagramView({
+  exportMode = false,
+  onReady,
+  symbolStyle = 'app',
+}: DiagramViewProps = {}) {
   const { t } = useTranslation();
   // Bootstrap on first mount — if the project doesn't yet have a diagram
   // (e.g. legacy projects created before this feature), the store action
@@ -249,7 +259,9 @@ export default function DiagramView({ exportMode = false, onReady }: DiagramView
               flex escape hatch so the child isn't stretched by its
               intrinsic content height. */}
           <div className="flex-1 min-h-0">
-            <DiagramCanvas exportMode={exportMode} onReady={onReady} />
+            <DiagramSymbolStyleContext.Provider value={symbolStyle}>
+              <DiagramCanvas exportMode={exportMode} onReady={onReady} />
+            </DiagramSymbolStyleContext.Provider>
           </div>
 
           <DiagramMetaTable />

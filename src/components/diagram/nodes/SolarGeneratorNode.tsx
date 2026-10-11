@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
+import { IecPvGenerator } from './IecSymbols';
 
 // React Flow v12's `NodeProps<T>` expects T to be the full Node type, not
 // just the data payload. Wrap our data shape in `Node<...>` so the generic
@@ -58,6 +59,7 @@ export default function SolarGeneratorNode({ id, data, selected }: NodeProps<Sol
       color="#f59e0b"
       typeLabel={t('diagram.nodes.solarGenerator')}
       icon={<SunIcon />}
+      iecGlyph={IecPvGenerator}
     />
   );
 }

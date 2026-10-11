@@ -42,6 +42,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDiagramSymbolStyle } from '../symbolStyle';
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -62,6 +63,7 @@ export default function EditableSmoothStepEdge({
   selected,
 }: EdgeProps) {
   const { t } = useTranslation();
+  const symbolStyle = useDiagramSymbolStyle();
   // Persistent label offset in flow-space pixels. Read from edge.data so
   // it round-trips through the store. Fallback to 0/0 for edges that
   // predate the feature.
@@ -89,7 +91,9 @@ export default function EditableSmoothStepEdge({
       getSmoothStepPath({
         sourceX, sourceY, targetX, targetY,
         sourcePosition, targetPosition,
-        borderRadius: 8,
+        // Square corners in the IEC symbol style — schematic conductors
+        // turn sharply (ADR-020).
+        borderRadius: symbolStyle === 'iec' ? 0 : 8,
         // Default offset is 20 flow-px — smoothstep travels that far out of
         // each handle before turning. When two handles are closer than
         // ~2×offset (e.g. a fuse sitting directly below a generator), the
@@ -290,7 +294,9 @@ function chipStyle(selected: boolean | undefined, editable: boolean): React.CSSP
     fontWeight: 500,
     letterSpacing: '0.02em',
     color: editable ? 'var(--ink-50)' : 'var(--ink-100)',
-    background: 'rgba(17, 17, 19, 0.9)',
+    // Tokens (index.css) so the [data-pdf-export] print theme can swap in
+    // a white chip.
+    background: 'var(--edge-chip-bg)',
     padding: '2px 6px',
     borderRadius: 4,
     border: `1px solid ${
@@ -298,7 +304,7 @@ function chipStyle(selected: boolean | undefined, editable: boolean): React.CSSP
         ? 'rgba(255,255,255,0.28)'
         : selected
           ? 'var(--sun-400)'
-          : 'rgba(255,255,255,0.14)'
+          : 'var(--edge-chip-border)'
     }`,
     boxShadow: '0 2px 6px -2px rgba(0,0,0,0.6)',
     outline: 'none',

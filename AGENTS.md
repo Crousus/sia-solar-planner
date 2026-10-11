@@ -121,7 +121,7 @@ There are no linters configured. Typecheck + `npm run build` + `npx vitest run` 
 
 ADRs live in `adr/`, named `ADR-NNN-short-description.md`. Create one whenever you introduce a new system-wide pattern, change the data model significantly, or implement a complex requirement not self-evident from the code. Fields: **Status**, **Date**, **Requirement**, **Context**, **Decision**, **Consequences**. When a later ADR replaces part of an earlier one, update the earlier one's **Status** line (e.g. ADR-014 → ADR-015).
 
-Most relevant to current architecture: ADR-015 (delta undo, no localStorage), ADR-016 (sync baseline + rebase), ADR-017 (API security model), ADR-018 (offscreen PDF export, local diagram view state), ADR-019 (snap to edges detected in the satellite image).
+Most relevant to current architecture: ADR-015 (delta undo, no localStorage), ADR-016 (sync baseline + rebase), ADR-017 (API security model), ADR-018 (offscreen PDF export, local diagram view state), ADR-019 (snap to edges detected in the satellite image), ADR-020 (IEC symbols for the block diagram on export).
 
 ## Project layout
 
@@ -233,13 +233,16 @@ src/
     ├── diagram/
     │   ├── DiagramCanvas.tsx    # <ReactFlow>; document nodes/edges from the store,
     │   │                        #   selection/measured/drag in local state
+    │   ├── symbolStyle.ts       # 'app' | 'iec' render style via context (ADR-020)
     │   ├── diagramChanges.ts    # Pure split of React Flow changes: persistent vs ephemeral
     │   ├── DiagramMetaTable.tsx # Editable title-block table; persists to diagram.meta
     │   ├── edges/
     │   │   └── EditableSmoothStepEdge.tsx  # Smoothstep edge with in-place editable label
     │   └── nodes/
     │       ├── BaseNode.tsx         # Shared rounded-rect shell: colored header, 4 handles,
-    │       │                        #   contentEditable label via useReactFlow().updateNodeData()
+    │       │                        #   contentEditable label via useReactFlow().updateNodeData();
+    │       │                        #   IEC overlay in the 'iec' style
+    │       ├── IecSymbols.tsx       # IEC 60617 glyphs for the export-only 'iec' style
     │       ├── SolarGeneratorNode.tsx   # amber #f59e0b
     │       ├── InverterNode.tsx         # blue #3b82f6
     │       ├── SwitchNode.tsx           # slate #64748b
@@ -249,7 +252,7 @@ src/
     │       ├── GridOutputNode.tsx       # sky #0ea5e9
     │       └── ConsumerNode.tsx         # rose #e11d48 (house / on-site load)
     ├── Toolbar.tsx              # Top bar: lock, tool modes, add-diagram-node buttons, undo/redo,
-    │                            #   PDF export, JSON save/load
+    │                            #   PDF export menu (app design / IEC symbols), JSON save/load
     ├── Sidebar.tsx              # Panel type, inverters, strings, roof props; view toggle
     ├── MapView.tsx              # react-leaflet + MapLockSync + pre-lock rotation preview
     ├── CompassWidget.tsx        # North-arrow overlay; rotates with stage rotation
@@ -359,6 +362,8 @@ Undo applies the inverse delta to the **current** state (ADR-015): a field is re
 
 **View state is local (ADR-018):** `diagramChanges.ts` routes React Flow changes — selection, `measured` dimensions and in-progress drag positions stay in `DiagramCanvas` local state; only drag end, add, remove and data edits reach the store. `setDiagramNodes`/`setDiagramEdges` and `migrateProject` strip transient keys (`selected`, `dragging`, `measured`, …) as a safety net.
 
+**Symbol style (ADR-020):** nodes render in the `'app'` style while editing; the Export menu can print the diagram with IEC 60617 symbols instead (`'iec'`, provided via `DiagramSymbolStyleContext` by `DiagramView`'s `symbolStyle` prop). The IEC drawing reuses each node's box (chip content kept as an invisible sizer), so positions, handles and edges are unchanged. A new node type needs an IEC glyph too (`iecGlyph` on `BaseNode`, or a variant in its own SVG).
+
 **Node types:** Eight custom nodes wrapping `BaseNode.tsx` (`solarGenerator`, `inverter`, `switch`, `fuse`, `battery`, `fre`, `gridOutput`, `consumer`); edges use `EditableSmoothStepEdge`. React Flow v12 pattern: `NodeProps<Node<DiagramNodeData, 'solarGenerator'>>` — NOT the v11 form. "Add node" buttons live in `Toolbar.tsx` (diagram view).
 
 **Bootstrap:** `bootstrapDiagram()` is idempotent — exits if `project.diagram` exists. Creates one `solarGenerator` per Roof and one `inverter` per Inverter; no edges auto-created.
@@ -367,6 +372,7 @@ Undo applies the inverse delta to the **current** state (ADR-015): a field is re
 
 `exportPdf` in `src/pdf/pdfExport.tsx` (loaded by `Toolbar.tsx` via dynamic `import()`) always produces both pages when both have content (ADR-018):
 
+0. The Export button opens a menu: app design or standard symbols (ADR-020). The IEC choice always renders the diagram page offscreen with `symbolStyle="iec"`.
 1. Per page, use the mounted element if it's on screen (keeps the user's pan/zoom); otherwise render it offscreen via `withOffscreenRoot`: `KonvaExportFrame` (roof plan; needs a locked map) or `<DiagramView exportMode onReady>` (needs ≥ 1 node). The temporary root waits for `onReady` (6 s timeout) and is always torn down in `finally`.
 2. Capture: Konva via `captureStage` (`stage.toCanvas`, html2canvas fallback) + `composeWithGrid`; `PlanPageFrame` and the diagram sheet via `captureDiagramView` (`html-to-image`, plus text runs for selectable PDF text).
 3. POST the payload (PNG/JPEG data URIs + strings + branding) to `/pdf/render`; `pdf-service` renders `SolarPlanDoc.tsx` and returns the PDF.

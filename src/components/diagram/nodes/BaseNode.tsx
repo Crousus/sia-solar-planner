@@ -57,6 +57,8 @@
 import { useMemo } from 'react';
 import { Handle, Position, useNodeConnections, useReactFlow } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
+import { useDiagramSymbolStyle } from '../symbolStyle';
+import { IEC_GLYPH_SIZE, type IecGlyph } from './IecSymbols';
 
 interface BaseNodeProps {
   id: string;
@@ -68,6 +70,13 @@ interface BaseNodeProps {
   typeLabel: string;
   /** SVG icon rendered in the accent swatch — the type-specific iconography. */
   icon: React.ReactNode;
+  /** IEC 60617 symbol drawn instead of the chip in the 'iec' symbol style
+   *  (export only, ADR-020). */
+  iecGlyph: IecGlyph;
+  /** Extra designation line above the label in the IEC style — for nodes
+   *  whose header carries a user-given name (the inverter's name) rather
+   *  than a generic type caption the symbol already conveys. */
+  iecDesignation?: string;
 }
 
 // Four handles — one on each side. All typed as `source` so users can drag
@@ -88,8 +97,11 @@ export default function BaseNode({
   color,
   typeLabel,
   icon,
+  iecGlyph,
+  iecDesignation,
 }: BaseNodeProps) {
   const { updateNodeData } = useReactFlow();
+  const iec = useDiagramSymbolStyle() === 'iec';
 
   // Which of our four handles currently have an edge attached. Handles in
   // this set stay visible regardless of hover state — the CSS below keys
@@ -112,7 +124,16 @@ export default function BaseNode({
     // so idle nodes read as clean chips without dangling pins.
     <div
       className="relative diagram-node"
-      style={{
+      // IEC style: the chip turns into an invisible sizer (below) so the
+      // node keeps EXACTLY the same box — same handle positions, same
+      // edge routing, same snap-grid centre — and only the drawing
+      // changes. No chip paint: transparent fill, transparent 1px border
+      // (kept so the box doesn't shrink by 2 px), no accent shadow.
+      style={iec ? {
+        minWidth: 156,
+        border: '1px solid transparent',
+        borderRadius: 6,
+      } : {
         // Dark chip body, lifted two steps above the --ink-950 surround
         // (roughly --ink-600 → --ink-700 gradient, fully opaque) so the
         // node reads as a distinct card rather than a ghost on the canvas.
@@ -160,6 +181,20 @@ export default function BaseNode({
         />
       ))}
 
+      {iec && (
+        <IecOverlay
+          glyph={iecGlyph}
+          connected={connectedHandleIds}
+          designation={iecDesignation}
+          label={data.label}
+          sublabel={data.sublabel}
+        />
+      )}
+
+      {/* Chip content. In IEC style it stays laid out but invisible: it is
+          what gives the node its (label-dependent) size. visibility:hidden
+          also keeps it out of the PDF text-extraction pass. */}
+      <div style={iec ? { visibility: 'hidden' } : undefined}>
       {/* Header row — small accent swatch (icon) + JetBrains Mono type label.
           Hairline separator below. Sits inside the 3px left-bar rule. */}
       <div
@@ -235,6 +270,114 @@ export default function BaseNode({
           </div>
         )}
       </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * IEC-style drawing for a chip node: the symbol centred in the node box,
+ * conductor stubs from every CONNECTED handle (box edge midpoint) to the
+ * symbol, and the designation to the right of the symbol — label above the
+ * horizontal centre line, sublabel below it, so a wire entering from the
+ * right runs between them instead of through the text. Diagrams mostly
+ * flow top → bottom, which keeps the right-hand side free for text.
+ *
+ * Stubs are CSS boxes (not SVG lines) because their length depends on the
+ * node's measured size, which `calc()` can express and SVG attributes can't.
+ */
+function IecOverlay({
+  glyph: Glyph,
+  connected,
+  designation,
+  label,
+  sublabel,
+}: {
+  glyph: IecGlyph;
+  connected: ReadonlySet<string>;
+  designation?: string;
+  label: string;
+  sublabel?: string;
+}) {
+  const half = IEC_GLYPH_SIZE / 2;
+  // React Flow ends an edge at the handle's OUTER edge, and the 10 px
+  // handle is centred on the box edge, so the wire stops 5 px outside the
+  // box. Stubs start there so wire and stub meet without a gap.
+  const H = 5;
+  const stub = `calc(50% - ${half - H}px)`;
+  const W = 2; // matches the edge strokeWidth
+  // Axial symbols (fuse, battery) lie along the wiring: horizontal when
+  // the node is only wired from the sides.
+  const horizontal =
+    (connected.has('left') || connected.has('right')) &&
+    !connected.has('top') &&
+    !connected.has('bottom');
+  const line: React.CSSProperties = { position: 'absolute', background: 'currentColor' };
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        position: 'absolute',
+        inset: 0, // the padding box — the frame React Flow positions handles in
+        pointerEvents: 'none',
+        color: 'var(--iec-ink)',
+      }}
+    >
+      {connected.has('top') && (
+        <div style={{ ...line, left: `calc(50% - ${W / 2}px)`, top: -H, width: W, height: stub }} />
+      )}
+      {connected.has('bottom') && (
+        <div style={{ ...line, left: `calc(50% - ${W / 2}px)`, bottom: -H, width: W, height: stub }} />
+      )}
+      {connected.has('left') && (
+        <div style={{ ...line, top: `calc(50% - ${W / 2}px)`, left: -H, height: W, width: stub }} />
+      )}
+      {connected.has('right') && (
+        <div style={{ ...line, top: `calc(50% - ${W / 2}px)`, right: -H, height: W, width: stub }} />
+      )}
+      <div
+        style={{
+          position: 'absolute',
+          left: `calc(50% - ${half}px)`,
+          top: `calc(50% - ${half}px)`,
+          width: IEC_GLYPH_SIZE,
+          height: IEC_GLYPH_SIZE,
+        }}
+      >
+        <Glyph horizontal={horizontal} />
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          left: `calc(50% + ${half + 6}px)`,
+          bottom: 'calc(50% + 3px)',
+          whiteSpace: 'nowrap',
+          fontFamily: "'Geist', ui-sans-serif, system-ui, sans-serif",
+          fontSize: 11,
+          fontWeight: 600,
+          lineHeight: 1.2,
+          color: 'var(--ink-50)',
+        }}
+      >
+        {designation && <div>{designation}</div>}
+        <div style={designation ? { fontWeight: 400 } : undefined}>{label}</div>
+      </div>
+      {sublabel && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `calc(50% + ${half + 6}px)`,
+            top: 'calc(50% + 3px)',
+            whiteSpace: 'nowrap',
+            fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+            fontSize: 9.5,
+            lineHeight: 1.2,
+            color: 'var(--ink-300)',
+          }}
+        >
+          {sublabel}
+        </div>
+      )}
     </div>
   );
 }

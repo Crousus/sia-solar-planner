@@ -230,7 +230,14 @@ export function SolarPlanDoc({
                     position: 'absolute',
                     left: offsetX + t.x * pxToPt,
                     top:  offsetY + t.y * pxToPt,
-                    width: t.width * pxToPt,
+                    // Helvetica (bold especially) sets wider than the
+                    // on-screen Geist the width was measured in, so a box
+                    // of exactly that width wrapped single-line labels
+                    // ("Hausver-/brauch"). Left-aligned runs get slack —
+                    // extra width there only matters if the text would
+                    // otherwise wrap; centred/right-aligned runs keep the
+                    // exact box, which their alignment depends on.
+                    width: t.width * pxToPt * (t.textAlign === 'left' ? 1.2 : 1),
                     fontSize: t.fontSize * pxToPt,
                     fontFamily,
                     color: t.color,

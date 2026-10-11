@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
+import { IecGrid } from './IecSymbols';
 
 // React Flow v12's `NodeProps<T>` takes the full Node type — wrap our data
 // shape in `Node<...>` to satisfy the `Record<string, unknown>` constraint.
@@ -53,6 +54,7 @@ export default function GridOutputNode({ id, data, selected }: NodeProps<GridOut
       color="#0ea5e9"
       typeLabel={t('diagram.nodes.gridOutput')}
       icon={<GridIcon />}
+      iecGlyph={IecGrid}
     />
   );
 }

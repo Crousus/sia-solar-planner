@@ -55,13 +55,14 @@ const prefetchPdfExport = () => {
 };
 import { KonvaExportFrame } from './KonvaOverlay';
 import DiagramView from './DiagramView';
+import type { DiagramSymbolStyle } from './diagram/symbolStyle';
 import {
   serializeProject,
   deserializeProject,
   ProjectDeserializationError,
 } from '../utils/projectSerializer';
 import html2canvas from 'html2canvas';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ToolMode, DiagramNodeType, MapProvider } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
@@ -242,6 +243,27 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
   // double-fired — harmless but wasteful (two captures, second wins).
   const [isLocking, setIsLocking] = useState(false);
 
+  // Export menu: the user picks the block-diagram symbol style per export
+  // (app design vs. IEC 60617 standard symbols, ADR-020). Closed by an
+  // outside click or Escape.
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!exportMenuRef.current?.contains(e.target as Node)) setExportMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExportMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [exportMenuOpen]);
+
   /**
    * Lock/unlock handler.
    *
@@ -331,7 +353,8 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
     }
   };
 
-  const handleExport = async () => {
+  const handleExport = async (symbolStyle: DiagramSymbolStyle) => {
+    setExportMenuOpen(false);
     // The PDF always gets BOTH pages (roof plan + block diagram) when the
     // project has material for them, regardless of which view is active.
     // App mounts only one view at a time, so for the other page we hand
@@ -356,7 +379,13 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
     // Mounted sources. `.konva-overlay` only counts on the roof view.
     const stageEl =
       activeView === 'roof' ? (document.querySelector('.konva-overlay') as HTMLElement | null) : null;
-    const diagramEl = document.querySelector('[data-diagram-view]') as HTMLElement | null;
+    // The on-screen diagram is always drawn in the app style, so for the
+    // IEC style the page is rendered offscreen instead (fitted to the
+    // nodes rather than the user's current pan/zoom).
+    const diagramEl =
+      symbolStyle === 'app'
+        ? (document.querySelector('[data-diagram-view]') as HTMLElement | null)
+        : null;
 
     // Offscreen recipes for whichever page isn't mounted.
     const ms = project.mapState;
@@ -377,7 +406,9 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
             // give it room so nothing reflows. Only the sheet is captured.
             width: 1200,
             height: 900,
-            render: (onReady: () => void) => <DiagramView exportMode onReady={onReady} />,
+            render: (onReady: () => void) => (
+              <DiagramView exportMode onReady={onReady} symbolStyle={symbolStyle} />
+            ),
           }
         : undefined;
 
@@ -833,9 +864,10 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
 
         <div className="divider-v mx-1" />
 
+        <div className="relative" ref={exportMenuRef}>
         <button
           className="btn btn-ghost"
-          onClick={handleExport}
+          onClick={() => setExportMenuOpen((o) => !o)}
           // Warm the lazy export chunk on intent (hover or keyboard focus)
           // so the @react-pdf/renderer bundle is already in cache by the
           // time the user actually clicks. Idempotent — no harm if the
@@ -843,6 +875,8 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           onMouseEnter={prefetchPdfExport}
           onFocus={prefetchPdfExport}
           title={t('toolbar.exportTitle')}
+          aria-haspopup="menu"
+          aria-expanded={exportMenuOpen}
         >
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
             <path
@@ -854,7 +888,34 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
             />
           </svg>
           <span>{t('toolbar.export')}</span>
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
+        {exportMenuOpen && (
+          <div
+            role="menu"
+            className="surface absolute right-0 top-full mt-2 p-1 rounded-lg flex flex-col gap-0.5"
+            // Above Leaflet's panes/controls (z 400–1000) on the map below.
+            style={{ zIndex: 2000, width: 280 }}
+          >
+            {([
+              ['app', 'toolbar.exportAppStyle', 'toolbar.exportAppStyleHint'],
+              ['iec', 'toolbar.exportIec', 'toolbar.exportIecHint'],
+            ] as const).map(([style, label, hint]) => (
+              <button
+                key={style}
+                role="menuitem"
+                className="surface-row rounded-md text-left px-3 py-2"
+                onClick={() => void handleExport(style)}
+              >
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink-50)' }}>{t(label)}</div>
+                <div style={{ fontSize: 11, color: 'var(--ink-300)', marginTop: 2 }}>{t(hint)}</div>
+              </button>
+            ))}
+          </div>
+        )}
+        </div>
 
         {/*
           Undo / Redo — sit here, between Export and Save, because they're

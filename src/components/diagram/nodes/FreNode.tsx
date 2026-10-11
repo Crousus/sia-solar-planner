@@ -65,6 +65,7 @@ import { useMemo } from 'react';
 import { Handle, Position, useNodeConnections, useReactFlow } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
+import { useDiagramSymbolStyle } from '../symbolStyle';
 
 type FreNodeType = Node<DiagramNodeData, 'fre'>;
 
@@ -102,6 +103,7 @@ const PIN_Y = SYMBOL_H / 2;
 
 export default function FreNode({ id, data, selected }: NodeProps<FreNodeType>) {
   const { updateNodeData } = useReactFlow();
+  const iec = useDiagramSymbolStyle() === 'iec';
 
   // Track which handles currently carry an edge so we can keep their
   // pin dots visible regardless of hover state. Same pattern the chip
@@ -169,6 +171,7 @@ export default function FreNode({ id, data, selected }: NodeProps<FreNodeType>) 
         style={{ ...handleStyle, top: PIN_Y }}
       />
 
+      {iec ? <IecFreSymbol connected={connectedHandleIds} /> : (
       <svg
         width={SYMBOL_W}
         height={SYMBOL_H}
@@ -376,6 +379,7 @@ export default function FreNode({ id, data, selected }: NodeProps<FreNodeType>) 
           fill="none"
         />
       </svg>
+      )}
 
       {/* Editable name — same absolute-positioned pattern as
           SwitchNode. No type caption: "FRE" inside the display is the
@@ -408,5 +412,59 @@ export default function FreNode({ id, data, selected }: NodeProps<FreNodeType>) 
         {data.label}
       </div>
     </div>
+  );
+}
+
+/**
+ * IEC style (ADR-020): the receiver as a plain device rectangle with the
+ * IEC 60617 antenna symbol (mast + inverted triangle) on top, an output
+ * relay contact inside, and "FRE" as the designation. Same 160 × 84 box
+ * and pin height as the app drawing, so attached wires don't move. Pins
+ * (connected sides only) run 5 px past the box to where React Flow ends
+ * the edge.
+ */
+function IecFreSymbol({ connected }: { connected: ReadonlySet<string> }) {
+  return (
+    <svg
+      width={SYMBOL_W}
+      height={SYMBOL_H}
+      viewBox={`0 0 ${SYMBOL_W} ${SYMBOL_H}`}
+      overflow="visible"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      style={{ color: 'var(--iec-ink)', display: 'block' }}
+    >
+      {/* Pins only where a wire attaches — a dangling lead reads as an
+          open conductor on a schematic. */}
+      {connected.has('left') && <line x1={-5} y1={PIN_Y} x2={20} y2={PIN_Y} />}
+      {connected.has('right') && <line x1={140} y1={PIN_Y} x2={SYMBOL_W + 5} y2={PIN_Y} />}
+      <rect x={20} y={1} width={120} height={82} />
+      {/* Antenna: mast from the case top + inverted triangle. */}
+      <line x1={80} y1={1} x2={80} y2={-26} />
+      <path d="M70 -36 L90 -36 L80 -24 Z" strokeLinejoin="miter" />
+      {/* Output relay: make contact (open), lever hinged on the lower lead. */}
+      <g strokeWidth={1.6}>
+        <line x1={44} y1={16} x2={44} y2={34} />
+        <line x1={44} y1={52} x2={36} y2={36} strokeLinecap="round" />
+        <line x1={44} y1={52} x2={44} y2={68} />
+      </g>
+      <text
+        x={98}
+        y={PIN_Y}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="currentColor"
+        stroke="none"
+        style={{
+          fontFamily: "'Geist', ui-sans-serif, system-ui, sans-serif",
+          fontSize: 16,
+          fontWeight: 600,
+          letterSpacing: '0.08em',
+        }}
+      >
+        FRE
+      </text>
+    </svg>
   );
 }

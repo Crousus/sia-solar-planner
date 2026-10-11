@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
 import BaseNode from './BaseNode';
+import { IecBattery } from './IecSymbols';
 
 // React Flow v12's `NodeProps<T>` takes the full Node type — wrap our data
 // shape in `Node<...>` to satisfy the `Record<string, unknown>` constraint.
@@ -51,6 +52,7 @@ export default function BatteryNode({ id, data, selected }: NodeProps<BatteryNod
       color="#10b981"
       typeLabel={t('diagram.nodes.battery')}
       icon={<BatteryIcon />}
+      iecGlyph={IecBattery}
     />
   );
 }

@@ -101,6 +101,7 @@ import { useTranslation } from 'react-i18next';
 import { Handle, Position, useNodeConnections, useReactFlow } from '@xyflow/react';
 import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData } from '../../../types';
+import { useDiagramSymbolStyle } from '../symbolStyle';
 
 type SwitchNodeType = Node<DiagramNodeData, 'switch'>;
 
@@ -162,6 +163,7 @@ export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeT
   // `updateNode` is needed for rotate because we must patch position +
   // data atomically (one keep-centre nudge, one rotation step).
   const { updateNode, updateNodeData } = useReactFlow();
+  const iec = useDiagramSymbolStyle() === 'iec';
 
   // Pull rotation off `data` defensively. Pre-rotation saves have no
   // `rotation` key at all → treat as 0. A malformed value (e.g. someone
@@ -331,11 +333,31 @@ export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeT
           // capture time alongside the edge stroke (data-switch-symbol is
           // the hook for that swap) — keeps editor and print views unified.
           overflow="visible"
-          data-switch-symbol="true"
-          style={{ color: 'rgba(255, 255, 255, 0.6)', display: 'block' }}
+          // IEC style inks via --iec-ink (solid, matches the printed edge
+          // tone through the [data-pdf-export] swap), so it opts out of the
+          // capture-time inline color swap keyed on data-switch-symbol.
+          data-switch-symbol={iec ? undefined : 'true'}
+          style={{ color: iec ? 'var(--iec-ink)' : 'rgba(255, 255, 255, 0.6)', display: 'block' }}
           fill="currentColor"
           stroke="currentColor"
         >
+          {iec ? (
+            // IEC 60617 disconnector (Trennschalter), open: conductor from
+            // the top end to the fixed contact, which carries the short
+            // perpendicular disconnector bar; moving contact hinged on the
+            // bottom conductor and swung ~27° clear of the fixed contact.
+            // No contact dots — those are the app style's illustration.
+            // The conductors run 5 px past the box (overflow: visible) to
+            // where React Flow ends the attached edge (outer edge of the
+            // 10 px handle), so the printed wire is continuous.
+            <g fill="none" strokeWidth={2} strokeLinecap="butt">
+              <line x1={25} y1={-5} x2={25} y2={44} />
+              <line x1={19} y1={44} x2={31} y2={44} />
+              <line x1={25} y1={72} x2={12} y2={46} strokeLinecap="round" />
+              <line x1={25} y1={71} x2={25} y2={SYMBOL_H + 5} />
+            </g>
+          ) : (
+          <>
           {/* Top wire stub — from the top edge down to the top contact
               dot. The handle aligns with x=25 here (post-rotation) so an
               attached edge reads as a continuation of this line. */}
@@ -390,6 +412,8 @@ export default function SwitchNode({ id, data, selected }: NodeProps<SwitchNodeT
             strokeLinecap="round"
             fill="none"
           />
+          </>
+          )}
         </svg>
       </div>
 

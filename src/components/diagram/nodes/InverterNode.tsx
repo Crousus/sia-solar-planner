@@ -21,6 +21,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import type { DiagramNodeData, InverterModelSpec } from '../../../types';
 import { useProjectStore } from '../../../store/projectStore';
 import BaseNode from './BaseNode';
+import { IecInverter } from './IecSymbols';
 
 // React Flow v12's `NodeProps<T>` takes the full Node type — wrap our data
 // shape in `Node<...>` so the `NodeData extends Record<string, unknown>`
@@ -96,6 +97,8 @@ export default function InverterNode({ id, data, selected }: NodeProps<InverterN
       color="#3b82f6"
       typeLabel={headerText}
       icon={<InverterIcon />}
+      iecGlyph={IecInverter}
+      iecDesignation={inverter?.name}
     />
   );
 }
