@@ -52,6 +52,7 @@ import type {
   DiagramMeta,
   HistoryEntry,
   LoadableHistory,
+  MapProvider,
 } from '../types';
 import { STRING_COLORS, DEFAULT_ROOF_TILT_DEG } from '../types';
 import {
@@ -407,7 +408,7 @@ interface ProjectStore extends UIState, HistoryState {
   setSelectedInverter: (id: string | null) => void;
   setActivePanelGroup: (id: string | null) => void;
   setSplitCandidateRoof: (id: string | null) => void;
-  setMapProvider: (provider: 'esri' | 'bayern') => void;
+  setMapProvider: (provider: MapProvider) => void;
   toggleBackground: () => void;
   toggleImageEdgeSnap: () => void;
   setImageEdgeStatus: (status: 'idle' | 'computing' | 'ready' | 'error') => void;
@@ -604,6 +605,11 @@ export const useProjectStore = create<ProjectStore>()(
                 centerLng,
                 zoom,
                 metersPerPixel: mpp,
+                // Carry the basemap through the lock. It used to be dropped
+                // here, so lock → unlock silently fell back to ESRI and the
+                // saved project no longer recorded which imagery (e.g.
+                // swisstopo / Bayern) the roofs were traced on.
+                mapProvider: s.project.mapState.mapProvider,
                 capturedImage,
                 capturedWidth,
                 capturedHeight,

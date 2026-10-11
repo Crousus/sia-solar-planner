@@ -245,13 +245,19 @@ export interface InverterModelSpec {
  * the image's native size (after Konva zoom the image is scaled, but
  * world pixels stay anchored to these dims).
  */
+/** Basemap shown while navigating (and captured on lock).
+ *  - esri:      ESRI World Imagery — global, ~0.3–0.6 m.
+ *  - bayern:    Bavarian state orthophoto DOP20 (WMS) — Bavaria only, 20 cm.
+ *  - swisstopo: SWISSIMAGE 10 cm (WMTS) — Switzerland only, open data. */
+export type MapProvider = 'esri' | 'bayern' | 'swisstopo';
+
 interface MapStateShared {
   centerLat: number;
   centerLng: number;
   zoom: number;
   metersPerPixel: number;
   /** The currently selected map tile provider. */
-  mapProvider?: 'esri' | 'bayern';
+  mapProvider?: MapProvider;
 }
 export interface MapStateUnlocked extends MapStateShared {
   locked: false;

@@ -55,6 +55,23 @@ beforeEach(() => {
   store().resetProject();
 });
 
+// ── map provider through lock / unlock ───────────────────────────────────
+
+describe('lockMap / unlockMap keep the basemap provider', () => {
+  for (const provider of ['swisstopo', 'bayern', 'esri'] as const) {
+    it(`${provider} survives lock → unlock`, () => {
+      store().setMapProvider(provider);
+      store().lockMap({
+        centerLat: 47.34, centerLng: 8.53, zoom: 19, mpp: 0.2,
+        capturedImage: 'x', capturedWidth: 200, capturedHeight: 200,
+      });
+      expect(store().project.mapState.mapProvider).toBe(provider);
+      store().unlockMap();
+      expect(store().project.mapState.mapProvider).toBe(provider);
+    });
+  }
+});
+
 // ── addRoof ───────────────────────────────────────────────────────────────
 
 describe('addRoof', () => {

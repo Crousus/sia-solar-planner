@@ -82,6 +82,7 @@ const de = {
     lockFirst: 'Karte zuerst sperren',
     basemapEsri: 'ESRI Satellit',
     basemapBayern: 'Bayern DOP 20cm (WMS)',
+    basemapSwisstopo: 'swisstopo SWISSIMAGE 10cm',
     resetConfirm: 'Gesamtes Projekt zurücksetzen? Dies kann nicht rückgängig gemacht werden.',
     exportFailed: 'Export fehlgeschlagen — Kartencanvas nicht gefunden.',
     exportFailedGeneral: 'Export fehlgeschlagen — Details in der Konsole.',

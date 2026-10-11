@@ -47,6 +47,15 @@ const ESRI_SAT =
 // Geodaten Bayern WMS URL for current 20cm RGB Orthophotos.
 const BAYERN_WMS = 'https://geoservices.bayern.de/od/wms/dop/v1/dop20';
 
+// swisstopo SWISSIMAGE 10 cm orthophoto, Web-Mercator (EPSG:3857) WMTS tiles.
+// Swiss federal open data: free, no API key, served with
+// `Access-Control-Allow-Origin: *` — which the lock-time html2canvas capture
+// needs (it re-fetches tiles with CORS to keep the canvas untainted).
+// The 3857 pyramid ends at z20 (z21+ answer 400), so over-zoom from there.
+// Coverage is Switzerland (+ Liechtenstein); elsewhere tiles are empty.
+const SWISSTOPO_WMTS =
+  'https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg';
+
 /**
  * Bridges the map instance out of react-leaflet's context. This is the
  * documented pattern: a child component uses useMap() and relays the
@@ -247,6 +256,9 @@ export default function MapView({ onMapReady, rotation = 0 }: Props) {
     >
       {(!center.mapProvider || center.mapProvider === 'esri') && (
         <TileLayer url={ESRI_SAT} maxZoom={22} maxNativeZoom={19} />
+      )}
+      {center.mapProvider === 'swisstopo' && (
+        <TileLayer url={SWISSTOPO_WMTS} maxZoom={22} maxNativeZoom={20} />
       )}
       {center.mapProvider === 'bayern' && (
         <WMSTileLayer

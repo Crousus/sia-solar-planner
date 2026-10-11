@@ -82,6 +82,7 @@ const en = {
     lockFirst: 'Lock map first',
     basemapEsri: 'ESRI Satellite',
     basemapBayern: 'Bayern DOP 20cm (WMS)',
+    basemapSwisstopo: 'swisstopo SWISSIMAGE 10cm',
     resetConfirm: 'Reset entire project? This cannot be undone.',
     exportFailed: 'Export failed — the map canvas is not mounted.',
     exportFailedGeneral: 'Export failed — see console for details.',

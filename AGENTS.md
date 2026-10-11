@@ -27,7 +27,7 @@ Online editor backed by PocketBase for auth, team projects, and realtime sync. T
 | UI | React 18 + TypeScript (strict) | Functional components, hooks only |
 | Router | `react-router-dom` v7 | Declarative BrowserRouter; same API as v6 |
 | Canvas | `react-konva` + `konva` | Object-level drag/click/hitbox on a single Stage |
-| Map | `react-leaflet` + `leaflet` | Multi-provider: ESRI World Imagery, Bayern Orthophoto, Bayern ALKIS |
+| Map | `react-leaflet` + `leaflet` | Multi-provider: ESRI World Imagery, Bayern DOP20 orthophoto (WMS), swisstopo SWISSIMAGE 10 cm (WMTS) |
 | State | `zustand` + custom undo middleware | No `persist` (ADR-015); id-keyed delta undo/redo via `undoMiddleware.ts` |
 | i18n | `i18next` + `react-i18next` + `i18next-browser-languagedetector` | en/de; locale keys are type-checked against `en.ts` at compile time |
 | Styling | Tailwind CSS + a little inline `<style>` | No component library |
@@ -341,7 +341,7 @@ Undo applies the inverse delta to the **current** state (ADR-015): a field is re
 - `locked: false` → Leaflet active; no drawing possible.
 - `locked: true` → Leaflet torn down; tile view rasterised to `capturedImage` (base64 PNG) via `html2canvas` (in `Toolbar.tsx`); all canvas coords in that pixel frame.
 
-**Map providers:** `'esri'` (default), `'bayern'` (Bavarian Orthophoto), `'bayern_alkis'` (cadastral overlay). Stored on `mapState`.
+**Map providers** (`MapProvider` in `types/index.ts`): `'esri'` (default, global), `'bayern'` (Bavarian DOP20 orthophoto, WMS), `'swisstopo'` (SWISSIMAGE 10 cm, WMTS, Switzerland only, native to z20). Stored on `mapState` and kept through lock/unlock. A new provider's tile host must allow CORS (the lock capture re-fetches tiles) and be added to the nginx CSP `img-src`/`connect-src`.
 
 **Image-edge snapping (ADR-019):** once the map is locked, `useImageEdges` (in `KonvaOverlay`) detects straight edges in the captured image in a Web Worker (once per capture, cached) and hands an `ImageEdgeIndex` in world coords to `useDrawingController` → `computeDrawingSnap`. Priority: own corner > own edge > image corner > direction snaps / vertex alignment (a locked direction stops on a detected edge) > projection onto a detected edge. Toolbar "Edges" toggle (`snapToImageEdges`, UI state); Shift bypasses all snapping. Tune detector defaults only together with the benchmark in `imageEdges.test.ts`.
 

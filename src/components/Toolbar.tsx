@@ -63,7 +63,7 @@ import {
 import html2canvas from 'html2canvas';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ToolMode, DiagramNodeType } from '../types';
+import type { ToolMode, DiagramNodeType, MapProvider } from '../types';
 import SyncStatusIndicator from './SyncStatusIndicator';
 import LanguageToggle from './LanguageToggle';
 import { BrandMark } from './BrandMark';
@@ -635,11 +635,12 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
           className="input"
           style={{ width: 'auto', padding: '6px 26px 6px 10px', fontSize: 12 }}
           value={mapProvider}
-          onChange={(e) => setMapProvider(e.target.value as 'esri' | 'bayern')}
+          onChange={(e) => setMapProvider(e.target.value as MapProvider)}
           title={t('toolbar.basemapProvider')}
         >
           <option value="esri">{t('toolbar.basemapEsri')}</option>
           <option value="bayern">{t('toolbar.basemapBayern')}</option>
+          <option value="swisstopo">{t('toolbar.basemapSwisstopo')}</option>
         </select>
       )}
 
