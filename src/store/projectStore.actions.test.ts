@@ -241,6 +241,58 @@ describe('assignPanelsToString + renumberStrings', () => {
   });
 });
 
+// ── unassignPanel ─────────────────────────────────────────────────────────
+// Bound to right-click in assign-string mode: it must only drop the string
+// membership — the panel itself stays (it used to be deleted).
+
+describe('unassignPanel', () => {
+  it('keeps the panel, clears its string, and renumbers the rest', () => {
+    const r = store().addRoof(SQUARE);
+    store().addPanel(r, 10, 10, 'g1', 'portrait');
+    store().addPanel(r, 20, 20, 'g1', 'portrait');
+    store().addPanel(r, 30, 30, 'g1', 'portrait');
+    const [p1, p2, p3] = store().project.panels;
+    const sid = store().addString();
+    store().assignPanelsToString([p1.id, p2.id, p3.id], sid);
+
+    store().unassignPanel(p2.id);
+
+    const panelById = (id: string) => store().project.panels.find((p) => p.id === id)!;
+    expect(store().project.panels).toHaveLength(3);
+    expect(panelById(p2.id).stringId).toBeNull();
+    expect(panelById(p2.id).indexInString).toBeNull();
+    expect(panelById(p1.id).indexInString).toBe(1);
+    expect(panelById(p3.id).indexInString).toBe(2);
+  });
+
+  it('undo restores the assignment without touching the panel', () => {
+    const r = store().addRoof(SQUARE);
+    store().addPanel(r, 10, 10, 'g1', 'portrait');
+    const [p1] = store().project.panels;
+    const sid = store().addString();
+    store().assignPanelsToString([p1.id], sid);
+
+    store().unassignPanel(p1.id);
+    store().undo();
+
+    expect(store().project.panels).toHaveLength(1);
+    expect(store().project.panels[0].stringId).toBe(sid);
+    expect(store().project.panels[0].indexInString).toBe(1);
+  });
+
+  it('is a no-op (and no undo step) on an unassigned panel', () => {
+    const r = store().addRoof(SQUARE);
+    store().addPanel(r, 10, 10, 'g1', 'portrait');
+    const [p1] = store().project.panels;
+    const pastLen = store().past.length;
+
+    store().unassignPanel(p1.id);
+
+    expect(store().project.panels).toHaveLength(1);
+    expect(store().past.length).toBe(pastLen);
+  });
+});
+
 // ── addString / deleteString ──────────────────────────────────────────────
 
 describe('addString / deleteString', () => {

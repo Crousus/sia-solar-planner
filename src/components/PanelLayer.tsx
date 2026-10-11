@@ -82,6 +82,7 @@ export default function PanelLayer({
   const setSelectedRoof = useProjectStore((s) => s.setSelectedRoof);
   const addPanel = useProjectStore((s) => s.addPanel);
   const deletePanel = useProjectStore((s) => s.deletePanel);
+  const unassignPanel = useProjectStore((s) => s.unassignPanel);
   const moveGroup = useProjectStore((s) => s.moveGroup);
 
   // Whether panel groups should be draggable in the current tool mode.
@@ -290,8 +291,13 @@ export default function PanelLayer({
           }
         }}
         onContextMenu={(e) => {
-          // Right-click anywhere on the panel deletes it. Available in
-          // every mode so users can remove mistakes without mode-switching.
+          // Right-click anywhere on the panel deletes it — except in
+          // assign-string mode, where it removes the panel from its string
+          // instead (the panel itself stays). Assigning is the only thing
+          // the user does in that mode, so "undo this assignment" is what
+          // a right-click there means; deleting would throw away layout
+          // work. Available in every mode so users can fix mistakes without
+          // mode-switching.
           e.evt.preventDefault();
           e.cancelBubble = true;
 
@@ -302,6 +308,12 @@ export default function PanelLayer({
             if (Math.hypot(dx, dy) > 5) return;
           }
 
+          if (toolMode === 'assign-string') {
+            // No-op on an already unassigned panel (unassignPanel returns
+            // the state unchanged, so no undo entry either).
+            unassignPanel(panel.id);
+            return;
+          }
           deletePanel(panel.id);
         }}
         onClick={(e) => {
