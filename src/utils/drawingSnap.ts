@@ -47,6 +47,7 @@
 
 import type { Point, Roof } from '../types';
 import { projectOnSegment } from './geometry';
+import { lineAngleDiff, pointSegmentDistance, type ImageEdge, type ImageEdgeSource } from './imageEdges';
 
 /** What caused a particular guide to appear — drives its color. */
 export type SnapKind =
@@ -55,7 +56,9 @@ export type SnapKind =
   | 'edge-perp'         // reference edge for perpendicular snap
   | 'length-match'      // reference edge whose length we're matching
   | 'point-match'       // snapped exactly to a corner
-  | 'edge-match';       // reference edge we are snapping onto directly
+  | 'edge-match'        // reference edge we are snapping onto directly
+  | 'vertex-align'      // cursor is in line with an existing vertex
+  | 'image-edge';       // straight edge detected in the satellite image
 
 /** A single line the renderer should draw as a snap guide. */
 export type SnapGuide = {
@@ -89,6 +92,23 @@ const ANGLE_TOL_DEG = 3;
 const LENGTH_TOL_PX = 8;
 const POINT_SNAP_TOL_PX = 10;
 const EDGE_SNAP_TOL_PX = 8;
+const ALIGN_TOL_PX = 8;
+/** Detected image edges (ADR-019). Corner tolerance is a little larger than
+ *  the edge one: hitting a roof corner is the most valuable snap, and the
+ *  two detected lines' crossing is a precise point even when each line
+ *  stops a few px short of it (corners blur). */
+const IMAGE_CORNER_TOL_PX = 12;
+const IMAGE_EDGE_TOL_PX = 7;
+/** How far around the cursor to look for detected edges at all. */
+const IMAGE_SEARCH_PX = 40;
+/** Two detected lines must differ by this much to form a corner. */
+const IMAGE_CORNER_MIN_ANGLE_DEG = 20;
+
+/** Two candidate angles closer than this are "the same direction". Angles
+ *  reach the candidate list via different arithmetic (atan2 of an edge vs.
+ *  prevAng + k·π/4), so exactly-equal directions differ in the last bits —
+ *  a strict `<` let float noise decide which one won the tie. */
+const ANGLE_TIE_EPS_DEG = 1e-6;
 
 /** Normalize an angle to (-π, π]. */
 function normalizeAngle(a: number): number {
@@ -167,6 +187,147 @@ function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
 }
 
 /**
+ * Internal: an alignment ("tracking") line through an existing vertex.
+ * The cursor snaps onto it when it is in line with that vertex — e.g. the
+ * fourth corner of a rectangle directly below the first one.
+ */
+type AlignLine = { origin: Point; ux: number; uy: number };
+
+/** Lines through every vertex except `last` (the angle ray already covers
+ *  directions through the anchor): along the world axes, and along +
+ *  perpendicular to each edge touching that vertex (its extension lines).
+ *  Deduped per vertex so a vertex with an axis-aligned edge doesn't get
+ *  the same line twice. */
+function collectAlignLines(edges: EdgeRef[], last: Point): AlignLine[] {
+  const byVertex = new Map<string, { origin: Point; angles: number[] }>();
+  const key = (p: Point) => `${p.x.toFixed(4)},${p.y.toFixed(4)}`;
+  const add = (p: Point, angle: number) => {
+    if (Math.hypot(p.x - last.x, p.y - last.y) < 1e-3) return;
+    const k = key(p);
+    let entry = byVertex.get(k);
+    if (!entry) {
+      entry = { origin: p, angles: [0, Math.PI / 2] };
+      byVertex.set(k, entry);
+    }
+    for (const a of [angle, angle + Math.PI / 2]) {
+      // Lines are undirected: compare angles mod π.
+      const dup = entry.angles.some((b) => {
+        const d = Math.abs(normalizeAngle(2 * (a - b))) / 2;
+        return (d * 180) / Math.PI < 0.5;
+      });
+      if (!dup) entry.angles.push(a);
+    }
+  };
+  for (const e of edges) {
+    add(e.a, e.angle);
+    add(e.b, e.angle);
+  }
+  const lines: AlignLine[] = [];
+  for (const { origin, angles } of byVertex.values()) {
+    for (const a of angles) lines.push({ origin, ux: Math.cos(a), uy: Math.sin(a) });
+  }
+  return lines;
+}
+
+/** Perpendicular distance from `p` to an alignment line, and the foot. */
+function projectOnLine(p: Point, l: AlignLine): { dist: number; foot: Point } {
+  const t = (p.x - l.origin.x) * l.ux + (p.y - l.origin.y) * l.uy;
+  const foot = { x: l.origin.x + l.ux * t, y: l.origin.y + l.uy * t };
+  return { dist: Math.hypot(p.x - foot.x, p.y - foot.y), foot };
+}
+
+/** Intersection of the ray `last + t·(ux,uy)` with an alignment line, as the
+ *  ray parameter t — null when (near-)parallel. */
+function rayLineT(last: Point, ux: number, uy: number, l: AlignLine): number | null {
+  const denom = ux * l.uy - uy * l.ux;
+  if (Math.abs(denom) < 1e-6) return null;
+  const qx = l.origin.x - last.x;
+  const qy = l.origin.y - last.y;
+  return (qx * l.uy - qy * l.ux) / denom;
+}
+
+/** Intersection point of two alignment lines — null when (near-)parallel. */
+function lineLineIntersection(a: AlignLine, b: AlignLine): Point | null {
+  const denom = a.ux * b.uy - a.uy * b.ux;
+  if (Math.abs(denom) < 1e-6) return null;
+  const qx = b.origin.x - a.origin.x;
+  const qy = b.origin.y - a.origin.y;
+  const t = (qx * b.uy - qy * b.ux) / denom;
+  return { x: a.origin.x + a.ux * t, y: a.origin.y + a.uy * t };
+}
+
+/** Infinite-line intersection of two segments' supporting lines. */
+function segmentLinesIntersection(e: ImageEdge, f: ImageEdge): Point | null {
+  const ux = Math.cos(e.angle);
+  const uy = Math.sin(e.angle);
+  const vx = Math.cos(f.angle);
+  const vy = Math.sin(f.angle);
+  const denom = ux * vy - uy * vx;
+  if (Math.abs(denom) < 1e-9) return null;
+  const qx = f.a.x - e.a.x;
+  const qy = f.a.y - e.a.y;
+  const t = (qx * vy - qy * vx) / denom;
+  return { x: e.a.x + ux * t, y: e.a.y + uy * t };
+}
+
+/** The endpoint of `e` farther from `p` (to draw a guide from a corner). */
+function farEnd(e: ImageEdge, p: Point): Point {
+  return Math.hypot(e.a.x - p.x, e.a.y - p.y) > Math.hypot(e.b.x - p.x, e.b.y - p.y) ? e.a : e.b;
+}
+
+/** Nearest crossing of two detected edges within `tol` of the cursor. The
+ *  crossing may lie up to `gap` beyond either edge's end (blurred corners
+ *  make detected lines stop short). */
+function imageCornerSnap(
+  cursor: Point,
+  edges: ImageEdge[],
+  tol: number,
+  gap: number,
+  exclude: Point | null,
+): { point: Point; guides: SnapGuide[] } | null {
+  let best: { point: Point; guides: SnapGuide[]; d: number } | null = null;
+  const minAngle = (IMAGE_CORNER_MIN_ANGLE_DEG * Math.PI) / 180;
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const e = edges[i];
+      const f = edges[j];
+      if (lineAngleDiff(e.angle, f.angle) < minAngle) continue;
+      const x = segmentLinesIntersection(e, f);
+      if (!x) continue;
+      if (pointSegmentDistance(x, e.a, e.b) > gap || pointSegmentDistance(x, f.a, f.b) > gap) continue;
+      if (exclude && Math.hypot(x.x - exclude.x, x.y - exclude.y) < 1e-3) continue;
+      const d = Math.hypot(cursor.x - x.x, cursor.y - x.y);
+      if (d < tol && (!best || d < best.d)) {
+        best = {
+          point: x,
+          d,
+          guides: [
+            { kind: 'image-edge', from: x, to: farEnd(e, x) },
+            { kind: 'image-edge', from: x, to: farEnd(f, x) },
+          ],
+        };
+      }
+    }
+  }
+  return best && { point: best.point, guides: best.guides };
+}
+
+/** Nearest detected edge within `tol`: the clamped foot of the cursor. */
+function nearestImageEdge(
+  cursor: Point,
+  edges: ImageEdge[],
+  tol: number,
+): { edge: ImageEdge; foot: Point } | null {
+  let best: { edge: ImageEdge; foot: Point; d: number } | null = null;
+  for (const e of edges) {
+    const foot = nearestOnSegment(cursor, e.a, e.b);
+    const d = Math.hypot(cursor.x - foot.x, cursor.y - foot.y);
+    if (d < tol && (!best || d < best.d)) best = { edge: e, foot, d };
+  }
+  return best && { edge: best.edge, foot: best.foot };
+}
+
+/**
  * Compute snap result for the current draw-roof cursor.
  *
  * Inputs:
@@ -180,12 +341,17 @@ function collectEdges(drawingPoints: Point[], roofs: Roof[]): EdgeRef[] {
  *                    tolerances are defined in screen px and divided by
  *                    this. Defaults to 1 (world == screen) for callers and
  *                    tests that don't care about zoom.
+ *   opts.imageEdges — straight edges detected in the satellite image
+ *                    (world coords). Lower priority than the user's own
+ *                    geometry: own corner > own edge > image corner >
+ *                    direction snaps / vertex alignment > image edge.
+ *                    Also active for the FIRST vertex of a polygon.
  */
 export function computeDrawingSnap(
   cursor: Point,
   drawingPoints: Point[],
   roofs: Roof[],
-  opts: { enabled: boolean; scale?: number } = { enabled: true }
+  opts: { enabled: boolean; scale?: number; imageEdges?: ImageEdgeSource | null } = { enabled: true }
 ): SnapResult {
   // Guard against 0 / negative / NaN scale (pre-measure render) — fall
   // back to 1 rather than producing Infinity tolerances.
@@ -193,9 +359,32 @@ export function computeDrawingSnap(
   const pointTol = POINT_SNAP_TOL_PX / scale;
   const edgeTol = EDGE_SNAP_TOL_PX / scale;
   const lengthTol = LENGTH_TOL_PX / scale;
+  const alignTol = ALIGN_TOL_PX / scale;
+  const imgCornerTol = IMAGE_CORNER_TOL_PX / scale;
+  const imgEdgeTol = IMAGE_EDGE_TOL_PX / scale;
+  // Detected edges near the cursor — queried once per pointer move.
+  const nearImage =
+    opts.enabled && opts.imageEdges ? opts.imageEdges.near(cursor, IMAGE_SEARCH_PX / scale) : [];
 
-  // Nothing to snap against yet.
+  // First vertex: no anchor, so no direction / length / alignment snaps —
+  // but the first roof corner is exactly where an image-corner snap helps
+  // most. (Own-geometry snapping for the first click stays the split /
+  // boundary flow's business in the click handler.)
   if (drawingPoints.length === 0) {
+    const corner = imageCornerSnap(cursor, nearImage, imgCornerTol, imgCornerTol, null);
+    if (corner) {
+      return { point: corner.point, guides: corner.guides, edgeLengthPx: 0, lengthSnapped: false, angleSnapped: false };
+    }
+    const onEdge = nearestImageEdge(cursor, nearImage, imgEdgeTol);
+    if (onEdge) {
+      return {
+        point: onEdge.foot,
+        guides: [{ kind: 'image-edge', from: onEdge.edge.a, to: onEdge.edge.b }],
+        edgeLengthPx: 0,
+        lengthSnapped: false,
+        angleSnapped: false,
+      };
+    }
     return { point: cursor, guides: [], edgeLengthPx: 0, lengthSnapped: false, angleSnapped: false };
   }
   const last = drawingPoints[drawingPoints.length - 1];
@@ -285,6 +474,18 @@ export function computeDrawingSnap(
     };
   }
 
+  // ── 2b. Image corner (crossing of two detected roof edges) ───────────
+  const imgCorner = imageCornerSnap(cursor, nearImage, imgCornerTol, imgCornerTol, last);
+  if (imgCorner) {
+    return {
+      point: imgCorner.point,
+      guides: imgCorner.guides,
+      edgeLengthPx: Math.hypot(imgCorner.point.x - last.x, imgCorner.point.y - last.y),
+      lengthSnapped: false,
+      angleSnapped: false,
+    };
+  }
+
   // ── 3. Gather angle candidates ───────────────────────────────────────
   // Each candidate is an angle (radians) plus metadata describing WHY
   // it's a candidate — used later to build the right guide.
@@ -310,21 +511,41 @@ export function computeDrawingSnap(
   //     Parallel = same angle (and +π); perpendicular = ±π/2.
   //     We tag with refEdge so the renderer can highlight the actual edge
   //     we're aligned with, not just the direction.
+  //     All parallels first, then all perpendiculars, so on a tie the
+  //     more telling "parallel to that edge" wins over "perpendicular to
+  //     some other edge" (a rectangle's third side is both).
   for (const edge of edges) {
     cands.push({ angle: edge.angle,               kind: 'edge-parallel', refEdge: edge });
     cands.push({ angle: edge.angle + Math.PI,     kind: 'edge-parallel', refEdge: edge });
+  }
+  for (const edge of edges) {
     cands.push({ angle: edge.angle + Math.PI / 2, kind: 'edge-perp',     refEdge: edge });
     cands.push({ angle: edge.angle - Math.PI / 2, kind: 'edge-perp',     refEdge: edge });
   }
 
   // Pick the closest candidate within tolerance (if any).
+  //
+  // Tie-break: candidates describing the SAME direction (within float
+  // noise) are common — a horizontal edge coincides with the absolute 0°
+  // candidate, a rectangle's third side with "previous edge + 90°". The
+  // generic 'angle-direction' entries come first in the list, so a plain
+  // `d < bestDiff` let them win and the reference-edge highlight (the
+  // magenta "you are parallel to THIS edge" guide) only showed when float
+  // rounding happened to favour it. On a tie, prefer a candidate that has
+  // a reference edge.
   let bestAngle = rawAngle;
   let bestKind: SnapKind | null = null;
   let bestRefEdge: EdgeRef | undefined;
   let bestDiff = ANGLE_TOL_DEG;
   for (const c of cands) {
     const d = angleDiffDeg(c.angle, rawAngle);
-    if (d < bestDiff) {
+    const clearlyBetter = d < bestDiff - ANGLE_TIE_EPS_DEG;
+    const tieButReferenced =
+      bestKind !== null &&
+      Math.abs(d - bestDiff) <= ANGLE_TIE_EPS_DEG &&
+      c.refEdge !== undefined &&
+      bestRefEdge === undefined;
+    if (clearlyBetter || tieButReferenced) {
       bestDiff = d;
       bestAngle = c.angle;
       bestKind = c.kind;
@@ -333,13 +554,79 @@ export function computeDrawingSnap(
   }
   const angleSnapped = bestKind !== null;
 
+  const alignLines = collectAlignLines(edges, last);
+
+  // ── 4a. No direction snap: free alignment with existing vertices ─────
+  // The cursor isn't locked to a direction, but it may be in line with one
+  // (or two) existing vertices. Snap onto that line — or onto the crossing
+  // of two such lines (e.g. "below vertex A AND level with vertex B").
+  if (!angleSnapped) {
+    let first: { line: AlignLine; dist: number; foot: Point } | null = null;
+    for (const line of alignLines) {
+      const { dist, foot } = projectOnLine(cursor, line);
+      if (dist < alignTol && (!first || dist < first.dist)) first = { line, dist, foot };
+    }
+    const onEdge = nearestImageEdge(cursor, nearImage, imgEdgeTol);
+    // In line with a vertex AND on a detected edge → their crossing
+    // (e.g. the eave, exactly level with the neighbouring roof's corner).
+    if (first && onEdge) {
+      const e = onEdge.edge;
+      const crossT = rayLineT(e.a, Math.cos(e.angle), Math.sin(e.angle), first.line);
+      if (crossT !== null && crossT >= -imgEdgeTol && crossT <= e.length + imgEdgeTol) {
+        const point = { x: e.a.x + Math.cos(e.angle) * crossT, y: e.a.y + Math.sin(e.angle) * crossT };
+        if (Math.hypot(point.x - cursor.x, point.y - cursor.y) < alignTol + imgEdgeTol) {
+          return {
+            point,
+            guides: [
+              { kind: 'vertex-align', from: first.line.origin, to: point },
+              { kind: 'image-edge', from: e.a, to: e.b },
+            ],
+            edgeLengthPx: Math.hypot(point.x - last.x, point.y - last.y),
+            lengthSnapped: false,
+            angleSnapped: false,
+          };
+        }
+      }
+    }
+    if (first) {
+      let second: { line: AlignLine; dist: number } | null = null;
+      for (const line of alignLines) {
+        if (line === first.line) continue;
+        if (Math.abs(line.ux * first.line.uy - line.uy * first.line.ux) < 1e-6) continue;
+        const { dist } = projectOnLine(cursor, line);
+        if (dist < alignTol && (!second || dist < second.dist)) second = { line, dist };
+      }
+      const crossing = second ? lineLineIntersection(first.line, second.line) : null;
+      const point = crossing ?? first.foot;
+      const guides: SnapGuide[] = [{ kind: 'vertex-align', from: first.line.origin, to: point }];
+      if (crossing && second) guides.push({ kind: 'vertex-align', from: second.line.origin, to: point });
+      return {
+        point,
+        guides,
+        edgeLengthPx: Math.hypot(point.x - last.x, point.y - last.y),
+        lengthSnapped: false,
+        angleSnapped: false,
+      };
+    }
+    if (onEdge) {
+      return {
+        point: onEdge.foot,
+        guides: [{ kind: 'image-edge', from: onEdge.edge.a, to: onEdge.edge.b }],
+        edgeLengthPx: Math.hypot(onEdge.foot.x - last.x, onEdge.foot.y - last.y),
+        lengthSnapped: false,
+        angleSnapped: false,
+      };
+    }
+  }
+
   // ── Project cursor onto the snapped direction ray ────────────────────
   // Unit vector of the snapped direction.
   const ux = Math.cos(bestAngle);
   const uy = Math.sin(bestAngle);
   // Signed length along the ray. Clamp to 0 so we never project "behind"
   // `last` — that would flip the edge direction in a confusing way.
-  let snappedLen = Math.max(0, rawDx * ux + rawDy * uy);
+  const rawT = Math.max(0, rawDx * ux + rawDy * uy);
+  let snappedLen = rawT;
 
   // ── Length snap ──────────────────────────────────────────────────────
   // If snappedLen is close to any existing edge's length, jump to it exactly.
@@ -349,13 +636,58 @@ export function computeDrawingSnap(
   let lengthRefEdge: EdgeRef | undefined;
   let bestLengthDiff = lengthTol;
   for (const edge of edges) {
-    const diff = Math.abs(edge.length - snappedLen);
+    const diff = Math.abs(edge.length - rawT);
     if (diff < bestLengthDiff) {
       bestLengthDiff = diff;
       lengthRefEdge = edge;
     }
   }
-  if (lengthRefEdge) snappedLen = lengthRefEdge.length;
+
+  // ── 4b. Direction snap + vertex alignment ────────────────────────────
+  // Along the locked direction, stop where the ray crosses an alignment
+  // line through another vertex (closing a rectangle onto its first
+  // corner's line, lining a ridge up with a neighbour's corner, …).
+  // Competes with the length snap: whichever lands nearer to the raw
+  // projection wins.
+  let alignHit: { line: AlignLine; t: number } | null = null;
+  // Also stop where the locked direction crosses a detected image edge —
+  // draw exactly parallel AND land exactly on the eave.
+  let imageHit: { edge: ImageEdge; t: number } | null = null;
+  if (angleSnapped) {
+    let bestStopDiff = Math.min(alignTol, bestLengthDiff);
+    for (const line of alignLines) {
+      const t = rayLineT(last, ux, uy, line);
+      if (t === null || t <= 1e-6) continue;
+      const diff = Math.abs(t - rawT);
+      if (diff < bestStopDiff) {
+        bestStopDiff = diff;
+        alignHit = { line, t };
+      }
+    }
+    for (const e of nearImage) {
+      const eu = { origin: e.a, ux: Math.cos(e.angle), uy: Math.sin(e.angle) };
+      const t = rayLineT(last, ux, uy, eu);
+      if (t === null || t <= 1e-6) continue;
+      // The crossing must be on the detected segment (± tolerance).
+      const cross = { x: last.x + ux * t, y: last.y + uy * t };
+      if (pointSegmentDistance(cross, e.a, e.b) > imgEdgeTol) continue;
+      const diff = Math.abs(t - rawT);
+      if (diff < Math.min(bestStopDiff, imgEdgeTol)) {
+        bestStopDiff = diff;
+        imageHit = { edge: e, t };
+        alignHit = null;
+      }
+    }
+  }
+  if (imageHit) {
+    snappedLen = imageHit.t;
+    lengthRefEdge = undefined;
+  } else if (alignHit) {
+    snappedLen = alignHit.t;
+    lengthRefEdge = undefined;
+  } else if (lengthRefEdge) {
+    snappedLen = lengthRefEdge.length;
+  }
   const lengthSnapped = lengthRefEdge !== undefined;
 
   const snappedPoint = {
@@ -384,6 +716,13 @@ export function computeDrawingSnap(
     }
   }
 
+  if (alignHit) {
+    guides.push({ kind: 'vertex-align', from: alignHit.line.origin, to: snappedPoint });
+  }
+  if (imageHit) {
+    guides.push({ kind: 'image-edge', from: imageHit.edge.a, to: imageHit.edge.b });
+  }
+
   if (lengthRefEdge) {
     guides.push({ kind: 'length-match', from: lengthRefEdge.a, to: lengthRefEdge.b });
   }
@@ -405,5 +744,7 @@ export const GUIDE_STYLE: Record<SnapKind, { stroke: string; dash: number[]; str
   'length-match':    { stroke: '#22c55e', dash: [10, 3], strokeWidth: 3    }, // green
   'point-match':     { stroke: '#f59e0b', dash: [],      strokeWidth: 2.5  }, // amber
   'edge-match':      { stroke: '#f59e0b', dash: [],      strokeWidth: 2.5  }, // solid amber to highlight the line we are on
+  'vertex-align':    { stroke: '#22d3ee', dash: [3, 3],  strokeWidth: 1.5  }, // cyan: in line with a vertex
+  'image-edge':      { stroke: '#a3e635', dash: [6, 3],  strokeWidth: 2    }, // lime: edge detected in the imagery
 };
 

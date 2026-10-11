@@ -264,6 +264,13 @@ interface UIState {
   // not persisted to localStorage or JSON exports — because it's a view
   // preference, not part of the saved project.
   showBackground: boolean;
+  // Roof draw tool: also snap to straight edges detected in the captured
+  // satellite image (ADR-019). A per-session view preference like
+  // showBackground — never part of the synced project.
+  snapToImageEdges: boolean;
+  // Progress of the background edge detection for the current capture,
+  // mirrored here so the toolbar toggle can show it.
+  imageEdgeStatus: 'idle' | 'computing' | 'ready' | 'error';
   /**
    * Ephemeral cut-target tracking. When the user is in `draw-roof` mode
    * and has placed their first vertex on the boundary of an existing
@@ -402,6 +409,8 @@ interface ProjectStore extends UIState, HistoryState {
   setSplitCandidateRoof: (id: string | null) => void;
   setMapProvider: (provider: 'esri' | 'bayern') => void;
   toggleBackground: () => void;
+  toggleImageEdgeSnap: () => void;
+  setImageEdgeStatus: (status: 'idle' | 'computing' | 'ready' | 'error') => void;
   /** Replace the project (server load / JSON import). `history` may be
    *  delta stacks (v3) or legacy snapshot stacks (v2, converted here). */
   loadProject: (p: Project, history?: LoadableHistory) => void;
@@ -509,6 +518,11 @@ export const useProjectStore = create<ProjectStore>()(
       // Background is visible by default — hiding it is the less common
       // workflow (mainly for clean screenshots and cluttered layouts).
       showBackground: true,
+      // On by default: it only adds snap targets near the cursor, never
+      // moves a vertex the user didn't bring close to an edge, and Shift
+      // disables all snapping for a click.
+      snapToImageEdges: true,
+      imageEdgeStatus: 'idle',
       // Catalog context — all null/empty on startup. ProjectEditor fills
       // these in after loadProject and clears them on unmount. See the
       // UIState declaration above for rationale.
@@ -1470,6 +1484,16 @@ export const useProjectStore = create<ProjectStore>()(
         (s) => ({ showBackground: !s.showBackground }),
         false,
         'toggleBackground',
+      ),
+      toggleImageEdgeSnap: () => set(
+        (s) => ({ snapToImageEdges: !s.snapToImageEdges }),
+        false,
+        'toggleImageEdgeSnap',
+      ),
+      setImageEdgeStatus: (status) => set(
+        { imageEdgeStatus: status },
+        false,
+        'setImageEdgeStatus',
       ),
 
       // ── Electrical block diagram actions ────────────────────────────────

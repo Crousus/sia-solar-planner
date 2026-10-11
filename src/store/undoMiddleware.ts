@@ -164,6 +164,8 @@ export type ActionName =
   | 'setActivePanelGroup'
   | 'setSplitCandidateRoof'
   | 'toggleBackground'
+  | 'toggleImageEdgeSnap'
+  | 'setImageEdgeStatus'
   // Catalog context setters — pure UI-state writes (activePbProjectId,
   // activePanelModelId, inverterModelCache). setPanelModelFromCatalog
   // also performs a PB PATCH but its store write is still a plain setter
@@ -247,6 +249,8 @@ export const ACTION_POLICY: Record<ActionName, Policy> = {
   setActivePanelGroup:     { kind: 'bypass' },
   setSplitCandidateRoof:   { kind: 'bypass' },
   toggleBackground:        { kind: 'bypass' },
+  toggleImageEdgeSnap:     { kind: 'bypass' },
+  setImageEdgeStatus:      { kind: 'bypass' },
   setActivePbProjectId:    { kind: 'bypass' },
   setActivePanelModelId:   { kind: 'bypass' },
   setInverterModelCache:   { kind: 'bypass' },

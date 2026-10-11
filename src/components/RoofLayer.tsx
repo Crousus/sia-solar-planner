@@ -44,6 +44,7 @@ import { Group, Line, Circle, Text, Path } from 'react-konva';
 import { useProjectStore } from '../store/projectStore';
 import { polygonCentroid } from '../utils/geometry';
 import { GUIDE_STYLE, type SnapGuide } from '../utils/drawingSnap';
+import type { ImageEdge } from '../utils/imageEdges';
 import { computeEdgeRemoval, findMergeCandidate } from '../utils/roofEditing';
 import type { Point, Roof } from '../types';
 
@@ -51,6 +52,7 @@ interface Props {
   drawingPoints: Point[];        // in-progress polygon, owned by KonvaOverlay
   cursor: Point | null;          // snapped cursor position for the preview line
   guides?: SnapGuide[];          // snap guide lines to render
+  imageEdgeHints?: ImageEdge[];  // detected image edges near the cursor (faint)
   edgeLengthPx?: number;         // current edge length in px (for label)
   lengthSnapped?: boolean;       // true → style the label as "snapped"
   angleSnapped?: boolean;        // true → style the preview line as "snapped"
@@ -63,6 +65,7 @@ export default function RoofLayer({
   drawingPoints,
   cursor,
   guides = [],
+  imageEdgeHints = [],
   edgeLengthPx = 0,
   lengthSnapped = false,
   angleSnapped = false,
@@ -79,6 +82,9 @@ export default function RoofLayer({
   const mergeRoofs = useProjectStore((s) => s.mergeRoofs);
 
   const drawing = toolMode === 'draw-roof' && drawingPoints.length > 0;
+  // Guides and image-edge hints also matter BEFORE the first vertex: the
+  // first click can snap to a detected roof corner (ADR-019).
+  const drawTool = toolMode === 'draw-roof';
 
   // When draw-roof mode is active but no new polygon is in progress, we
   // treat it as "vertex edit" mode for committed roofs: every polygon
@@ -637,24 +643,55 @@ export default function RoofLayer({
         );
       })}
 
+      {/* ── Detected image edges near the cursor (only while drawing) ── */}
+      {/* Faint, thin, under everything else: shows what the image-edge snap
+          could catch before the cursor is close enough to be pulled. */}
+      {drawTool && imageEdgeHints.map((e, i) => (
+        <Line
+          key={`ie-${i}`}
+          points={[e.a.x, e.a.y, e.b.x, e.b.y]}
+          stroke={GUIDE_STYLE['image-edge'].stroke}
+          strokeWidth={1 / stageScale}
+          opacity={0.45}
+          listening={false}
+        />
+      ))}
+
       {/* ── Snap guide lines (only while drawing) ─────────────────────── */}
       {/* Rendered BEFORE the in-progress polygon so the user's active line
           sits on top of the guides. listening=false throughout — guides are
           purely visual and must not intercept clicks. */}
-      {drawing && guides.map((g, i) => {
+      {drawTool && guides.map((g, i) => {
         const style = GUIDE_STYLE[g.kind];
+        // GUIDE_STYLE widths/dashes are SCREEN pixels. Konva strokes live in
+        // world units, so without dividing by stageScale a 1 px guide
+        // dropped below a pixel when zoomed out (and the dashes collapsed
+        // into noise) — one reason guides "sometimes didn't show".
         return (
           <Line
             key={i}
             points={[g.from.x, g.from.y, g.to.x, g.to.y]}
             stroke={style.stroke}
-            strokeWidth={style.strokeWidth}
-            dash={style.dash}
+            strokeWidth={style.strokeWidth / stageScale}
+            dash={style.dash.map((d) => d / stageScale)}
             opacity={0.9}
             listening={false}
           />
         );
       })}
+
+      {/* First-vertex snap target: with no polygon yet there is no rubber
+          band, so mark where the click will land when a snap is active. */}
+      {drawTool && !drawing && cursor && guides.length > 0 && (
+        <Circle
+          x={cursor.x}
+          y={cursor.y}
+          radius={5 / stageScale}
+          stroke={GUIDE_STYLE['image-edge'].stroke}
+          strokeWidth={2 / stageScale}
+          listening={false}
+        />
+      )}
 
       {/* ── In-progress polygon (only shown in draw-roof mode) ────────── */}
       {drawing && (

@@ -34,6 +34,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { computeDrawingSnap } from './drawingSnap';
+import type { ImageEdge, ImageEdgeSource } from './imageEdges';
 import type { Point, Roof } from '../types';
 
 // Helper for terse roof literals.
@@ -332,5 +333,198 @@ describe('computeDrawingSnap — length snap picks the nearest length', () => {
     const r = computeDrawingSnap({ x: 103, y: 0.5 }, [{ x: 0, y: 0 }], [a, b]);
     expect(r.lengthSnapped).toBe(true);
     expect(r.edgeLengthPx).toBeCloseTo(104);
+  });
+});
+
+describe('computeDrawingSnap — reference-edge guide wins direction ties', () => {
+  it('highlights the parallel edge for a rectangle\'s third side (ties with "previous edge + 90°" and absolute 180°)', () => {
+    // A(0,0) → B(100,0) → C(100,50); heading left from C is parallel to AB,
+    // but also exactly 90° from BC and an absolute 45° multiple. The generic
+    // candidates used to win the tie, so only the faint direction ray showed.
+    const pts = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 50 }];
+    const r = computeDrawingSnap({ x: 40, y: 51 }, pts, []);
+    expect(r.angleSnapped).toBe(true);
+    const parallel = r.guides.find((g) => g.kind === 'edge-parallel');
+    expect(parallel).toEqual({ kind: 'edge-parallel', from: pts[0], to: pts[1] });
+  });
+
+  it('highlights an axis-aligned roof edge instead of the generic 0° direction', () => {
+    const r = computeDrawingSnap(
+      { x: 260, y: 301 },
+      [{ x: 200, y: 300 }],
+      [roof([{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 80 }, { x: 0, y: 80 }])],
+    );
+    expect(r.guides.some((g) => g.kind === 'edge-parallel')).toBe(true);
+  });
+});
+
+describe('computeDrawingSnap — alignment with existing vertices', () => {
+  it('along a locked direction, stops in line with another vertex and draws a guide from it', () => {
+    // Heading left from C(100,50) (direction-snapped to 180°). A neighbour
+    // roof has a corner at (30,200): the cursor near x≈31 should stop at
+    // x=30 exactly — "in line with that corner".
+    const pts = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 50 }];
+    const neighbour = roof([{ x: 30, y: 200 }, { x: 60, y: 200 }, { x: 60, y: 260 }, { x: 30, y: 260 }]);
+    const r = computeDrawingSnap({ x: 33, y: 51 }, pts, [neighbour]);
+    expect(r.point.x).toBeCloseTo(30, 6);
+    expect(r.point.y).toBeCloseTo(50, 6);
+    const align = r.guides.find((g) => g.kind === 'vertex-align');
+    expect(align?.from).toEqual({ x: 30, y: 200 });
+  });
+
+  it('without a direction lock, snaps onto the line through a vertex', () => {
+    // Cursor at a ~30.6° heading from the anchor (no 45° / edge direction
+    // within 3°) but 4 px from the vertical line through vertex (300,0).
+    const r = computeDrawingSnap(
+      { x: 304, y: 80 },
+      [{ x: 0, y: 0 }, { x: 0, y: -100 }],
+      [roof([{ x: 300, y: 0 }, { x: 400, y: 0 }, { x: 400, y: -50 }])],
+    );
+    expect(r.angleSnapped).toBe(false);
+    expect(r.point.x).toBeCloseTo(300, 6);
+    expect(r.point.y).toBeCloseTo(80, 6);
+    expect(r.guides).toEqual([{ kind: 'vertex-align', from: { x: 300, y: 0 }, to: r.point }]);
+  });
+
+  it('snaps to the crossing of two vertex lines (below one vertex, level with another)', () => {
+    const r = computeDrawingSnap(
+      { x: 303, y: 497 },
+      [{ x: 0, y: 0 }, { x: 0, y: -100 }],
+      [
+        roof([{ x: 300, y: 0 }, { x: 330, y: 20 }, { x: 310, y: 40 }]),
+        roof([{ x: 600, y: 500 }, { x: 650, y: 520 }, { x: 610, y: 560 }]),
+      ],
+    );
+    expect(r.point.x).toBeCloseTo(300, 6);
+    expect(r.point.y).toBeCloseTo(500, 6);
+    expect(r.guides.filter((g) => g.kind === 'vertex-align')).toHaveLength(2);
+  });
+
+  it('ignores vertices that are out of alignment tolerance', () => {
+    const r = computeDrawingSnap(
+      { x: 320, y: 80 },
+      [{ x: 0, y: 0 }, { x: 0, y: -100 }],
+      [roof([{ x: 300, y: 0 }, { x: 400, y: 0 }, { x: 400, y: -50 }])],
+    );
+    expect(r.guides.some((g) => g.kind === 'vertex-align')).toBe(false);
+    expect(r.point.x).toBeCloseTo(320, 6);
+    expect(r.point.y).toBeCloseTo(80, 6);
+  });
+
+  it('alignment tolerance is in screen pixels (shrinks when zoomed in)', () => {
+    const args = [
+      { x: 304, y: 80 },
+      [{ x: 0, y: 0 }, { x: 0, y: -100 }],
+      [roof([{ x: 300, y: 0 }, { x: 400, y: 0 }, { x: 400, y: -50 }])],
+    ] as const;
+    // 4 world px = 16 screen px at 4× zoom → beyond the 8 px tolerance.
+    const zoomed = computeDrawingSnap(args[0], [...args[1]], [...args[2]], { enabled: true, scale: 4 });
+    expect(zoomed.guides.some((g) => g.kind === 'vertex-align')).toBe(false);
+  });
+
+  it('does not align through the anchor vertex itself', () => {
+    // The only vertex is the anchor; lines through it are the direction
+    // ray's job, so no vertex-align guide may appear.
+    const r = computeDrawingSnap({ x: 3, y: 170 }, [{ x: 0, y: 0 }], []);
+    expect(r.guides.some((g) => g.kind === 'vertex-align')).toBe(false);
+  });
+});
+
+// ── Snapping to edges detected in the satellite image (ADR-019) ────────────
+
+function imgEdge(ax: number, ay: number, bx: number, by: number): ImageEdge {
+  return {
+    a: { x: ax, y: ay },
+    b: { x: bx, y: by },
+    angle: Math.atan2(by - ay, bx - ax),
+    length: Math.hypot(bx - ax, by - ay),
+    strength: 10,
+  };
+}
+/** Brute-force source: the snap layer must not depend on the real index. */
+function source(edges: ImageEdge[]): ImageEdgeSource {
+  return {
+    near: (p, r) =>
+      edges.filter((e) => {
+        const dx = e.b.x - e.a.x;
+        const dy = e.b.y - e.a.y;
+        const t = Math.max(0, Math.min(1, ((p.x - e.a.x) * dx + (p.y - e.a.y) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(p.x - (e.a.x + dx * t), p.y - (e.a.y + dy * t)) <= r;
+      }),
+  };
+}
+// An L-shaped roof corner in the imagery at (300, 200), edges stopping a
+// few px short of it (as detected corners do).
+const eave = imgEdge(304, 200, 500, 200);
+const gable = imgEdge(300, 204, 300, 380);
+
+describe('computeDrawingSnap — image edges', () => {
+  it('snaps the FIRST vertex to a detected roof corner', () => {
+    const r = computeDrawingSnap({ x: 306, y: 207 }, [], [], { enabled: true, imageEdges: source([eave, gable]) });
+    expect(r.point.x).toBeCloseTo(300, 6);
+    expect(r.point.y).toBeCloseTo(200, 6);
+    expect(r.guides.filter((g) => g.kind === 'image-edge')).toHaveLength(2);
+  });
+
+  it('snaps the first vertex onto a detected edge when no corner is near', () => {
+    const r = computeDrawingSnap({ x: 400, y: 204 }, [], [], { enabled: true, imageEdges: source([eave]) });
+    expect(r.point).toEqual({ x: 400, y: 200 });
+    expect(r.guides).toEqual([{ kind: 'image-edge', from: eave.a, to: eave.b }]);
+  });
+
+  it('own roof corners beat image corners', () => {
+    const own = roof([{ x: 309, y: 206 }, { x: 360, y: 206 }, { x: 360, y: 260 }]);
+    const r = computeDrawingSnap({ x: 307, y: 206 }, [{ x: 100, y: 100 }], [own], {
+      enabled: true,
+      imageEdges: source([eave, gable]),
+    });
+    expect(r.point).toEqual({ x: 309, y: 206 });
+  });
+
+  it('along a locked direction, stops exactly on a detected edge', () => {
+    // Drawing straight up from (420, 330): vertical direction snap; the eave
+    // at y = 200 is crossed near the cursor → land on it.
+    const r = computeDrawingSnap({ x: 420.5, y: 204 }, [{ x: 420, y: 330 }], [], {
+      enabled: true,
+      imageEdges: source([eave]),
+    });
+    expect(r.angleSnapped).toBe(true);
+    expect(r.point.x).toBeCloseTo(420, 6);
+    expect(r.point.y).toBeCloseTo(200, 6);
+    expect(r.guides.some((g) => g.kind === 'image-edge')).toBe(true);
+  });
+
+  it('without a direction lock, projects onto the nearest detected edge', () => {
+    // ~30° heading from the anchor: no direction snap.
+    const r = computeDrawingSnap({ x: 440, y: 205 }, [{ x: 200, y: 66 }], [], {
+      enabled: true,
+      imageEdges: source([eave]),
+    });
+    expect(r.angleSnapped).toBe(false);
+    expect(r.point).toEqual({ x: 440, y: 200 });
+  });
+
+  it('is fully disabled by Shift (enabled: false)', () => {
+    const r = computeDrawingSnap({ x: 306, y: 207 }, [], [], { enabled: false, imageEdges: source([eave, gable]) });
+    expect(r.point).toEqual({ x: 306, y: 207 });
+    expect(r.guides).toHaveLength(0);
+  });
+
+  it('image tolerances are screen pixels (zoomed in 4× the corner is out of reach)', () => {
+    const r = computeDrawingSnap({ x: 306, y: 207 }, [], [], {
+      enabled: true,
+      scale: 4,
+      imageEdges: source([eave, gable]),
+    });
+    expect(r.guides.filter((g) => g.kind === 'image-edge')).toHaveLength(0);
+  });
+
+  it('does not form a corner from two nearly parallel detected lines', () => {
+    const r = computeDrawingSnap({ x: 400, y: 203 }, [], [], {
+      enabled: true,
+      imageEdges: source([eave, imgEdge(300, 206, 500, 207)]),
+    });
+    // Snaps onto a line (nearest), never to a bogus far-away "corner".
+    expect(r.guides).toHaveLength(1);
   });
 });

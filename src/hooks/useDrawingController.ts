@@ -49,6 +49,7 @@ import type Konva from 'konva';
 import type { Point } from '../types';
 import { useProjectStore } from '../store/projectStore';
 import { computeDrawingSnap, type SnapGuide } from '../utils/drawingSnap';
+import type { ImageEdge, ImageEdgeSource } from '../utils/imageEdges';
 import { pointOnPolygonBoundary } from '../utils/polygonCut';
 import { isEditableTarget } from '../utils/dom';
 
@@ -75,6 +76,8 @@ interface UseDrawingControllerParams {
   /** Only intercept events when the overlay is active (map locked).
    *  In the unlocked state Leaflet takes events underneath. */
   overlayActive: boolean;
+  /** Edges detected in the satellite image (null = off / not ready). */
+  imageEdges?: ImageEdgeSource | null;
 }
 
 export interface UseDrawingControllerResult {
@@ -84,6 +87,9 @@ export interface UseDrawingControllerResult {
    *  When not in draw-roof mode, `point` is the raw cursor (possibly null)
    *  and guides are empty. */
   drawingSnap: SnapView;
+  /** Detected image edges near the cursor while drawing a roof — drawn
+   *  faintly so the user can see what there is to snap to. */
+  imageEdgeHints: ImageEdge[];
 
   // Stage event handlers. Caller wires these to the Stage after merging
   // with useViewport's handlers (viewport wins on drag in progress).
@@ -99,6 +105,7 @@ export function useDrawingController({
   stageScale,
   isDraggingView,
   overlayActive,
+  imageEdges = null,
 }: UseDrawingControllerParams): UseDrawingControllerResult {
   // ── Store subscriptions ──────────────────────────────────────────────
   const toolMode = useProjectStore((s) => s.toolMode);
@@ -196,8 +203,15 @@ export function useDrawingController({
     }
     // Pass the stage scale so snap tolerances are screen-pixel based (the
     // magnet feels the same at every zoom level).
-    return computeDrawingSnap(cursor, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale });
-  }, [toolMode, cursor, drawingPoints, roofs, shiftHeld, stageScale]);
+    return computeDrawingSnap(cursor, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale, imageEdges });
+  }, [toolMode, cursor, drawingPoints, roofs, shiftHeld, stageScale, imageEdges]);
+
+  // Hint radius in screen px — a bit wider than the snap search radius so
+  // edges become visible just before they start to attract the cursor.
+  const imageEdgeHints = useMemo(() => {
+    if (toolMode !== 'draw-roof' || !cursor || !imageEdges || shiftHeld) return [];
+    return imageEdges.near(cursor, 90 / stageScale);
+  }, [toolMode, cursor, imageEdges, shiftHeld, stageScale]);
 
   // ── Pointer helpers ──────────────────────────────────────────────────
   // World-space pointer via the inverted absolute transform — this folds
@@ -242,7 +256,7 @@ export function useDrawingController({
     if (toolMode === 'draw-roof') {
       // Snap the committed vertex through the same pipeline as the preview
       // so the visual and the stored vertex never disagree.
-      const snap = computeDrawingSnap(pos, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale });
+      const snap = computeDrawingSnap(pos, drawingPoints, roofs, { enabled: !shiftHeld, scale: stageScale, imageEdges });
       const snapped = snap.point ?? pos;
 
       // Boundary-hit test: does the snapped point lie on any existing
@@ -316,6 +330,7 @@ export function useDrawingController({
     roofs,
     shiftHeld,
     stageScale,
+    imageEdges,
     splitCandidateRoofId,
     setSplitCandidateRoof,
     splitRoof,
@@ -393,6 +408,7 @@ export function useDrawingController({
     drawingPoints,
     cursor,
     drawingSnap,
+    imageEdgeHints,
     handleStageClick,
     handleDblClick,
     handleMouseDown,

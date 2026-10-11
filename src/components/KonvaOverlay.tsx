@@ -60,6 +60,7 @@ import CompassWidget from './CompassWidget';
 import RotationDock from './RotationDock';
 import { useViewport } from '../hooks/useViewport';
 import { useDrawingController } from '../hooks/useDrawingController';
+import { useImageEdges } from '../hooks/useImageEdges';
 import { getActiveSyncClient } from './ProjectEditor';
 import type Konva from 'konva';
 
@@ -123,14 +124,6 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef, onCaptureR
   // ── Viewport (pan/zoom/rotation/size/space-held) ─────────────────────
   const viewport = useViewport({ stageRef, containerRef, locked, initialRotationDeg });
 
-  // ── Drawing controller (tool-mode state machine) ─────────────────────
-  const drawing = useDrawingController({
-    stageRef,
-    stageScale: viewport.stageScale,
-    isDraggingView: viewport.isDraggingView,
-    overlayActive,
-  });
-
   // ── Background image element ─────────────────────────────────────────
   // Konva's <Image> wants an HTMLImageElement, not a dataURL string. Load
   // async; render nothing for the background until it's ready (the other
@@ -180,6 +173,26 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef, onCaptureR
       img.src = '';
     };
   }, [capturedImage, t]);
+
+  // ── Edges detected in the satellite image (ADR-019) ──────────────────
+  // Reuses the decoded backdrop. Runs in a worker once per capture while
+  // the toolbar toggle is on. Not gated on showBackground: hiding the
+  // backdrop for a cleaner view shouldn't change how drawing snaps.
+  const snapToImageEdges = useProjectStore((s) => s.snapToImageEdges);
+  const setImageEdgeStatus = useProjectStore((s) => s.setImageEdgeStatus);
+  const imageEdges = useImageEdges(bgImage, capturedWidth, mpp, locked && snapToImageEdges);
+  useEffect(() => {
+    setImageEdgeStatus(imageEdges.status);
+  }, [imageEdges.status, setImageEdgeStatus]);
+
+  // ── Drawing controller (tool-mode state machine) ─────────────────────
+  const drawing = useDrawingController({
+    stageRef,
+    stageScale: viewport.stageScale,
+    isDraggingView: viewport.isDraggingView,
+    overlayActive,
+    imageEdges: imageEdges.index,
+  });
 
   // ── Export readiness (offscreen PDF frame only) ──────────────────────
   // Fires once per mount. Waits for (a) a measured, non-zero Stage — the
@@ -303,6 +316,7 @@ export default function KonvaOverlay({ containerRef, mapRef: _mapRef, onCaptureR
               drawingPoints={drawing.drawingPoints}
               cursor={drawing.drawingSnap.point}
               guides={drawing.drawingSnap.guides}
+              imageEdgeHints={drawing.imageEdgeHints}
               edgeLengthPx={drawing.drawingSnap.edgeLengthPx}
               lengthSnapped={drawing.drawingSnap.lengthSnapped}
               angleSnapped={drawing.drawingSnap.angleSnapped}

@@ -206,6 +206,9 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
   const addString = useProjectStore((s) => s.addString);
   const showBackground = useProjectStore((s) => s.showBackground);
   const toggleBackground = useProjectStore((s) => s.toggleBackground);
+  const snapToImageEdges = useProjectStore((s) => s.snapToImageEdges);
+  const toggleImageEdgeSnap = useProjectStore((s) => s.toggleImageEdgeSnap);
+  const imageEdgeStatus = useProjectStore((s) => s.imageEdgeStatus);
   // Undo / redo wiring. `canUndo` / `canRedo` are real state fields (not
   // derived selectors) so these subscriptions re-render the buttons exactly
   // when the toolbar needs to flip between enabled and disabled — no custom
@@ -791,6 +794,39 @@ export default function Toolbar({ mapRef, preLockRotation, activeView }: Props) 
             </svg>
           )}
           <span>{t('toolbar.backdrop')}</span>
+        </button>
+        )}
+        {activeView === 'roof' && (
+        <button
+          className={`btn btn-tool ${locked && snapToImageEdges ? 'text-sun-300' : ''}`}
+          onClick={toggleImageEdgeSnap}
+          disabled={!locked}
+          aria-pressed={locked && snapToImageEdges}
+          title={
+            !locked
+              ? t('toolbar.lockFirst')
+              : !snapToImageEdges
+                ? t('toolbar.imageEdgesOff')
+                : imageEdgeStatus === 'computing'
+                  ? t('toolbar.imageEdgesComputing')
+                  : imageEdgeStatus === 'error'
+                    ? t('toolbar.imageEdgesError')
+                    : t('toolbar.imageEdgesOn')
+          }
+        >
+          {/* Roof-corner icon: two edges meeting, with a snap dot. Pulses
+              while detection runs (a second or less after locking). */}
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            className={locked && snapToImageEdges && imageEdgeStatus === 'computing' ? 'animate-pulse' : ''}
+          >
+            <path d="M2 13.5 8 3l6 10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2.2 1.6" />
+            <circle cx="8" cy="3.2" r="1.7" fill="currentColor" />
+          </svg>
+          <span>{t('toolbar.imageEdges')}</span>
         </button>
         )}
 

@@ -121,7 +121,7 @@ There are no linters configured. Typecheck + `npm run build` + `npx vitest run` 
 
 ADRs live in `adr/`, named `ADR-NNN-short-description.md`. Create one whenever you introduce a new system-wide pattern, change the data model significantly, or implement a complex requirement not self-evident from the code. Fields: **Status**, **Date**, **Requirement**, **Context**, **Decision**, **Consequences**. When a later ADR replaces part of an earlier one, update the earlier one's **Status** line (e.g. ADR-014 → ADR-015).
 
-Most relevant to current architecture: ADR-015 (delta undo, no localStorage), ADR-016 (sync baseline + rebase), ADR-017 (API security model), ADR-018 (offscreen PDF export, local diagram view state).
+Most relevant to current architecture: ADR-015 (delta undo, no localStorage), ADR-016 (sync baseline + rebase), ADR-017 (API security model), ADR-018 (offscreen PDF export, local diagram view state), ADR-019 (snap to edges detected in the satellite image).
 
 ## Project layout
 
@@ -158,12 +158,19 @@ src/
 │
 ├── hooks/
 │   ├── useDrawingController.ts  # Tool-mode interaction state machine
+│   ├── useImageEdges.ts         # Runs edge detection in a worker once per capture → index
 │   └── useViewport.ts           # Konva Stage transform: pan, zoom, rotation, ResizeObserver
+│
+├── workers/
+│   └── imageEdges.worker.ts     # Web Worker wrapper around findImageEdges
 │
 ├── utils/
 │   ├── calibration.ts           # metersPerPixel(zoom, lat) — Web Mercator formula
 │   ├── geometry.ts              # Polygon ops, snap, rotate, panelDisplaySize, SAT overlap
-│   ├── drawingSnap.ts           # Angle + length snap for roof vertices (tolerances in screen px)
+│   ├── drawingSnap.ts           # Roof-vertex snap: corner, edge, angle (45° / parallel / perp),
+│   │                            #   length, vertex alignment, image edges; tolerances in screen px
+│   ├── imageEdges.ts            # Straight-edge detection on the captured image (reduced LSD) +
+│   │                            #   collinear merge + ImageEdgeIndex (ADR-019)
 │   ├── polygonCut.ts            # splitPolygon + mergePolygons + boundary hit-test
 │   ├── roofEditing.ts           # Edge-removal geometry (trim-to-intersection strategy)
 │   ├── stringRouting.ts         # Visual wiring path: detour around off-string panels
@@ -335,6 +342,8 @@ Undo applies the inverse delta to the **current** state (ADR-015): a field is re
 - `locked: true` → Leaflet torn down; tile view rasterised to `capturedImage` (base64 PNG) via `html2canvas` (in `Toolbar.tsx`); all canvas coords in that pixel frame.
 
 **Map providers:** `'esri'` (default), `'bayern'` (Bavarian Orthophoto), `'bayern_alkis'` (cadastral overlay). Stored on `mapState`.
+
+**Image-edge snapping (ADR-019):** once the map is locked, `useImageEdges` (in `KonvaOverlay`) detects straight edges in the captured image in a Web Worker (once per capture, cached) and hands an `ImageEdgeIndex` in world coords to `useDrawingController` → `computeDrawingSnap`. Priority: own corner > own edge > image corner > direction snaps / vertex alignment (a locked direction stops on a detected edge) > projection onto a detected edge. Toolbar "Edges" toggle (`snapToImageEdges`, UI state); Shift bypasses all snapping. Tune detector defaults only together with the benchmark in `imageEdges.test.ts`.
 
 **Rotation:** pre-lock (CSS-transformed Leaflet preview) or post-lock (middle-mouse / `RotationDock`). `initialRotationDeg` on locked `MapState` is persisted; live post-lock rotation is session-local.
 
